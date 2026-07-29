@@ -2,7 +2,8 @@ use crate::app::AppState;
 use crate::auth::AuthCheck;
 use crate::controllers::helpers::OkResponse;
 use crate::email::EmailMessage;
-use crate::models::Email;
+use crate::middleware::real_ip::RealIp;
+use crate::models::{Email, NewUserSecurityEvent, SecurityEventType};
 use crate::util::errors::AppResult;
 use crate::util::errors::{BoxedAppError, bad_request};
 use axum::extract::Path;
@@ -15,6 +16,9 @@ use minijinja::context;
 use secrecy::ExposeSecret;
 
 /// Marks the email belonging to the given token as verified.
+///
+/// When a `pending_email` is staged, confirmation promotes it to the primary
+/// address and clears the pending field. Otherwise the existing address is marked verified.
 #[utoipa::path(
     put,
     path = "/api/v1/confirm/{email_token}",
@@ -27,22 +31,45 @@ use secrecy::ExposeSecret;
 pub async fn confirm_user_email(
     state: AppState,
     Path(token): Path<String>,
+    req: Parts,
 ) -> AppResult<OkResponse> {
     let mut conn = state.db_write().await?;
 
-    let updated_rows = diesel::update(emails::table.filter(emails::token.eq(&token)))
-        .set(emails::verified.eq(true))
-        .execute(&mut conn)
-        .await?;
-
-    if updated_rows == 0 {
+    let Some(before) = emails::table
+        .filter(emails::token.eq(&token))
+        .select(Email::as_select())
+        .first::<Email>(&mut conn)
+        .await
+        .optional()?
+    else {
         return Err(bad_request("Email belonging to token not found."));
+    };
+
+    let had_pending = before.pending_email.is_some();
+    let Some(updated) = Email::confirm_token(&token, &conn).await? else {
+        return Err(bad_request("Email belonging to token not found."));
+    };
+
+    if had_pending {
+        let ip = req.extensions.get::<RealIp>().map(|ip| ip.to_string());
+        NewUserSecurityEvent::new(
+            updated.user_id,
+            SecurityEventType::EmailChanged,
+            None,
+            ip,
+            serde_json::json!({}),
+        )
+        .record(&mut conn)
+        .await;
     }
 
     Ok(OkResponse::new())
 }
 
 /// Regenerate and send an email verification token.
+///
+/// When a pending address is staged, the confirmation email is sent there.
+/// Otherwise it is sent to the current (unverified) address.
 #[utoipa::path(
     put,
     path = "/api/v1/users/{id}/resend",
@@ -78,6 +105,11 @@ pub async fn resend_email_verification(
             .optional()?
             .ok_or_else(|| bad_request("Email could not be found"))?;
 
+        let destination = email
+            .pending_email
+            .as_deref()
+            .unwrap_or(email.email.as_str());
+
         let email_message = EmailMessage::from_template(
             "user_confirm",
             context! {
@@ -90,7 +122,7 @@ pub async fn resend_email_verification(
 
         state
             .emails
-            .send(&email.email, email_message)
+            .send(destination, email_message)
             .await
             .map_err(BoxedAppError::from)
     })

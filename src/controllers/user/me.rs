@@ -44,7 +44,7 @@ pub async fn authenticated_user(
     conn: &mut AsyncPgConnection,
     user_id: i32,
 ) -> AppResult<Json<EncodableMe>> {
-    let ((user, verified, email, verification_sent), owned_crates) = tokio::try_join!(
+    let ((user, verified, email, verification_sent, pending_email), owned_crates) = tokio::try_join!(
         users::table
             .find(user_id)
             .left_join(emails::table)
@@ -54,8 +54,9 @@ pub async fn authenticated_user(
                 emails::verified.nullable(),
                 emails::email.nullable(),
                 emails::token_generated_at.nullable().is_not_null(),
+                emails::pending_email.nullable(),
             ))
-            .first::<(User, Option<bool>, Option<String>, bool)>(&mut &*conn)
+            .first::<(User, Option<bool>, Option<String>, bool, Option<String>)>(&mut &*conn)
             .boxed(),
         CrateOwner::by_owner_kind(OwnerKind::User)
             .inner_join(crates::table)
@@ -76,9 +77,10 @@ pub async fn authenticated_user(
         .collect();
 
     let verified = verified.unwrap_or(false);
-    let verification_sent = verified || verification_sent;
+    let email_pending = pending_email.filter(|s| !s.is_empty());
+    let verification_sent = verified || verification_sent || email_pending.is_some();
     Ok(Json(EncodableMe {
-        user: EncodablePrivateUser::from(user, email, verified, verification_sent),
+        user: EncodablePrivateUser::from(user, email, verified, verification_sent, email_pending),
         owned_crates,
     }))
 }

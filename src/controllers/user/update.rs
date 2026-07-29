@@ -1,8 +1,9 @@
 use crate::app::AppState;
 use crate::auth::AuthCheck;
+use crate::controllers::api_mfa::email_codes::require_email_code;
 use crate::controllers::helpers::OkResponse;
 use crate::email::EmailMessage;
-use crate::models::NewEmail;
+use crate::models::{Email, NewEmail};
 use crate::schema::users;
 use crate::util::errors::{AppResult, bad_request, server_error};
 use axum::Json;
@@ -20,6 +21,10 @@ use tracing::warn;
 pub struct UserUpdate {
     #[schema(inline)]
     user: User,
+    /// Email OTP from `POST /api/v1/me/mfa/email_codes`, required when staging a
+    /// change away from a verified address (sent to the current verified inbox).
+    #[serde(default)]
+    pub email_code: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -33,6 +38,10 @@ pub struct User {
 /// This endpoint allows users to update their email address and publish notifications settings.
 ///
 /// The `id` parameter needs to match the ID of the currently authenticated user.
+///
+/// Changing away from a verified email requires an email OTP sent to the current
+/// verified address. The verified inbox stays in place until the new address is
+/// confirmed via the link emailed to it (`pending_email`).
 #[utoipa::path(
     put,
     path = "/api/v1/users/{user}",
@@ -108,35 +117,71 @@ pub async fn update_user(
             .parse::<Address>()
             .map_err(|_| bad_request("invalid email address"))?;
 
-        let new_email = NewEmail::builder()
-            .user_id(user.id)
-            .email(user_email)
-            .build();
+        let current_verified = user.verified_email(&conn).await?;
 
-        let token = new_email.insert_or_update(&conn).await;
-        let token = token.map_err(|_| server_error("Error in creating token"))?;
+        if let Some(current) = current_verified.as_deref() {
+            if current.eq_ignore_ascii_case(user_email) {
+                // Same verified address: clear any staged pending change.
+                Email::clear_pending_email(user.id, &conn).await?;
+            } else {
+                // Keep verified inbox; stage replacement until confirm link is used.
+                require_email_code(user.id, user_update.email_code.as_deref(), &mut conn).await?;
+                let token = Email::stage_pending_email(user.id, user_email, &conn)
+                    .await
+                    .map_err(|_| server_error("Error in creating token"))?;
 
-        // This swallows any errors that occur while attempting to send the email. Some users have
-        // an invalid email set in their GitHub profile, and we should let them sign in even though
-        // we're trying to silently use their invalid address during signup and can't send them an
-        // email. They'll then have to provide a valid email address.
-        let email = EmailMessage::from_template(
-            "user_confirm",
-            context! {
-                user_name => user.gh_login,
-                domain => state.emails.domain,
-                token => token.expose_secret()
-            },
-        );
+                let email = EmailMessage::from_template(
+                    "user_confirm",
+                    context! {
+                        user_name => user.gh_login,
+                        domain => state.emails.domain,
+                        token => token.expose_secret()
+                    },
+                );
 
-        match email {
-            Ok(email) => {
-                let _ = state.emails.send(user_email, email).await;
+                match email {
+                    Ok(email) => {
+                        let _ = state.emails.send(user_email, email).await;
+                    }
+                    Err(error) => {
+                        warn!("Failed to render user confirmation email template: {error}");
+                    }
+                };
             }
-            Err(error) => {
-                warn!("Failed to render user confirmation email template: {error}");
-            }
-        };
+        } else {
+            // No verified inbox yet: replace the unverified address in place.
+            let new_email = NewEmail::builder()
+                .user_id(user.id)
+                .email(user_email)
+                .build();
+
+            let token = new_email
+                .insert_or_update(&conn)
+                .await
+                .map_err(|_| server_error("Error in creating token"))?;
+
+            // This swallows any errors that occur while attempting to send the email. Some users have
+            // an invalid email set in their GitHub profile, and we should let them sign in even though
+            // we're trying to silently use their invalid address during signup and can't send them an
+            // email. They'll then have to provide a valid email address.
+            let email = EmailMessage::from_template(
+                "user_confirm",
+                context! {
+                    user_name => user.gh_login,
+                    domain => state.emails.domain,
+                    token => token.expose_secret()
+                },
+            );
+
+            match email {
+                Ok(email) => {
+                    let _ = state.emails.send(user_email, email).await;
+                }
+                Err(error) => {
+                    warn!("Failed to render user confirmation email template: {error}");
+                }
+            };
+        }
     }
 
     Ok(OkResponse::new())

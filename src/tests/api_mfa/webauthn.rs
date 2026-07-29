@@ -227,6 +227,7 @@ async fn register_first_passkey_requires_email_otp() {
     let status = user.get::<Value>("/api/v1/me/mfa").await.good();
     assert_eq!(status["credentials"].as_array().unwrap().len(), 1);
     assert!(status["has_verified_email"].as_bool().unwrap());
+    assert_eq!(status["enforcement_active"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]

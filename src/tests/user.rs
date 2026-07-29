@@ -16,7 +16,7 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 
 impl crate::util::MockCookieUser {
-    async fn confirm_email(&self, email_token: &str) {
+    pub async fn confirm_email(&self, email_token: &str) {
         let url = format!("/api/v1/confirm/{email_token}");
         let response = self.put::<()>(&url, &[] as &[u8]).await;
         assert_snapshot!(response.status(), @"200 OK");
@@ -174,9 +174,14 @@ async fn test_email_get_and_put() -> anyhow::Result<()> {
 
     user.update_email("mango@mangos.mango").await;
 
+    // Verified inbox stays until the pending address is confirmed.
     let json = user.show_me().await;
-    assert_eq!(json.user.email.unwrap(), "mango@mangos.mango");
-    assert!(!json.user.email_verified);
+    assert_eq!(json.user.email.unwrap(), "foo@example.com");
+    assert!(json.user.email_verified);
+    assert_eq!(
+        json.user.email_pending.as_deref(),
+        Some("mango@mangos.mango")
+    );
     assert!(json.user.email_verification_sent);
 
     Ok(())

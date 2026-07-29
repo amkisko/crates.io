@@ -14,6 +14,10 @@ export default http.put<{ token: string }>('/api/v1/confirm/:token', async ({ pa
 
   await db.user.update(q => q.where({ id: user.id }), {
     data(user) {
+      if (user.emailPending) {
+        user.email = user.emailPending;
+        user.emailPending = null;
+      }
       user.emailVerified = true;
       user.emailVerificationToken = null;
     },

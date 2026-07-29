@@ -1369,6 +1369,14 @@ export interface components {
              */
             email?: string | null;
             /**
+             * @description Staged replacement address awaiting confirmation, if any.
+             *
+             *     When set, `email` remains the current (usually verified) address until
+             *     the pending address is confirmed.
+             * @example kate@example.com
+             */
+            email_pending?: string | null;
+            /**
              * @description Whether the user's email address verification email has been sent.
              * @example true
              */
@@ -3971,8 +3979,12 @@ export interface operations {
                             last_used_at?: string | null;
                             name: string;
                         }[];
-                        /** @description Whether API MFA is currently enforced for token-authenticated actions. */
+                        /** @description Whether the user has opted into API MFA. */
                         enabled: boolean;
+                        /**
+                         * @description Whether the server is currently applying MFA on dangerous mutates (`API_MFA_ENFORCEMENT_ENABLED`). Bootstrap / plant-prevention gates stay on even when this is false.
+                         */
+                        enforcement_active: boolean;
                         /**
                          * Format: date-time
                          * @description Active grant expiry, if any.
@@ -5043,6 +5055,10 @@ export interface operations {
                         email?: string | null;
                         publish_notifications?: boolean | null;
                     };
+                    /**
+                     * @description Email OTP from `POST /api/v1/me/mfa/email_codes`, required when changing away from a verified address (sent to the current verified inbox).
+                     */
+                    email_code?: string | null;
                 };
             };
         };

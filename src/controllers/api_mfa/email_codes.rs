@@ -24,7 +24,8 @@ pub struct SendEmailOtpResponse {
     pub sent_to_hint: String,
 }
 
-/// Email a one-time code for API MFA enable/disable or passkey enrollment.
+/// Email a one-time code for API MFA enable/disable, passkey enrollment, or
+/// changing away from a verified email address.
 ///
 /// Requires a verified email address. The code is never returned in the response.
 #[utoipa::path(

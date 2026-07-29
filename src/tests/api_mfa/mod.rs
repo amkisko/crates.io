@@ -388,6 +388,55 @@ async fn cookie_auth_requires_authorize_grant() {
     assert_snapshot!(published.status(), @"200 OK");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn kill_switch_skips_mutate_enforcement_but_keeps_bootstrap_otp() {
+    let (app, _, user, token) = TestApp::full()
+        .with_config(|config| {
+            config.api_mfa_enforcement_enabled = false;
+        })
+        .with_token()
+        .await;
+    let mut conn = app.db_conn().await;
+
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let status = user.get::<Value>("/api/v1/me/mfa").await.good();
+    assert_eq!(status["enabled"], true);
+    assert_eq!(status["enforcement_active"], false);
+
+    // Dangerous mutates skip MFA while the kill switch is off.
+    let published = token
+        .publish_crate(PublishBuilder::new("foo_api_mfa_kill_switch", "1.0.0"))
+        .await;
+    assert_snapshot!(published.status(), @"200 OK");
+
+    // Enabling still requires email OTP (plant-prevention stays on).
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(false))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let enable_without_otp = user
+        .put::<()>(
+            "/api/v1/me/mfa",
+            json!({ "enabled": true }).to_string(),
+        )
+        .await;
+    assert_snapshot!(enable_without_otp.status(), @"400 Bad Request");
+    assert!(
+        enable_without_otp
+            .text()
+            .contains("email verification code required"),
+        "{}",
+        enable_without_otp.text()
+    );
+}
+
 async fn insert_dummy_passkey(user_id: i32, conn: &mut diesel_async::AsyncPgConnection) {
     use crates_io::models::NewWebauthnCredential;
     use serde_json::json;

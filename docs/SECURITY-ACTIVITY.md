@@ -14,6 +14,7 @@ These event types may appear:
 - `passkey_registered`, `passkey_deleted` — passkey lifecycle
 - `api_mfa_authorized` — Settings “Authorize for 15 minutes”
 - `api_mfa_challenge_verified` — CLI challenge acknowledgment
+- `email_changed` — pending verified-email change promoted after OTP step-up and confirm-link (no address stored in metadata)
 
 ## Retention and access
 
@@ -40,7 +41,7 @@ Propose the following addition to the crates.io section of the [Rust Foundation 
 When you use crates.io account security features, we may also process:
 
 - truncated IP addresses and short security-event records (for example sign-in, API token create or revoke, CLI login approval, API MFA enable or disable, passkey register or delete, and MFA challenge acknowledgment) so you can review recent activity on your account and so we can support account security. These records are visible only to you, are retained for up to 90 days, and are deleted when your account is deleted;
-- emails about API MFA settings changes, and short-lived email verification codes used only to enable or disable API MFA or to enroll or recover a passkey (not as the second factor for publish, yank, or owner changes);
+- emails about API MFA settings changes, and short-lived email verification codes used to enable or disable API MFA, enroll or recover a passkey, or change a verified email address (not as the second factor for publish, yank, or owner changes);
 - during browser-assisted cargo login, the client IP that started the login session, shown to you on the approve page so you can spot unexpected requests. If you approve, a truncated form of that IP may appear in your security activity feed as above.
 
 We do not use this security activity information for product analytics, advertising, or ranking.

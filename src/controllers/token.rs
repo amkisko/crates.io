@@ -168,7 +168,8 @@ pub async fn create_api_token(
         return Err(custom(StatusCode::SERVICE_UNAVAILABLE, message));
     }
 
-    if app.config.api_mfa_enforcement_enabled && user.api_mfa_enabled {
+    // Settings step-up stays on even when dangerous-mutate enforcement is bypassed.
+    if user.api_mfa_enabled {
         let Some(credential) = new.credential.as_ref() else {
             return Err(bad_request(
                 "passkey verification required to create an API token while API MFA is enabled; \

@@ -13,6 +13,7 @@ const schema = v.pipe(
     url: v.optional(v.string()),
     avatar: v.optional(v.string(), 'https://avatars1.githubusercontent.com/u/14631425?v=4'),
     email: v.optional(v.nullable(v.string())),
+    emailPending: v.optional(v.nullable(v.string()), null),
     emailVerificationToken: v.optional(v.nullable(v.string()), null),
     emailVerified: v.optional(v.boolean()),
     isAdmin: v.optional(v.boolean(), false),

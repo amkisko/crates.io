@@ -128,6 +128,14 @@ expression: response.json()
               "null"
             ]
           },
+          "email_pending": {
+            "description": "Staged replacement address awaiting confirmation, if any.\n\nWhen set, `email` remains the current (usually verified) address until\nthe pending address is confirmed.",
+            "example": "kate@example.com",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "email_verification_sent": {
             "description": "Whether the user's email address verification email has been sent.",
             "example": true,
@@ -1792,6 +1800,7 @@ expression: response.json()
     },
     "/api/v1/confirm/{email_token}": {
       "put": {
+        "description": "When a `pending_email` is staged, confirmation promotes it to the primary\naddress and clears the pending field. Otherwise the existing address is marked verified.",
         "operationId": "confirm_user_email",
         "parameters": [
           {
@@ -4712,6 +4721,7 @@ expression: response.json()
     },
     "/api/v1/users/{id}/resend": {
       "put": {
+        "description": "When a pending address is staged, the confirmation email is sent there.\nOtherwise it is sent to the current (unverified) address.",
         "operationId": "resend_email_verification",
         "parameters": [
           {
@@ -4847,7 +4857,7 @@ expression: response.json()
         ]
       },
       "put": {
-        "description": "This endpoint allows users to update their email address and publish notifications settings.\n\nThe `id` parameter needs to match the ID of the currently authenticated user.",
+        "description": "This endpoint allows users to update their email address and publish notifications settings.\n\nThe `id` parameter needs to match the ID of the currently authenticated user.\n\nChanging away from a verified email requires an email OTP sent to the current\nverified address. The verified inbox stays in place until the new address is\nconfirmed via the link emailed to it (`pending_email`).",
         "operationId": "update_user",
         "parameters": [
           {
@@ -4866,6 +4876,13 @@ expression: response.json()
             "application/json": {
               "schema": {
                 "properties": {
+                  "email_code": {
+                    "description": "Email OTP from `POST /api/v1/me/mfa/email_codes`, required when staging a\nchange away from a verified address (sent to the current verified inbox).",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "user": {
                     "properties": {
                       "email": {

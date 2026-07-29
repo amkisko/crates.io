@@ -45,6 +45,7 @@
     passkey_deleted: 'Deleted passkey',
     api_mfa_authorized: 'Authorized API MFA for 15 minutes',
     api_mfa_challenge_verified: 'Verified API MFA challenge',
+    email_changed: 'Changed verified email',
   };
 
   function labelFor(event: SecurityEvent): string {

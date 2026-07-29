@@ -1,4 +1,5 @@
 use bon::Builder;
+use diesel::dsl::sql;
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use secrecy::SecretString;
@@ -12,6 +13,8 @@ pub struct Email {
     pub id: i32,
     pub user_id: i32,
     pub email: String,
+    /// Unverified replacement; current `email` stays verified until confirm.
+    pub pending_email: Option<String>,
     pub verified: bool,
     #[diesel(deserialize_as = String, serialize_as = String)]
     pub token: SecretString,
@@ -60,10 +63,85 @@ impl NewEmail<'_> {
             .values(self)
             .on_conflict(emails::user_id)
             .do_update()
-            .set(self)
+            .set((
+                emails::email.eq(self.email),
+                emails::verified.eq(self.verified),
+                // Replacing an unverified address clears any leftover pending change.
+                emails::pending_email.eq(None::<String>),
+                emails::token.eq(sql("DEFAULT")),
+            ))
             .returning(emails::token)
             .get_result::<String>(&mut conn)
             .await
             .map(Into::into)
+    }
+}
+
+impl Email {
+    /// Stages `pending` as the next address while keeping the verified inbox.
+    ///
+    /// Regenerates the confirmation token used by `/api/v1/confirm/{token}`.
+    pub async fn stage_pending_email(
+        user_id: i32,
+        pending: &str,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<SecretString> {
+        diesel::update(emails::table.filter(emails::user_id.eq(user_id)))
+            .set((
+                emails::pending_email.eq(pending),
+                emails::token.eq(sql("DEFAULT")),
+            ))
+            .returning(emails::token)
+            .get_result::<String>(&mut conn)
+            .await
+            .map(Into::into)
+    }
+
+    /// Clears a staged pending address without changing the verified inbox.
+    pub async fn clear_pending_email(
+        user_id: i32,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<usize> {
+        diesel::update(emails::table.filter(emails::user_id.eq(user_id)))
+            .set(emails::pending_email.eq(None::<String>))
+            .execute(&mut conn)
+            .await
+    }
+
+    /// Confirms a token: promotes `pending_email` when set, otherwise marks `email` verified.
+    pub async fn confirm_token(
+        token: &str,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Option<Email>> {
+        let Some(row) = emails::table
+            .filter(emails::token.eq(token))
+            .select(Self::as_select())
+            .first::<Self>(&mut conn)
+            .await
+            .optional()?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(pending) = row.pending_email.as_deref() {
+            let updated = diesel::update(emails::table.find(row.id))
+                .set((
+                    emails::email.eq(pending),
+                    emails::pending_email.eq(None::<String>),
+                    emails::verified.eq(true),
+                    emails::token.eq(sql("DEFAULT")),
+                ))
+                .returning(Self::as_returning())
+                .get_result(&mut conn)
+                .await?;
+            Ok(Some(updated))
+        } else {
+            let updated = diesel::update(emails::table.find(row.id))
+                .set(emails::verified.eq(true))
+                .returning(Self::as_returning())
+                .get_result(&mut conn)
+                .await?;
+            Ok(Some(updated))
+        }
     }
 }

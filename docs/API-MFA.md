@@ -14,12 +14,17 @@ Long-lived API token (`~/.cargo/credentials`):
 GitHub session / crates.io cookie:
 
 - Without API MFA: can mint tokens and act in the browser
-- With API MFA: publish, yank, and owner changes from the site require an active grant (Authorize for 15 minutes); minting tokens still uses the session; registering an additional passkey requires a passkey assertion when one exists
+- With API MFA: publish, yank, and owner changes from the site require an active grant (Authorize for 15 minutes); Settings → New Token and CLI link-login approve require a passkey assertion (or email OTP on CLI approve when MFA is on with zero passkeys); registering an additional passkey requires a passkey assertion when one exists
 - Bootstrap / recovery: enabling API MFA, first passkey enrollment, and recovery enrollment (zero passkeys) require a verified-email OTP so a stolen session cookie alone cannot plant a passkey and turn on enforcement. Disabling API MFA requires a passkey assertion or email OTP. Enforcement may remain on with zero passkeys (dangerous actions stay blocked until a passkey is re-registered or MFA is disabled via email OTP).
+- Changing away from a verified email requires an email OTP sent to the current verified address, and the verified inbox stays active until the new address is confirmed (`emails.pending_email`). A stolen session cannot redirect MFA recovery to an attacker inbox without both the OTP and control of the new inbox.
 
 Trusted Publishing (`cio_tp_…`) OIDC token:
 
-- Unaffected either way (OIDC identity is the second factor)
+- Unaffected either way (OIDC identity is the second factor). Non-OIDC CI that still uses a long-lived API token needs a human MFA step (or Trusted Publishing / a future scoped automation token).
+
+Multi-owner / team crates:
+
+- Enforcement is per user (`users.api_mfa_enabled`). Crate protection is the weakest owner plus optional `trustpub_only`. Account MFA alone does not mandate MFA for every co-owner.
 
 GitHub account 2FA does not protect a leaked cargo token ([rust-lang/crates.io#815](https://github.com/rust-lang/crates.io/issues/815)).
 
@@ -39,7 +44,7 @@ Acceptable factors share these properties:
 
 WebAuthn passkeys are the supported mechanism for per-operation step-up today.
 
-Email OTP is not an API MFA factor for publish, yank, or owner actions. It is only a bootstrap / recovery step-up for settings changes (enable MFA, first or recovery passkey enrollment, and disable MFA when passkeys are unavailable). Possession of a verified inbox is weaker than a presence-bound passkey; it closes session-hijack paths without replacing the human-in-the-loop rule for dangerous API calls.
+Email OTP is not an API MFA factor for publish, yank, or owner actions. It is only a bootstrap / recovery step-up for settings changes (enable MFA, first or recovery passkey enrollment, disable MFA when passkeys are unavailable, and staging a verified-email change). Possession of a verified inbox is weaker than a presence-bound passkey; it closes session-hijack paths without replacing the human-in-the-loop rule for dangerous API calls.
 
 SSH pubkey authentication is out of scope as an API MFA factor. SSH auth proves key possession to an SSH server; API MFA needs a crates.io-bound signature over the publish/yank/owner challenge, a per-operation presence step on the machine that is about to act, and a server-side ceremony record for that `operation_id`. Agent-backed SSH (`ssh-agent`, CI keys, forwarded agents) typically supplies only silent key use. Accepting "can SSH as this user" would treat another long-lived key as MFA and miss the human-in-the-loop rule above.
 
@@ -103,7 +108,7 @@ Challenge acknowledgment remains scoped to the operation + crate that created th
 - `RATE_LIMITER_API_MFA_CHALLENGE_POLL_BURST` (default: `15`) — burst for those poll actions
 - `RATE_LIMITER_API_MFA_EMAIL_OTP_SEND_RATE_SECONDS` (default: `60`) — refill interval for email OTP sends
 - `RATE_LIMITER_API_MFA_EMAIL_OTP_SEND_BURST` (default: `3`) — burst for email OTP sends
-- `API_MFA_ENFORCEMENT_ENABLED` (default: `true`) — when `false`, skips publish/yank/owners enforcement and settings step-up gates (New Token, CLI approve, enable/disable/passkey ceremonies). Status GET still reports each user's enabled flag. Use for emergency bypass (e.g. WebAuthn/RP outage).
+- `API_MFA_ENFORCEMENT_ENABLED` (default: `true`) — when `false`, skips MFA on dangerous mutates only (publish/yank/owners/delete/trustpub). Bootstrap / plant-prevention gates stay on (enable/disable OTP, passkey enroll/delete, New Token, CLI approve, verified-email change). Status GET reports `enabled` (user opt-in) and `enforcement_active` (this flag). Use for emergency bypass (e.g. WebAuthn/RP outage).
 
 For local frontend development against a local API, set `WEBAUTHN_RP_ID=localhost` and `WEBAUTHN_RP_ORIGIN=http://localhost:5173` (or your SvelteKit origin).
 
@@ -150,6 +155,9 @@ Prefer browser-assisted `cargo login` with `cargo-credential-crates-io` so token
 
 - `PUT /api/v1/me/mfa` when enabling (always) or disabling (alternative to passkey)
 - `POST /api/v1/me/mfa/passkeys/start` when the account has no passkeys, or when API MFA is off
+- `PUT /api/v1/users/{id}` when staging a change away from a verified email address
+
+Verified-email changes use dual-email confirmation: after a valid OTP, the new address is stored in `emails.pending_email` and gets a confirm link; `email` / `verified` stay on the current inbox until `PUT /api/v1/confirm/{token}` promotes the pending address. `/api/v1/me` exposes the staged address as `email_pending`. Resend sends to the pending address when one is staged. Unverified addresses still replace in place.
 
 Deleting a passkey while API MFA is enabled requires a passkey assertion or email OTP. The last passkey may still be deleted while enforcement stays on. Dangerous API calls then fail until a passkey is registered via email OTP recovery (or MFA is disabled with an email OTP).
 
@@ -166,3 +174,16 @@ Settings changes and successful challenge acknowledgments are recorded in the ow
 - Disabling API MFA requires a passkey assertion or email code.
 - Pending challenges are capped per user (currently 10) to limit write amplification from a stolen token.
 - WebAuthn ceremony state for register/authorize is stored server-side; challenge auth state lives on the challenge row.
+- Challenge acknowledgment and Settings → Authorize issue user-scoped grants (any of that user’s tokens or cookie session can ride them for the grant TTL). Challenge grants are scoped to operation + crate; Authorize is a wildcard. Stock cargo compatibility favors this over a single-use OTP attached to one request (RubyGems-style).
+
+## Related improvement vectors (out of v1)
+
+Treat API MFA as the interactive publish step-up layer only. Separate tracks remain:
+
+- Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutate; it does not bind the published tarball to a long-term publisher key. Step-up MFA and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound step-up or for signed package bytes.
+- Tighter ceremony binding: bind acknowledgment to upload content hashes and/or prefer one-shot OTP / token-scoped grants once cargo speaks `mfa_required`; keep wildcard Authorize as the multi-use website escape hatch.
+- Scoped automation tokens: Trusted Publishing covers OIDC CI; non-OIDC automation still needs a human MFA step or a future short-lived / scoped automation token (npm-style bypass is a product decision, not part of this design).
+- Consumer trust policy: optional client or UI signals for `trustpub_only`, MFA-enabled owners, or signed crates; complements ecosystem mandates under [#815](https://github.com/rust-lang/crates.io/issues/815).
+- Public provenance: optional version metadata that a publish completed after an MFA ceremony or Trusted Publishing exchange, without exposing private activity IPs or challenge ids.
+- Compromise hygiene: passkey / credential revocation feeds or Activity prompts when credentials are known-bad, beyond settings-change emails.
+- Optional passkey alternative on verified-email change when API MFA is on (OTP to the current inbox remains the v1 step-up).

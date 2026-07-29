@@ -73,22 +73,21 @@ pub async fn start_webauthn_registration(
         )));
     }
 
+    // Plant-prevention always applies (independent of `API_MFA_ENFORCEMENT_ENABLED`).
     // With MFA on and at least one passkey, require that passkey so a hijacked
     // session cannot mint a second factor the attacker controls. With zero
     // passkeys (or MFA off), require email OTP for first enroll / recovery.
-    if app.config.api_mfa_enforcement_enabled {
-        if user.api_mfa_enabled && !existing.is_empty() {
-            let Some(credential) = body.credential.as_ref() else {
-                return Err(bad_request(
-                    "passkey verification required to register another passkey while API MFA is enabled; \
-                     complete authorize/start first and include the credential assertion",
-                ));
-            };
-            complete_passkey_authentication(user.id, credential, &app.config.webauthn, &mut conn)
-                .await?;
-        } else {
-            require_email_code(user.id, body.email_code.as_deref(), &mut conn).await?;
-        }
+    if user.api_mfa_enabled && !existing.is_empty() {
+        let Some(credential) = body.credential.as_ref() else {
+            return Err(bad_request(
+                "passkey verification required to register another passkey while API MFA is enabled; \
+                 complete authorize/start first and include the credential assertion",
+            ));
+        };
+        complete_passkey_authentication(user.id, credential, &app.config.webauthn, &mut conn)
+            .await?;
+    } else {
+        require_email_code(user.id, body.email_code.as_deref(), &mut conn).await?;
     }
 
     let webauthn = build_webauthn(&app.config.webauthn)?;
@@ -268,7 +267,7 @@ pub async fn delete_webauthn_credential(
         return Err(not_found());
     };
 
-    if app.config.api_mfa_enforcement_enabled && user.api_mfa_enabled {
+    if user.api_mfa_enabled {
         let has_passkey = body.credential.is_some();
         let has_email_code = body
             .email_code

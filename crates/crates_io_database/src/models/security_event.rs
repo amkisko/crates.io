@@ -42,6 +42,7 @@ pg_enum! {
         PasskeyDeleted = 9,
         ApiMfaAuthorized = 10,
         ApiMfaChallengeVerified = 11,
+        EmailChanged = 12,
     }
 }
 
@@ -60,6 +61,7 @@ impl From<SecurityEventType> for &'static str {
             SecurityEventType::PasskeyDeleted => "passkey_deleted",
             SecurityEventType::ApiMfaAuthorized => "api_mfa_authorized",
             SecurityEventType::ApiMfaChallengeVerified => "api_mfa_challenge_verified",
+            SecurityEventType::EmailChanged => "email_changed",
         }
     }
 }

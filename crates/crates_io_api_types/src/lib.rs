@@ -703,6 +703,13 @@ pub struct EncodablePrivateUser {
     #[schema(example = "kate@morgan.dev")]
     pub email: Option<String>,
 
+    /// Staged replacement address awaiting confirmation, if any.
+    ///
+    /// When set, `email` remains the current (usually verified) address until
+    /// the pending address is confirmed.
+    #[schema(example = "kate@example.com")]
+    pub email_pending: Option<String>,
+
     /// The user's avatar URL, if set.
     #[schema(example = "https://avatars2.githubusercontent.com/u/1234567?v=4")]
     pub avatar: Option<String>,
@@ -738,6 +745,7 @@ impl EncodablePrivateUser {
         email: Option<String>,
         email_verified: bool,
         email_verification_sent: bool,
+        email_pending: Option<String>,
     ) -> Self {
         let User {
             id,
@@ -757,6 +765,7 @@ impl EncodablePrivateUser {
             email,
             email_verified,
             email_verification_sent,
+            email_pending,
             avatar: gh_avatar,
             login: gh_login,
             name,

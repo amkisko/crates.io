@@ -15,6 +15,7 @@
 
   interface ApiMfaStatus {
     enabled: boolean;
+    enforcement_active: boolean;
     credentials: Credential[];
     grant_expires_at: string | null;
     has_verified_email: boolean;
@@ -382,6 +383,12 @@
         (similar to RubyGems WebAuthn MFA).
       </p>
       <p>Trusted Publishing tokens are not affected.</p>
+      {#if status.enabled && !status.enforcement_active}
+        <p class="hint" data-test-enforcement-paused>
+          Server MFA enforcement on publish/yank/owners is temporarily paused (ops kill switch). Your account still has
+          API MFA enabled; enable/disable, passkey, New Token, and CLI approve step-up stay required.
+        </p>
+      {/if}
 
       <label class="checkbox-input">
         <input
@@ -412,8 +419,8 @@
     <section>
       <h2>Email verification code</h2>
       <p>
-        Used to enable API MFA, register a passkey when you have none (or when API MFA is off), and to disable API MFA
-        without a passkey. Codes are sent to your verified email address.
+        Used to enable API MFA, register a passkey when you have none (or when API MFA is off), disable API MFA without a
+        passkey, and change a verified email under Settings → Profile. Codes are sent to your verified email address.
       </p>
       {#if !status.has_verified_email}
         <p class="hint">

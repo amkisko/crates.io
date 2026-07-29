@@ -24,7 +24,14 @@
     publish_notifications: true,
     api_mfa_enabled: false,
     email: 'john@example.com',
+    email_pending: null,
     email_verified: true,
+    email_verification_sent: true,
+  };
+
+  const PENDING_USER: AuthenticatedUser = {
+    ...BASE_USER,
+    email_pending: 'new@example.com',
     email_verification_sent: true,
   };
 
@@ -52,6 +59,9 @@
   <NotificationDecorator>
     <h1>Verified Email</h1>
     <EmailInput user={BASE_USER} />
+
+    <h1>Pending Email Confirmation</h1>
+    <EmailInput user={PENDING_USER} />
 
     <h1>Unverified Email (Verification Sent)</h1>
     <EmailInput user={UNVERIFIED_USER} />

@@ -15,7 +15,10 @@ export default http.put<{ user_id: string }>('/api/v1/users/:user_id', async ({ 
     return HttpResponse.json({ errors: [{ detail: 'current user does not match requested user' }] }, { status: 400 });
   }
 
-  let json = (await request.json()) as { user?: { publish_notifications?: boolean; email?: string | null } } | null;
+  let json = (await request.json()) as {
+    user?: { publish_notifications?: boolean; email?: string | null };
+    email_code?: string | null;
+  } | null;
   if (!json || !json.user) {
     return HttpResponse.json({ errors: [{ detail: 'invalid json request' }] }, { status: 400 });
   }
@@ -36,13 +39,47 @@ export default http.put<{ user_id: string }>('/api/v1/users/:user_id', async ({ 
     }
 
     let email = userUpdate.email;
-    await db.user.update(q => q.where({ id: user.id }), {
-      data(user) {
-        user.email = email;
-        user.emailVerified = false;
-        user.emailVerificationToken = 'secret123';
-      },
-    });
+    let current = db.user.findFirst(q => q.where({ id: user.id }));
+    if (!current) {
+      return HttpResponse.json({ errors: [{ detail: 'must be logged in to perform that action' }] }, { status: 403 });
+    }
+
+    if (current.emailVerified && current.email && current.email.toLowerCase() !== email.toLowerCase()) {
+      if (!json.email_code?.trim()) {
+        return HttpResponse.json(
+          {
+            errors: [
+              {
+                detail:
+                  'email verification code required; request one with POST /api/v1/me/mfa/email_codes',
+              },
+            ],
+          },
+          { status: 400 },
+        );
+      }
+      await db.user.update(q => q.where({ id: user.id }), {
+        data(user) {
+          user.emailPending = email;
+          user.emailVerificationToken = 'secret123';
+        },
+      });
+    } else if (current.emailVerified && current.email && current.email.toLowerCase() === email.toLowerCase()) {
+      await db.user.update(q => q.where({ id: user.id }), {
+        data(user) {
+          user.emailPending = null;
+        },
+      });
+    } else {
+      await db.user.update(q => q.where({ id: user.id }), {
+        data(user) {
+          user.email = email;
+          user.emailPending = null;
+          user.emailVerified = false;
+          user.emailVerificationToken = 'secret123';
+        },
+      });
+    }
   }
 
   return HttpResponse.json<SuccessBody<'update_user'>>({ ok: true });

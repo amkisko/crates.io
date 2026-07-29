@@ -18,8 +18,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiMfaStatusResponse {
-    /// Whether API MFA is currently enforced for token-authenticated actions.
+    /// Whether the user has opted into API MFA.
     pub enabled: bool,
+    /// Whether the server is currently applying MFA on dangerous mutates
+    /// (`API_MFA_ENFORCEMENT_ENABLED`). Bootstrap / plant-prevention gates stay on
+    /// even when this is false.
+    pub enforcement_active: bool,
     /// Registered passkeys.
     #[schema(inline)]
     pub credentials: Vec<EncodableWebauthnCredential>,
@@ -73,6 +77,7 @@ pub async fn get_api_mfa_status(
         no_store(),
         Json(ApiMfaStatusResponse {
             enabled: user.api_mfa_enabled,
+            enforcement_active: app.config.api_mfa_enforcement_enabled,
             credentials: credentials.into_iter().map(Into::into).collect(),
             grant_expires_at: grant.map(|g| g.expires_at),
             has_verified_email,
@@ -136,38 +141,35 @@ pub async fn update_api_mfa_status(
                 "register at least one passkey before enabling API MFA",
             ));
         }
-        // Email OTP gates enable so session hijack + planted passkey cannot enforce MFA.
-        if app.config.api_mfa_enforcement_enabled {
-            require_email_code(user.id, body.email_code.as_deref(), &mut conn).await?;
-        }
+        // Email OTP always required so session hijack + planted passkey cannot turn MFA on
+        // even when `API_MFA_ENFORCEMENT_ENABLED=false` (dangerous-mutate bypass only).
+        require_email_code(user.id, body.email_code.as_deref(), &mut conn).await?;
     } else if user.api_mfa_enabled {
-        if app.config.api_mfa_enforcement_enabled {
-            let has_passkey = body.credential.is_some();
-            let has_email_code = body
-                .email_code
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty());
+        let has_passkey = body.credential.is_some();
+        let has_email_code = body
+            .email_code
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
 
-            match (has_passkey, has_email_code) {
-                (true, _) => {
-                    complete_passkey_authentication(
-                        user.id,
-                        body.credential.as_ref().unwrap(),
-                        &app.config.webauthn,
-                        &mut conn,
-                    )
-                    .await?;
-                }
-                (false, true) => {
-                    require_email_code(user.id, body.email_code.as_deref(), &mut conn).await?;
-                }
-                (false, false) => {
-                    return Err(bad_request(
-                        "passkey verification or email code required to disable API MFA; \
-                         complete authorize/start and include the credential assertion, \
-                         or request an email code with POST /api/v1/me/mfa/email_codes",
-                    ));
-                }
+        match (has_passkey, has_email_code) {
+            (true, _) => {
+                complete_passkey_authentication(
+                    user.id,
+                    body.credential.as_ref().unwrap(),
+                    &app.config.webauthn,
+                    &mut conn,
+                )
+                .await?;
+            }
+            (false, true) => {
+                require_email_code(user.id, body.email_code.as_deref(), &mut conn).await?;
+            }
+            (false, false) => {
+                return Err(bad_request(
+                    "passkey verification or email code required to disable API MFA; \
+                     complete authorize/start and include the credential assertion, \
+                     or request an email code with POST /api/v1/me/mfa/email_codes",
+                ));
             }
         }
         ApiMfaGrant::delete_all_for_user(user.id, &conn).await?;

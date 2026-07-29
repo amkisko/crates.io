@@ -63,7 +63,7 @@ pub async fn get_cli_login_meta(
         return Err(not_found());
     };
 
-    let mfa_required = app.config.api_mfa_enforcement_enabled && user.api_mfa_enabled;
+    let mfa_required = user.api_mfa_enabled;
     let mfa_email_otp_allowed = if mfa_required {
         WebauthnCredential::for_user(user.id, &conn)
             .await?
@@ -163,7 +163,8 @@ pub async fn approve_cli_login(
         ));
     }
 
-    if app.config.api_mfa_enforcement_enabled && user.api_mfa_enabled {
+    // CLI approve step-up stays on even when dangerous-mutate enforcement is bypassed.
+    if user.api_mfa_enabled {
         let passkeys = WebauthnCredential::for_user(user.id, &conn).await?;
         if passkeys.is_empty() {
             // Recovery: MFA on with zero passkeys cannot complete authorize/start.

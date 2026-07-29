@@ -2,11 +2,11 @@ import { expect, test } from 'vitest';
 
 import { db } from '../../index.js';
 
-test('updates the user with a new email address', async function () {
+test('stages a pending email when the current address is verified', async function () {
   let user = await db.user.create({ email: 'old@email.com' });
   await db.mswSession.create({ user });
 
-  let body = JSON.stringify({ user: { email: 'new@email.com' } });
+  let body = JSON.stringify({ user: { email: 'new@email.com' }, email_code: 'ABCD1234' });
   let response = await fetch(`/api/v1/users/${user.id}`, { method: 'PUT', body });
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchInlineSnapshot(`
@@ -16,8 +16,28 @@ test('updates the user with a new email address', async function () {
   `);
 
   user = db.user.findFirst(q => q.where({ id: user.id }))!;
+  expect(user.email).toBe('old@email.com');
+  expect(user.emailVerified).toBe(true);
+  expect(user.emailPending).toBe('new@email.com');
+  expect(user.emailVerificationToken).toBe('secret123');
+});
+
+test('updates an unverified email address in place', async function () {
+  let user = await db.user.create({
+    email: 'old@email.com',
+    emailVerified: false,
+    emailVerificationToken: 'old-token',
+  });
+  await db.mswSession.create({ user });
+
+  let body = JSON.stringify({ user: { email: 'new@email.com' } });
+  let response = await fetch(`/api/v1/users/${user.id}`, { method: 'PUT', body });
+  expect(response.status).toBe(200);
+
+  user = db.user.findFirst(q => q.where({ id: user.id }))!;
   expect(user.email).toBe('new@email.com');
   expect(user.emailVerified).toBe(false);
+  expect(user.emailPending).toBeNull();
   expect(user.emailVerificationToken).toBe('secret123');
 });
 
@@ -63,7 +83,7 @@ test('returns 400 when requesting the wrong user id', async function () {
   let user = await db.user.create({ email: 'old@email.com' });
   await db.mswSession.create({ user });
 
-  let body = JSON.stringify({ user: { email: 'new@email.com' } });
+  let body = JSON.stringify({ user: { email: 'new@email.com' }, email_code: 'ABCD1234' });
   let response = await fetch(`/api/v1/users/wrong-id`, { method: 'PUT', body });
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchInlineSnapshot(`

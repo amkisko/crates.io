@@ -21,6 +21,7 @@ function createUser(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUs
     publish_notifications: true,
     api_mfa_enabled: false,
     email: 'old@email.com',
+    email_pending: null,
     email_verified: true,
     email_verification_sent: true,
     ...overrides,
@@ -31,7 +32,16 @@ test('happy path', async ({ worker }) => {
   let user = createUser();
   await render(EmailInputTestWrapper, { user });
 
-  worker.use(http.put('/api/v1/users/:user_id', () => HttpResponse.json({ ok: true })));
+  worker.use(
+    http.post('/api/v1/me/mfa/email_codes', () =>
+      HttpResponse.json({ expires_at: '2099-01-01T00:00:00Z', sent_to_hint: 'o***@email.com' }),
+    ),
+    http.put('/api/v1/users/:user_id', async ({ request }) => {
+      let body = (await request.json()) as { email_code?: string };
+      expect(body.email_code).toBe('ABCD1234');
+      return HttpResponse.json({ ok: true });
+    }),
+  );
 
   await expect.element(page.getByCSS('[data-test-email-input]')).toBeVisible();
   await expect.element(page.getByCSS('[data-test-no-email]')).not.toBeInTheDocument();
@@ -45,6 +55,7 @@ test('happy path', async ({ worker }) => {
   await expect.element(page.getByCSS('[data-test-input]')).toHaveValue('old@email.com');
   await expect.element(page.getByCSS('[data-test-save-button]')).toBeEnabled();
   await expect.element(page.getByCSS('[data-test-cancel-button]')).toBeEnabled();
+  await expect.element(page.getByCSS('[data-test-email-otp-step]')).not.toBeInTheDocument();
 
   await userEvent.clear(page.getByCSS('[data-test-input]'));
   await expect.element(page.getByCSS('[data-test-input]')).toHaveValue('');
@@ -52,12 +63,18 @@ test('happy path', async ({ worker }) => {
 
   await userEvent.fill(page.getByCSS('[data-test-input]'), 'new@email.com');
   await expect.element(page.getByCSS('[data-test-input]')).toHaveValue('new@email.com');
+  await expect.element(page.getByCSS('[data-test-email-otp-step]')).toBeVisible();
+  await expect.element(page.getByCSS('[data-test-save-button]')).toBeDisabled();
+
+  await page.getByCSS('[data-test-send-email-otp]').click();
+  await userEvent.fill(page.getByCSS('[data-test-email-otp]'), 'ABCD1234');
   await expect.element(page.getByCSS('[data-test-save-button]')).toBeEnabled();
 
   await page.getByCSS('[data-test-save-button]').click();
-  await expect.element(page.getByCSS('[data-test-email-address]')).toHaveTextContent('new@email.com');
-  await expect.element(page.getByCSS('[data-test-verified]')).not.toBeInTheDocument();
-  await expect.element(page.getByCSS('[data-test-not-verified]')).toBeVisible();
+  await expect.element(page.getByCSS('[data-test-email-address]')).toHaveTextContent('old@email.com');
+  await expect.element(page.getByCSS('[data-test-verified]')).toBeVisible();
+  await expect.element(page.getByCSS('[data-test-email-pending]')).toBeVisible();
+  await expect.element(page.getByCSS('[data-test-pending-address]')).toHaveTextContent('new@email.com');
   await expect.element(page.getByCSS('[data-test-verification-sent]')).toBeVisible();
   await expect.element(page.getByCSS('[data-test-resend-button]')).toBeEnabled();
 });
@@ -82,6 +99,7 @@ test('happy path with `email: null`', async ({ worker }) => {
 
   await userEvent.fill(page.getByCSS('[data-test-input]'), 'new@email.com');
   await expect.element(page.getByCSS('[data-test-input]')).toHaveValue('new@email.com');
+  await expect.element(page.getByCSS('[data-test-email-otp-step]')).not.toBeInTheDocument();
   await expect.element(page.getByCSS('[data-test-save-button]')).toBeEnabled();
 
   await page.getByCSS('[data-test-save-button]').click();
@@ -111,10 +129,17 @@ test('server error', async ({ worker }) => {
   let user = createUser();
   await render(EmailInputTestWrapper, { user });
 
-  worker.use(http.put('/api/v1/users/:user_id', () => HttpResponse.json({}, { status: 500 })));
+  worker.use(
+    http.post('/api/v1/me/mfa/email_codes', () =>
+      HttpResponse.json({ expires_at: '2099-01-01T00:00:00Z', sent_to_hint: 'o***@email.com' }),
+    ),
+    http.put('/api/v1/users/:user_id', () => HttpResponse.json({}, { status: 500 })),
+  );
 
   await page.getByCSS('[data-test-edit-button]').click();
   await userEvent.fill(page.getByCSS('[data-test-input]'), 'new@email.com');
+  await page.getByCSS('[data-test-send-email-otp]').click();
+  await userEvent.fill(page.getByCSS('[data-test-email-otp]'), 'ABCD1234');
 
   await page.getByCSS('[data-test-save-button]').click();
   await expect.element(page.getByCSS('[data-test-input]')).toHaveValue('new@email.com');
