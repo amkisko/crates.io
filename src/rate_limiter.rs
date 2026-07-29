@@ -1,4 +1,4 @@
-use crate::schema::{publish_limit_buckets, publish_rate_overrides};
+use crate::schema::{api_mfa_rate_limit_buckets, publish_limit_buckets, publish_rate_overrides};
 use crate::util::errors::{AppResult, TooManyRequests};
 use chrono::{DateTime, Utc};
 use crates_io_database::fns::{date_part, floor, greatest, interval_part, least};
@@ -189,6 +189,70 @@ impl RateLimiter {
         }
     }
 
+    /// Applies a token bucket to an opaque, non-user key.
+    ///
+    /// This is used for unauthenticated capability URLs, where charging the
+    /// challenge owner's user bucket would let an attacker rate-limit a victim.
+    pub async fn check_key_rate_limit(
+        &self,
+        bucket_key: &str,
+        performed_action: LimitedAction,
+        conn: &mut AsyncPgConnection,
+    ) -> AppResult<()> {
+        let bucket = self
+            .take_key_token(bucket_key, performed_action, Utc::now(), conn)
+            .await?;
+        if bucket.tokens >= 1 {
+            Ok(())
+        } else {
+            Err(Box::new(TooManyRequests {
+                action: performed_action,
+                retry_after: bucket.last_refill
+                    + chrono::Duration::from_std(self.config_for_action(performed_action).rate)
+                        .unwrap(),
+            }))
+        }
+    }
+
+    async fn take_key_token(
+        &self,
+        bucket_key: &str,
+        performed_action: LimitedAction,
+        now: DateTime<Utc>,
+        conn: &mut AsyncPgConnection,
+    ) -> QueryResult<KeyBucket> {
+        let config = self.config_for_action(performed_action);
+        let refill_rate = (config.rate.as_millis() as i64).milliseconds();
+        let tokens_to_add = floor(
+            (date_part("epoch", now) - date_part("epoch", api_mfa_rate_limit_buckets::last_refill))
+                / interval_part("epoch", refill_rate),
+        );
+
+        diesel::insert_into(api_mfa_rate_limit_buckets::table)
+            .values((
+                api_mfa_rate_limit_buckets::bucket_key.eq(bucket_key),
+                api_mfa_rate_limit_buckets::action.eq(performed_action),
+                api_mfa_rate_limit_buckets::tokens.eq(config.burst),
+                api_mfa_rate_limit_buckets::last_refill.eq(now),
+            ))
+            .on_conflict((
+                api_mfa_rate_limit_buckets::bucket_key,
+                api_mfa_rate_limit_buckets::action,
+            ))
+            .do_update()
+            .set((
+                api_mfa_rate_limit_buckets::tokens.eq(least(
+                    config.burst,
+                    greatest(0, api_mfa_rate_limit_buckets::tokens - 1) + tokens_to_add,
+                )),
+                api_mfa_rate_limit_buckets::last_refill.eq(api_mfa_rate_limit_buckets::last_refill
+                    + refill_rate.into_sql::<Interval>() * tokens_to_add),
+            ))
+            .returning(KeyBucket::as_returning())
+            .get_result(conn)
+            .await
+    }
+
     /// Refills a user's bucket as needed, takes a token from it,
     /// and returns the result.
     ///
@@ -276,6 +340,15 @@ struct Bucket {
     tokens: i32,
     last_refill: DateTime<Utc>,
     action: LimitedAction,
+}
+
+#[derive(HasQuery, Insertable, Debug, PartialEq, Clone)]
+#[diesel(table_name = api_mfa_rate_limit_buckets)]
+struct KeyBucket {
+    bucket_key: String,
+    action: LimitedAction,
+    tokens: i32,
+    last_refill: DateTime<Utc>,
 }
 
 #[cfg(test)]
@@ -421,6 +494,42 @@ mod tests {
             action: LimitedAction::PublishNew,
         };
         assert_eq!(expected, bucket);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn opaque_keys_have_independent_rate_limit_buckets() -> anyhow::Result<()> {
+        let test_db = TestDatabase::new();
+        let mut conn = test_db.async_connect().await;
+        let now = now();
+        let action = LimitedAction::ApiMfaChallengePoll;
+        let rate = SampleRateLimiter {
+            rate: Duration::from_secs(60),
+            burst: 1,
+            action,
+        }
+        .create();
+
+        assert_eq!(
+            rate.take_key_token("challenge-a:ip-a", action, now, &mut conn)
+                .await?
+                .tokens,
+            1
+        );
+        assert_eq!(
+            rate.take_key_token("challenge-a:ip-a", action, now, &mut conn)
+                .await?
+                .tokens,
+            0
+        );
+        assert_eq!(
+            rate.take_key_token("challenge-a:ip-b", action, now, &mut conn)
+                .await?
+                .tokens,
+            1,
+            "one caller must not exhaust another caller's capability bucket"
+        );
+
         Ok(())
     }
 

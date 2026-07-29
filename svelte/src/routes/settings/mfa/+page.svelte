@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { resolve } from '$app/paths';
+
   import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import PageTitle from '$lib/components/PageTitle.svelte';
@@ -282,7 +284,7 @@
       }
 
       await loadStatus();
-      notifications.success('API actions authorized for 15 minutes. You can run cargo publish now.');
+      notifications.success('API actions authorized for 15 minutes.');
     } catch (error) {
       notifications.error(error instanceof Error ? error.message : 'Authorization failed.');
     } finally {
@@ -309,14 +311,14 @@
   function revivePublicKeyCreation(options: Record<string, unknown>): PublicKeyCredentialCreationOptions {
     let user = options.user as Record<string, unknown>;
     return {
-      ...(options as PublicKeyCredentialCreationOptions),
+      ...(options as unknown as PublicKeyCredentialCreationOptions),
       challenge: b64urlToBuffer(options.challenge as string),
       user: {
-        ...(user as PublicKeyCredentialUserEntity),
+        ...(user as unknown as PublicKeyCredentialUserEntity),
         id: b64urlToBuffer(user.id as string),
       },
       excludeCredentials: ((options.excludeCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as PublicKeyCredentialDescriptor),
+        ...(cred as unknown as PublicKeyCredentialDescriptor),
         id: b64urlToBuffer(cred.id as string),
       })),
     };
@@ -324,10 +326,10 @@
 
   function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
     return {
-      ...(options as PublicKeyCredentialRequestOptions),
+      ...(options as unknown as PublicKeyCredentialRequestOptions),
       challenge: b64urlToBuffer(options.challenge as string),
       allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as PublicKeyCredentialDescriptor),
+        ...(cred as unknown as PublicKeyCredentialDescriptor),
         id: b64urlToBuffer(cred.id as string),
       })),
     };
@@ -361,6 +363,20 @@
     };
   }
 
+  let enableNote = $derived.by(() => {
+    if (!status) return '';
+    if (!status.enabled && status.credentials.length === 0) {
+      return 'Register a passkey and enter an email code below to enable.';
+    }
+    if (!status.enabled) {
+      return 'Enter an email verification code below to enable.';
+    }
+    if (status.credentials.length === 0) {
+      return 'No passkeys registered — add one or disable MFA to unblock dangerous actions.';
+    }
+    return 'Disabling requires a passkey confirmation or an email code.';
+  });
+
   $effect(() => {
     if (session.currentUser) {
       loadStatus();
@@ -375,18 +391,15 @@
   {#if loading || !status}
     <LoadingSpinner />
   {:else}
-    <section>
-      <h2>API MFA</h2>
-      <p>
-        When enabled, publish, yank, and owner changes require a recent passkey verification — for API tokens and for
-        actions from this website. Use Authorize for 15 minutes below, or complete a CLI challenge verification link
-        (similar to RubyGems WebAuthn MFA).
+    <section aria-labelledby="api-mfa-heading">
+      <h2 id="api-mfa-heading">API MFA</h2>
+      <p class="explainer">
+        When enabled, publish, yank, and owner changes require a recent passkey verification. Trusted Publishing tokens
+        are not affected.
       </p>
-      <p>Trusted Publishing tokens are not affected.</p>
       {#if status.enabled && !status.enforcement_active}
-        <p class="hint" data-test-enforcement-paused>
-          Server MFA enforcement on publish/yank/owners is temporarily paused (ops kill switch). Your account still has
-          API MFA enabled; enable/disable, passkey, New Token, and CLI approve step-up stay required.
+        <p class="hint" role="status" data-test-enforcement-paused>
+          Server MFA enforcement on publish, yank, and owners is temporarily paused.
         </p>
       {/if}
 
@@ -395,78 +408,71 @@
           type="checkbox"
           checked={status.enabled}
           disabled={busy || (!status.enabled && status.credentials.length === 0)}
+          aria-describedby="api-mfa-enable-note"
           onchange={event => setEnabled(event.currentTarget.checked)}
         />
-        <span class="label">Require passkey verification for publish, yank, and owner changes</span>
+        <span class="label">Require passkey for publish, yank, and owner changes</span>
+        <span id="api-mfa-enable-note" class="note">{enableNote}</span>
       </label>
-      {#if !status.enabled && status.credentials.length === 0}
-        <p class="hint">Register at least one passkey, then enter an email verification code to enable API MFA.</p>
-      {:else if !status.enabled}
-        <p class="hint">Enter an email verification code below, then enable API MFA.</p>
-      {:else if status.credentials.length === 0}
-        <p class="hint">
-          API MFA is enabled with no passkeys. Dangerous actions stay blocked until you register a passkey (email code)
-          or disable API MFA (email code).
-        </p>
-      {:else}
-        <p class="hint">
-          Disabling API MFA requires a passkey confirmation or an email verification code. Registering another passkey
-          requires a passkey confirmation.
-        </p>
-      {/if}
     </section>
 
-    <section>
-      <h2>Email verification code</h2>
-      <p>
-        Used to enable API MFA, register a passkey when you have none (or when API MFA is off), disable API MFA without a
-        passkey, and change a verified email under Settings → Profile. Codes are sent to your verified email address.
-      </p>
+    <section aria-labelledby="email-otp-heading">
+      <h2 id="email-otp-heading">Email verification code</h2>
       {#if !status.has_verified_email}
         <p class="hint">
-          Set and verify an email under <a href="/settings/profile">Settings → Profile</a> before requesting a code.
+          <a href={resolve('/settings/profile')}>Verify an email on your profile</a> before requesting a code.
         </p>
       {:else}
         <div class="email-otp">
-          <button type="button" class="button" disabled={busy} onclick={sendEmailOtp} data-test-send-email-otp>
+          <button
+            type="button"
+            class="button"
+            disabled={busy}
+            aria-busy={busy}
+            onclick={sendEmailOtp}
+            data-test-send-email-otp
+          >
             Send code
           </button>
-          <input
-            type="text"
-            bind:value={emailOtp}
-            maxlength="32"
-            autocomplete="one-time-code"
-            spellcheck="false"
-            aria-label="Email verification code"
-            placeholder="Enter code"
-            data-test-email-otp
-          />
+          <label class="field">
+            <span class="field-label">Code</span>
+            <input
+              type="text"
+              bind:value={emailOtp}
+              maxlength="32"
+              autocomplete="one-time-code"
+              inputmode="numeric"
+              spellcheck="false"
+              placeholder="Enter code"
+              data-test-email-otp
+            />
+          </label>
         </div>
         {#if emailOtpHint && emailOtpExpiresAt}
-          <p class="hint">
-            Code sent to {emailOtpHint}. Expires {new Date(emailOtpExpiresAt).toLocaleString()}.
+          <p class="hint" role="status">
+            Sent to {emailOtpHint}. Expires {new Date(emailOtpExpiresAt).toLocaleString()}.
           </p>
         {/if}
       {/if}
     </section>
 
-    <section>
-      <h2>Authorize API actions</h2>
-      <p>
-        Verify a passkey to allow <code>cargo publish</code>, website publish, and other dangerous actions for the next
-        15 minutes without repeating the challenge.
+    <section aria-labelledby="authorize-heading">
+      <h2 id="authorize-heading">Authorize API actions</h2>
+      <p class="explainer">Verify a passkey once to allow dangerous API actions for 15 minutes.</p>
+      <p class="grant" role="status" data-test-grant-expiry>
+        {#if status.grant_expires_at}
+          Active until <time datetime={status.grant_expires_at}
+            >{new Date(status.grant_expires_at).toLocaleString()}</time
+          >
+        {:else}
+          No active grant.
+        {/if}
       </p>
-      {#if status.grant_expires_at}
-        <p class="grant" data-test-grant-expiry>
-          Active grant until <strong>{new Date(status.grant_expires_at).toLocaleString()}</strong>
-        </p>
-      {:else}
-        <p class="hint">No active grant.</p>
-      {/if}
       <button
         type="button"
         class="button"
         disabled={busy || status.credentials.length === 0}
+        aria-busy={busy}
         onclick={authorizeApiActions}
         data-test-authorize-api
       >
@@ -474,35 +480,44 @@
       </button>
     </section>
 
-    <section>
-      <h2>Passkeys</h2>
+    <section aria-labelledby="passkeys-heading">
+      <h2 id="passkeys-heading">Passkeys</h2>
       <div class="register">
-        <input type="text" bind:value={newPasskeyName} maxlength="64" aria-label="Passkey name" />
-        <button type="button" class="button" disabled={busy} onclick={registerPasskey} data-test-register-passkey>
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input type="text" bind:value={newPasskeyName} maxlength="64" autocomplete="off" />
+        </label>
+        <button
+          type="button"
+          class="button"
+          disabled={busy}
+          aria-busy={busy}
+          onclick={registerPasskey}
+          data-test-register-passkey
+        >
           Register passkey
         </button>
       </div>
-      {#if !status.enabled || status.credentials.length === 0}
-        <p class="hint">Enter an email verification code above before registering.</p>
-      {/if}
-      {#if status.enabled && status.credentials.length > 0}
-        <p class="hint">Deleting a passkey requires passkey verification (or an email code).</p>
-      {/if}
 
       {#if status.credentials.length === 0}
         <p class="hint">No passkeys registered yet.</p>
       {:else}
-        <ul class="credentials">
+        <ul role="list" class="credentials">
           {#each status.credentials as credential (credential.id)}
             <li>
               <div>
                 <strong>{credential.name}</strong>
-                <div class="meta">Added {new Date(credential.created_at).toLocaleString()}</div>
+                <div class="meta">
+                  Added
+                  <time datetime={credential.created_at}>{new Date(credential.created_at).toLocaleString()}</time>
+                </div>
               </div>
               <button
                 type="button"
                 class="button button--red button--small"
                 disabled={busy}
+                aria-busy={busy}
+                aria-label={`Delete passkey ${credential.name}`}
                 onclick={() => deleteCredential(credential.id)}
               >
                 Delete
@@ -512,17 +527,6 @@
         </ul>
       {/if}
     </section>
-
-    <section>
-      <h2>CLI handshake</h2>
-      <p>
-        Dangerous API calls (publish, yank, change owners) return a short-lived <code>operation_id</code> and
-        <code>verification_url</code> (<code>/mfa/verify/…</code>, passkey only — no crates.io sign-in). Open that link,
-        complete passkey auth, while the CLI polls until <code>acknowledged</code>, then retries. Optional headers:
-        <code>Crates-MFA-Operation-Id</code>, <code>Crates-MFA-Port</code>,
-        <code>Crates-OTP</code>.
-      </p>
-    </section>
   {/if}
 </SettingsPage>
 
@@ -531,23 +535,51 @@
     margin-bottom: var(--space-l);
   }
 
-  p {
+  h2 {
+    margin: 0 0 var(--space-2xs);
+  }
+
+  .explainer {
+    margin: 0 0 var(--space-s);
     max-width: 45rem;
   }
 
   .hint,
   .grant,
-  .meta {
+  .meta,
+  .note {
     color: var(--grey600);
     font-size: 0.9rem;
+  }
+
+  .hint {
+    margin: var(--space-2xs) 0 0;
+    max-width: 45rem;
+  }
+
+  .grant {
+    margin: 0 0 var(--space-s);
   }
 
   .register,
   .email-otp {
     display: flex;
     flex-wrap: wrap;
+    align-items: flex-end;
     gap: var(--space-2xs);
     margin: var(--space-s) 0;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    min-width: 12rem;
+  }
+
+  .field-label {
+    font-size: 0.85rem;
+    font-weight: 600;
   }
 
   .credentials {
@@ -568,9 +600,29 @@
   }
 
   .checkbox-input {
-    display: flex;
-    gap: var(--space-2xs);
-    align-items: flex-start;
-    margin: var(--space-s) 0;
+    display: grid;
+    grid-template:
+      'checkbox label' auto
+      '- note' auto /
+      auto 1fr;
+    row-gap: var(--space-3xs);
+    column-gap: var(--space-xs);
+    margin: var(--space-s) 0 0;
+    max-width: 45rem;
+  }
+
+  .checkbox-input input {
+    grid-area: checkbox;
+    margin-top: 0.2em;
+  }
+
+  .label {
+    grid-area: label;
+    font-weight: bold;
+  }
+
+  .note {
+    grid-area: note;
+    display: block;
   }
 </style>

@@ -64,7 +64,16 @@ pub async fn create_trustpub_github_config(
             metrics: &state.instance_metrics,
             enforcement_enabled: state.config.api_mfa_enforcement_enabled,
         },
-        ApiMfaOperation::change_trusted_publishing(&json_config.krate),
+        ApiMfaOperation::create_trusted_publishing(
+            &json_config.krate,
+            "GitHub Actions",
+            &[
+                &json_config.repository_owner,
+                &json_config.repository_name,
+                &json_config.workflow_filename,
+                json_config.environment.as_deref().unwrap_or_default(),
+            ],
+        ),
     )
     .await?;
 

@@ -24,6 +24,7 @@ export default http.post('/api/v1/cli_login/:id/approve', async ({ params, reque
     expired_at?: string | null;
     confirmation_code?: string;
     credential?: unknown;
+    email_code?: string;
   };
 
   let normalized = (body.confirmation_code ?? '').replaceAll(/[^A-Za-z0-9]/g, '').toUpperCase();
@@ -57,7 +58,10 @@ export default http.post('/api/v1/cli_login/:id/approve', async ({ params, reque
   let token = await db.apiToken.create({
     user,
     name: body.name,
-    endpointScopes: body.endpoint_scopes ?? null,
+    endpointScopes:
+      (body.endpoint_scopes as Array<
+        'publish-new' | 'publish-update' | 'trusted-publishing' | 'yank' | 'change-owners'
+      > | null) ?? null,
     crateScopes: body.crate_scopes ?? null,
     expiredAt: body.expired_at ?? null,
     createdAt: new Date().toISOString(),

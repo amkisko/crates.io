@@ -221,20 +221,6 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
             .check(&req, &mut conn)
             .await?;
 
-        ensure_api_mfa(
-            &auth,
-            &req,
-            &mut conn,
-            crate::api_mfa::ApiMfaEnsureDeps {
-                webauthn: &app.config.webauthn,
-                rate_limiter: &app.rate_limiter,
-                metrics: &app.instance_metrics,
-                enforcement_enabled: app.config.api_mfa_enforcement_enabled,
-            },
-            ApiMfaOperation::publish(&*metadata.name),
-        )
-        .await?;
-
         AuthType::Regular(Box::new(auth))
     };
 
@@ -274,6 +260,23 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
 
     let tarball_bytes = read_tarball_bytes(&mut reader, max_upload_size).await?;
     let content_length = tarball_bytes.len() as u64;
+    let tarball_sha256 = Sha256::digest(&tarball_bytes);
+
+    if let AuthType::Regular(auth) = &auth {
+        ensure_api_mfa(
+            auth,
+            &req,
+            &mut conn,
+            crate::api_mfa::ApiMfaEnsureDeps {
+                webauthn: &app.config.webauthn,
+                rate_limiter: &app.rate_limiter,
+                metrics: &app.instance_metrics,
+                enforcement_enabled: app.config.api_mfa_enforcement_enabled,
+            },
+            ApiMfaOperation::publish(&metadata.name, &version_string, &tarball_sha256),
+        )
+        .await?;
+    }
 
     let pkg_name = format!("{}-{version_string}", &*metadata.name);
     let max_unpack_size = std::cmp::max(
@@ -536,7 +539,7 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
 
         let edition = edition.map(|edition| edition.as_str());
 
-        let tar_sha256 = Sha256::digest(&tarball_bytes);
+        let tar_sha256 = tarball_sha256;
 
         // Persist the new version of this crate
         let new_version = NewVersion::builder(krate.id, &version_string)

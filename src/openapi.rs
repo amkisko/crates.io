@@ -132,6 +132,13 @@ fn apply_visibility(openapi: &mut OpenApiDoc, include_internal: bool) {
     });
 }
 
+/// Builds the `OpenAPI` document without initializing application state or PostgreSQL.
+pub fn document(include_internal: bool) -> OpenApiDoc {
+    let mut document = crate::router::build_openapi_document();
+    apply_visibility(&mut document, include_internal);
+    document
+}
+
 fn prune_path_item(item: &mut PathItem, include_internal: bool) {
     for slot in [
         &mut item.get,

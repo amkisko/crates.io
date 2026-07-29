@@ -60,9 +60,13 @@ pub async fn update_version(
     let auth = authenticate(&req, &mut conn, &krate.name).await?;
     if let Some(yanked) = update_request.version.yanked {
         let operation = if yanked {
-            ApiMfaOperation::yank(&krate.name)
+            ApiMfaOperation::yank(
+                &krate.name,
+                &version.num,
+                update_request.version.yank_message.as_deref(),
+            )
         } else {
-            ApiMfaOperation::unyank(&krate.name)
+            ApiMfaOperation::unyank(&krate.name, &version.num)
         };
         ensure_api_mfa(
             &auth,

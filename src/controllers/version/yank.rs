@@ -73,9 +73,9 @@ async fn modify_yank(
     let (mut version, krate) = path.load_version_and_crate(&conn).await?;
     let auth = authenticate(&req, &mut conn, &krate.name).await?;
     let operation = if yanked {
-        ApiMfaOperation::yank(&krate.name)
+        ApiMfaOperation::yank(&krate.name, &version.num, None)
     } else {
-        ApiMfaOperation::unyank(&krate.name)
+        ApiMfaOperation::unyank(&krate.name, &version.num)
     };
     ensure_api_mfa(
         &auth,

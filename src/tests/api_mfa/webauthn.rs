@@ -129,12 +129,10 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     enable_api_mfa(&app, &user).await;
 
     let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
+    let callback_secret = "0123456789abcdef0123456789abcdef";
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     request.header("Crates-MFA-Port", "34567");
-    request.header(
-        "Crates-MFA-Callback-Secret",
-        "0123456789abcdef0123456789abcdef",
-    );
+    request.header("Crates-MFA-Callback-Secret", callback_secret);
     let blocked = token.run::<Value>(request.with_body(body.clone())).await;
     assert_eq!(blocked.status(), 403);
     let operation_id = blocked.json()["errors"][0]["operation_id"]
@@ -145,10 +143,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     // A later retry can refresh the stored localhost port on the pending challenge.
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     request.header("Crates-MFA-Port", "34568");
-    request.header(
-        "Crates-MFA-Callback-Secret",
-        "0123456789abcdef0123456789abcdef",
-    );
+    request.header("Crates-MFA-Callback-Secret", callback_secret);
     let blocked_again = token.run::<Value>(request.with_body(body.clone())).await;
     assert_eq!(blocked_again.status(), 403);
     assert_eq!(
@@ -193,10 +188,14 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         .do_authentication(Url::parse(TEST_ORIGIN).unwrap(), rcr)
         .expect("soft passkey authentication");
 
+    let mut finish_request = anon.request_builder(
+        Method::POST,
+        &format!("/api/v1/mfa/challenges/{operation_id}/finish"),
+    );
+    finish_request.header("Crates-MFA-Callback-Secret", callback_secret);
     let finish = anon
-        .post::<Value>(
-            &format!("/api/v1/mfa/challenges/{operation_id}/finish"),
-            json!({ "credential": assertion }).to_string(),
+        .run::<Value>(
+            finish_request.with_body(json!({ "credential": assertion }).to_string().into()),
         )
         .await
         .good();
@@ -209,6 +208,25 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     assert!(
         finish["grant_expires_at"].is_null(),
         "localhost OTP path must not issue a scoped grant"
+    );
+
+    // A reload/lost finish response can recover the same OTP with the URL-fragment secret.
+    let missing_secret = anon
+        .post::<Value>(
+            &format!("/api/v1/mfa/challenges/{operation_id}/recover"),
+            "",
+        )
+        .await;
+    assert_eq!(missing_secret.status(), 404);
+    let mut recovery_request = anon.request_builder(
+        Method::POST,
+        &format!("/api/v1/mfa/challenges/{operation_id}/recover"),
+    );
+    recovery_request.header("Crates-MFA-Callback-Secret", callback_secret);
+    let recovered = anon.run::<Value>(recovery_request).await.good();
+    assert_eq!(
+        recovered["localhost_callback_url"],
+        format!("http://127.0.0.1:34568/?code={otp}")
     );
 
     // Retry without OTP must fail (no grant).
@@ -225,6 +243,14 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         .await;
     token.app().run_pending_background_jobs().await;
     assert_eq!(published.status(), 200);
+
+    let mut consumed_recovery = anon.request_builder(
+        Method::POST,
+        &format!("/api/v1/mfa/challenges/{operation_id}/recover"),
+    );
+    consumed_recovery.header("Crates-MFA-Callback-Secret", callback_secret);
+    let consumed_recovery = anon.run::<Value>(consumed_recovery).await;
+    assert_eq!(consumed_recovery.status(), 400);
 
     drop(app);
 }

@@ -11,9 +11,12 @@ use crate::controllers::*;
 use crate::openapi::{self, BaseOpenApi};
 use crate::util::errors::not_found;
 
-#[allow(deprecated)]
-pub fn build_axum_router(state: AppState) -> Router<()> {
-    let (router, openapi) = BaseOpenApi::router()
+#[expect(
+    deprecated,
+    reason = "the deprecated routes remain part of the API document"
+)]
+fn build_openapi_router() -> utoipa_axum::router::OpenApiRouter<AppState> {
+    BaseOpenApi::router()
         // Route used by both `cargo search` and the frontend
         .routes(routes!(krate::search::list_crates))
         // Routes used by `cargo`
@@ -89,6 +92,9 @@ pub fn build_axum_router(state: AppState) -> Router<()> {
         .routes(routes!(api_mfa::challenges::start_api_mfa_challenge))
         .routes(routes!(api_mfa::challenges::finish_api_mfa_challenge))
         .routes(routes!(
+            api_mfa::challenges::recover_api_mfa_challenge_callback
+        ))
+        .routes(routes!(
             crate_owner_invitation::list_crate_owner_invitations_for_user
         ))
         .routes(routes!(
@@ -127,7 +133,19 @@ pub fn build_axum_router(state: AppState) -> Router<()> {
             trustpub::gitlab_configs::delete::delete_trustpub_gitlab_config,
             trustpub::gitlab_configs::list::list_trustpub_gitlab_configs,
         ))
-        .split_for_parts();
+}
+
+/// Builds the complete internal `OpenAPI` document without application state.
+///
+/// This keeps schema generation and contract tests independent of PostgreSQL.
+pub(crate) fn build_openapi_document() -> utoipa::openapi::OpenApi {
+    let (_, openapi) = build_openapi_router().split_for_parts();
+    openapi
+}
+
+#[allow(deprecated)]
+pub fn build_axum_router(state: AppState) -> Router<()> {
+    let (router, openapi) = build_openapi_router().split_for_parts();
 
     let mut router = router
         // Metrics

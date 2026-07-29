@@ -1,2 +1,2 @@
 ALTER TABLE api_mfa_challenges
-    DROP COLUMN localhost_callback_secret_hash;
+    DROP COLUMN IF EXISTS localhost_callback_secret_hash;

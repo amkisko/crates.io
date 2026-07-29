@@ -7,8 +7,9 @@
 use cargo_credential::{
     Action, CacheControl, Credential, CredentialResponse, RegistryInfo, Secret,
 };
+use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -44,7 +45,13 @@ impl Default for CratesIoCredential {
         Self {
             api_base: None,
             cargo_home: None,
-            http: reqwest::blocking::Client::new(),
+            http: reqwest::blocking::Client::builder()
+                .user_agent(concat!(
+                    "cargo-credential-crates-io/",
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .build()
+                .expect("reqwest client"),
             poll_sleep: Duration::from_secs(2),
         }
     }
@@ -227,28 +234,23 @@ pub fn read_stored_token(
 pub fn write_stored_token(cargo_home: &Path, token: &str) -> anyhow::Result<()> {
     fs::create_dir_all(cargo_home)?;
     let path = credentials_path(cargo_home);
-    let mut table: toml::Table = if path.exists() {
-        fs::read_to_string(&path)?.parse()?
-    } else {
-        toml::Table::new()
-    };
+    with_credentials_lock(cargo_home, || {
+        let mut table: toml::Table = if path.exists() {
+            fs::read_to_string(&path)?.parse()?
+        } else {
+            toml::Table::new()
+        };
 
-    let registry = table
-        .entry("registry")
-        .or_insert_with(|| TomlValue::Table(toml::Table::new()));
-    let registry = registry
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("credentials.toml [registry] is not a table"))?;
-    registry.insert("token".into(), TomlValue::String(token.to_owned()));
+        let registry = table
+            .entry("registry")
+            .or_insert_with(|| TomlValue::Table(toml::Table::new()));
+        let registry = registry
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("credentials.toml [registry] is not a table"))?;
+        registry.insert("token".into(), TomlValue::String(token.to_owned()));
 
-    fs::write(&path, toml::to_string_pretty(&table)?)?;
-    // Restrict permissions on Unix when possible.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+        atomic_write(&path, toml::to_string_pretty(&table)?.as_bytes())
+    })
 }
 
 /// Removes the crates.io token from `credentials.toml`. Returns whether a token was present.
@@ -257,20 +259,68 @@ pub fn clear_stored_token(cargo_home: &Path) -> anyhow::Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    let mut table: toml::Table = fs::read_to_string(&path)?.parse()?;
-    let Some(registry) = table.get_mut("registry").and_then(|v| v.as_table_mut()) else {
-        return Ok(false);
-    };
-    let removed = registry.remove("token").is_some();
-    if registry.is_empty() {
-        table.remove("registry");
-    }
-    fs::write(&path, toml::to_string_pretty(&table)?)?;
-    Ok(removed)
+    with_credentials_lock(cargo_home, || {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let mut table: toml::Table = fs::read_to_string(&path)?.parse()?;
+        let Some(registry) = table.get_mut("registry").and_then(|v| v.as_table_mut()) else {
+            return Ok(false);
+        };
+        let removed = registry.remove("token").is_some();
+        if registry.is_empty() {
+            table.remove("registry");
+        }
+        atomic_write(&path, toml::to_string_pretty(&table)?.as_bytes())?;
+        Ok(removed)
+    })
 }
 
 fn credentials_path(cargo_home: &Path) -> PathBuf {
     cargo_home.join("credentials.toml")
+}
+
+fn with_credentials_lock<T>(
+    cargo_home: &Path,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let lock_path = cargo_home.join(".credentials.toml.lock");
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut lock = RwLock::new(options.open(lock_path)?);
+    let _guard = lock.write()?;
+    operation()
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("credentials path has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+
+    temporary.write_all(contents)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path)?;
+
+    // Make the rename durable on filesystems that support directory fsync.
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+
+    Ok(())
 }
 
 /// Helper used by unit tests to exercise login option plumbing without HTTP.
@@ -302,6 +352,70 @@ mod tests {
         assert_eq!(token.expose(), "cio_test_token");
         assert!(clear_stored_token(dir.path()).unwrap());
         assert!(read_stored_token(dir.path()).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credentials_are_created_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        write_stored_token(dir.path(), "cio_private").unwrap();
+
+        let credentials_mode = fs::metadata(credentials_path(dir.path()))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let lock_mode = fs::metadata(dir.path().join(".credentials.toml.lock"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(credentials_mode, 0o600);
+        assert_eq!(lock_mode, 0o600);
+    }
+
+    #[test]
+    fn concurrent_writers_leave_a_complete_credentials_file() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempdir().unwrap();
+        fs::write(
+            credentials_path(dir.path()),
+            "[registries.other]\ntoken = \"preserve-me\"\n",
+        )
+        .unwrap();
+
+        let cargo_home = Arc::new(dir.path().to_path_buf());
+        let barrier = Arc::new(Barrier::new(9));
+        let writers = (0..8)
+            .map(|index| {
+                let cargo_home = Arc::clone(&cargo_home);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for iteration in 0..25 {
+                        write_stored_token(&cargo_home, &format!("cio_writer_{index}_{iteration}"))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        barrier.wait();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let contents = fs::read_to_string(credentials_path(&cargo_home)).unwrap();
+        let table: toml::Table = contents.parse().unwrap();
+        assert_eq!(
+            table["registries"]["other"]["token"].as_str(),
+            Some("preserve-me")
+        );
+        let token = table["registry"]["token"].as_str().unwrap();
+        assert!(token.starts_with("cio_writer_"));
     }
 
     #[test]

@@ -234,6 +234,74 @@ async fn test_confirm_user_email() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn replaced_email_confirmation_token_cannot_promote_new_pending_address() -> anyhow::Result<()>
+{
+    let (app, _, user) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    let stale_token =
+        Email::stage_pending_email(user.as_model().id, "first@example.com", &conn).await?;
+    let current_token =
+        Email::stage_pending_email(user.as_model().id, "second@example.com", &conn).await?;
+
+    assert!(
+        Email::confirm_token(stale_token.expose_secret(), &mut conn)
+            .await?
+            .is_none(),
+        "a replaced token must not confirm the address now stored in the row"
+    );
+
+    let confirmed = Email::confirm_token(current_token.expose_secret(), &mut conn)
+        .await?
+        .expect("current token should confirm");
+    assert!(confirmed.promoted_pending);
+    assert_eq!(confirmed.email.email, "second@example.com");
+    assert!(confirmed.email.pending_email.is_none());
+    assert!(confirmed.email.verified);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_email_replacement_and_confirmation_serialize_safely() -> anyhow::Result<()> {
+    let (app, _, user) = TestApp::init().with_user().await;
+
+    for iteration in 0..10 {
+        let old_address = format!("old-{iteration}@example.com");
+        let new_address = format!("new-{iteration}@example.com");
+        let old_token = {
+            let conn = app.db_conn().await;
+            Email::stage_pending_email(user.as_model().id, &old_address, &conn).await?
+        };
+        let mut confirm_conn = app.db_conn().await;
+        let replace_conn = app.db_conn().await;
+
+        let (confirmation, replacement) = tokio::join!(
+            Email::confirm_token(old_token.expose_secret(), &mut confirm_conn),
+            Email::stage_pending_email(user.as_model().id, &new_address, &replace_conn),
+        );
+        let confirmation = confirmation?;
+        replacement?;
+
+        if let Some(confirmation) = confirmation {
+            assert_eq!(confirmation.email.email, old_address);
+        }
+
+        let row: Email = Email::belonging_to(user.as_model())
+            .select(Email::as_select())
+            .first(&mut confirm_conn)
+            .await?;
+        assert_eq!(
+            row.pending_email.as_deref(),
+            Some(new_address.as_str()),
+            "confirmation must not overwrite a replacement that wins or follows the row lock"
+        );
+    }
+
+    Ok(())
+}
+
 /// Given a user who existed before we added email confirmation,
 /// test that `email_verification_sent` is false so that we don't
 /// make the user think we've sent an email when we haven't.

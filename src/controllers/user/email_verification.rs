@@ -36,25 +36,14 @@ pub async fn confirm_user_email(
 ) -> AppResult<OkResponse> {
     let mut conn = state.db_write().await?;
 
-    let Some(before) = emails::table
-        .filter(emails::token.eq(&token))
-        .select(Email::as_select())
-        .first::<Email>(&mut conn)
-        .await
-        .optional()?
-    else {
+    let Some(confirmed) = Email::confirm_token(&token, &mut conn).await? else {
         return Err(bad_request("Email belonging to token not found."));
     };
 
-    let had_pending = before.pending_email.is_some();
-    let Some(updated) = Email::confirm_token(&token, &conn).await? else {
-        return Err(bad_request("Email belonging to token not found."));
-    };
-
-    if had_pending {
+    if confirmed.promoted_pending {
         let ip = req.extensions.get::<RealIp>().map(|ip| ip.to_string());
         NewUserSecurityEvent::new(
-            updated.user_id,
+            confirmed.email.user_id,
             SecurityEventType::EmailChanged,
             None,
             ip,

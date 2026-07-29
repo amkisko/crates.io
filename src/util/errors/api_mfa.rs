@@ -10,6 +10,7 @@ use std::fmt;
 pub struct ApiMfaRequired {
     pub operation_id: String,
     pub operation: String,
+    pub operation_summary: String,
     pub crate_name: Option<String>,
     pub verification_url: String,
     pub poll_url: String,
@@ -39,6 +40,7 @@ impl AppError for ApiMfaRequired {
                 "id": "mfa_required",
                 "operation_id": &self.operation_id,
                 "operation": &self.operation,
+                "operation_summary": &self.operation_summary,
                 "crate": &self.crate_name,
                 "verification_url": &self.verification_url,
                 "poll_url": &self.poll_url,

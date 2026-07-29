@@ -19,6 +19,7 @@ node_modules/
 .output
 /svelte/.svelte-kit
 /svelte/build
+/svelte/coverage
 
 # Vite
 vite.config.js.timestamp-*

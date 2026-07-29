@@ -39,6 +39,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/private/session/all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Invalidate every browser session for the authenticated user (logout everywhere).
+         * @description Bumps `users.session_generation` so cookies that still carry an older generation
+         *     fail cookie authentication. Clears the current cookie as well.
+         */
+        delete: operations["end_all_sessions"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/private/session/authorize": {
         parameters: {
             query?: never;
@@ -223,7 +244,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Marks the email belonging to the given token as verified. */
+        /**
+         * Marks the email belonging to the given token as verified.
+         * @description When a `pending_email` is staged, confirmation promotes it to the primary
+         *     address and clears the pending field. Otherwise the existing address is marked verified.
+         */
         put: operations["confirm_user_email"];
         post?: never;
         delete?: never;
@@ -717,7 +742,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Accept a crate owner invitation with a token. */
+        /**
+         * Accept a crate owner invitation with a token.
+         * @description Requires a cookie session for the invited user. The path token selects the
+         *     invitation; it is not a standalone bearer capability.
+         */
         put: operations["accept_crate_owner_invitation_with_token"];
         post?: never;
         delete?: never;
@@ -840,7 +869,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Email a one-time code for API MFA enable/disable or passkey enrollment.
+         * Email a one-time code for API MFA enable/disable, passkey enrollment, or
+         *     changing away from a verified email address.
          * @description Requires a verified email address. The code is never returned in the response.
          */
         post: operations["send_api_mfa_email_code"];
@@ -912,6 +942,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/security_events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List recent security activity for the authenticated user.
+         * @description Events are retained for 90 days. Cookie authentication only.
+         */
+        get: operations["list_security_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/tokens": {
         parameters: {
             query?: never;
@@ -941,7 +991,11 @@ export interface paths {
         get: operations["find_api_token"];
         put?: never;
         post?: never;
-        /** Revoke API token. */
+        /**
+         * Revoke API token.
+         * @description When API MFA is enabled, a passkey assertion is required (same as token create).
+         *     Self-revoke of the current token via `DELETE /api/v1/tokens/current` stays free.
+         */
         delete: operations["revoke_api_token"];
         options?: never;
         head?: never;
@@ -1025,6 +1079,27 @@ export interface paths {
          *     minted the API token that created this challenge.
          */
         post: operations["finish_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mfa/challenges/{id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover a verified callback after a browser reload or transient delivery failure.
+         * @description The callback secret lives only in the verification URL fragment and request
+         *     header. The server stores only its hash.
+         */
+        post: operations["recover_api_mfa_challenge_callback"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1231,7 +1306,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Regenerate and send an email verification token. */
+        /**
+         * Regenerate and send an email verification token.
+         * @description When a pending address is staged, the confirmation email is sent there.
+         *     Otherwise it is sent to the current (unverified) address.
+         */
         put: operations["resend_email_verification"];
         post?: never;
         delete?: never;
@@ -1275,6 +1354,10 @@ export interface paths {
          * @description This endpoint allows users to update their email address and publish notifications settings.
          *
          *     The `id` parameter needs to match the ID of the currently authenticated user.
+         *
+         *     Changing away from a verified email requires an email OTP sent to the current
+         *     verified address. The verified inbox stays in place until the new address is
+         *     confirmed via the link emailed to it (`pending_email`).
          */
         put: operations["update_user"];
         post?: never;
@@ -1703,6 +1786,39 @@ export interface components {
              */
             version_id: number;
         };
+        /** @description A single security activity event returned to the Settings UI. */
+        EncodableSecurityEvent: {
+            /**
+             * Format: int32
+             * @description Related API token id, if any.
+             * @example 7
+             */
+            api_token_id?: number | null;
+            /**
+             * Format: date-time
+             * @description When the event was recorded.
+             * @example 2026-07-29T12:00:00Z
+             */
+            created_at: string;
+            /**
+             * @description Event kind in `snake_case` (e.g. `token_created`, `session_login`).
+             * @example token_created
+             */
+            event_type: string;
+            /**
+             * Format: int64
+             * @description Opaque event id (seek cursor).
+             * @example 42
+             */
+            id: number;
+            /**
+             * @description Truncated client IP when recorded (`/24` IPv4 or `/56` IPv6); never set for `token_used`.
+             * @example 203.0.113.0/24
+             */
+            ip?: string | null;
+            /** @description Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`. */
+            metadata: components["schemas"]["Value"];
+        };
         /** @enum {string} */
         EndpointScope: "publish-new" | "publish-update" | "trusted-publishing" | "yank" | "change-owners";
         GitHubConfig: {
@@ -1815,6 +1931,15 @@ export interface components {
              * @example 3
              */
             inviter_id: number;
+        };
+        ListSecurityEventsMeta: {
+            /** @description Query string for the next page, when more results exist. */
+            next_page?: string | null;
+            /**
+             * Format: int64
+             * @description Total number of retained events for this user.
+             */
+            total: number;
         };
         Owner: {
             /**
@@ -1967,6 +2092,7 @@ export interface components {
              */
             url: string;
         };
+        Value: unknown;
         Version: {
             /** @description A list of actions performed on this version. */
             audit_actions: {
@@ -2232,6 +2358,29 @@ export interface operations {
         };
     };
     end_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example true */
+                        ok: boolean;
+                    };
+                };
+            };
+        };
+    };
+    end_all_sessions: {
         parameters: {
             query?: never;
             header?: never;
@@ -2530,8 +2679,14 @@ export interface operations {
                     /** @description Confirmation code printed by the CLI after `POST /cli_login` (binds approve to that start). */
                     confirmation_code: string;
                     crate_scopes?: string[] | null;
-                    /** @description Required when API MFA is enabled: assertion from `authorize/start`. */
+                    /** @description Required when API MFA is enabled and at least one passkey exists: assertion from `authorize/start`. */
                     credential?: unknown;
+                    /**
+                     * @description Email OTP from `POST /api/v1/me/mfa/email_codes`.
+                     *
+                     *     Accepted when API MFA is enabled and the account has zero passkeys (recovery).
+                     */
+                    email_code?: string | null;
                     endpoint_scopes?: string[] | null;
                     /** Format: date-time */
                     expired_at?: string | null;
@@ -2587,7 +2742,15 @@ export interface operations {
                         /** Format: int32 */
                         localhost_port?: number | null;
                         login_id: string;
-                        /** @description When true, approve must include a passkey assertion from `authorize/start`. */
+                        /**
+                         * @description When true (API MFA on with zero passkeys), approve accepts `email_code`
+                         *     instead of a passkey assertion so recovery is not a dead-end.
+                         */
+                        mfa_email_otp_allowed: boolean;
+                        /**
+                         * @description When true, approve must include a passkey assertion from `authorize/start`
+                         *     (or an email OTP when [`Self::mfa_email_otp_allowed`] is true).
+                         */
                         mfa_required: boolean;
                         status: string;
                     };
@@ -3982,7 +4145,9 @@ export interface operations {
                         /** @description Whether the user has opted into API MFA. */
                         enabled: boolean;
                         /**
-                         * @description Whether the server is currently applying MFA on dangerous mutates (`API_MFA_ENFORCEMENT_ENABLED`). Bootstrap / plant-prevention gates stay on even when this is false.
+                         * @description Whether the server is currently applying MFA on dangerous mutates
+                         *     (`API_MFA_ENFORCEMENT_ENABLED`). Bootstrap / plant-prevention gates stay on
+                         *     even when this is false.
                          */
                         enforcement_active: boolean;
                         /**
@@ -4237,6 +4402,49 @@ export interface operations {
             };
         };
     };
+    list_security_events: {
+        parameters: {
+            query?: {
+                /**
+                 * @description The page number to request.
+                 *
+                 *     This parameter is mutually exclusive with `seek` and not supported for
+                 *     all requests.
+                 */
+                page?: number;
+                /** @description The number of items to request per page. */
+                per_page?: number;
+                /**
+                 * @description The seek key to request.
+                 *
+                 *     This parameter is mutually exclusive with `page` and not supported for
+                 *     all requests.
+                 *
+                 *     The seek key can usually be found in the `meta.next_page` field of
+                 *     paginated responses.
+                 */
+                seek?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        meta: components["schemas"]["ListSecurityEventsMeta"];
+                        security_events: components["schemas"]["EncodableSecurityEvent"][];
+                    };
+                };
+            };
+        };
+    };
     list_api_tokens: {
         parameters: {
             query?: {
@@ -4338,7 +4546,14 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Passkey assertion required when API MFA is enabled (after `authorize/start`). */
+                    credential?: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -4393,7 +4608,8 @@ export interface operations {
                     /**
                      * @description Dangerous operation label. Defaults to `manual`.
                      *
-                     *     Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`, `manual`.
+                     *     Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,
+                     *     `change-trusted-publishing`, `delete-crate`, `manual`.
                      */
                     operation?: string | null;
                     /**
@@ -4459,6 +4675,8 @@ export interface operations {
                         operation: string;
                         /** @description Opaque operation / transaction identifier. */
                         operation_id: string;
+                        /** @description Server-generated description of the exact mutation being approved. */
+                        operation_summary: string;
                         /**
                          * Format: int64
                          * @description Suggested seconds between CLI polls while status is `pending`.
@@ -4510,6 +4728,33 @@ export interface operations {
                         operation_id: string;
                         /** @description One-time password for the CLI to send as `Crates-OTP`. */
                         otp: string;
+                    };
+                };
+            };
+        };
+    };
+    recover_api_mfa_challenge_callback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description URL for the browser to retry against the waiting loopback listener. */
+                        localhost_callback_url: string;
+                        operation_id: string;
                     };
                 };
             };
@@ -5051,14 +5296,15 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /**
+                     * @description Email OTP from `POST /api/v1/me/mfa/email_codes`, required when staging a
+                     *     change away from a verified address (sent to the current verified inbox).
+                     */
+                    email_code?: string | null;
                     user: {
                         email?: string | null;
                         publish_notifications?: boolean | null;
                     };
-                    /**
-                     * @description Email OTP from `POST /api/v1/me/mfa/email_codes`, required when changing away from a verified address (sent to the current verified inbox).
-                     */
-                    email_code?: string | null;
                 };
             };
         };

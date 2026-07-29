@@ -207,7 +207,7 @@ async fn modify_owners(
             metrics: &app.instance_metrics,
             enforcement_enabled: app.config.api_mfa_enforcement_enabled,
         },
-        ApiMfaOperation::change_owners(&crate_name),
+        ApiMfaOperation::change_owners(&crate_name, add, &logins),
     )
     .await?;
 

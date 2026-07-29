@@ -95,7 +95,7 @@ pub async fn delete_crate(
             metrics: &app.instance_metrics,
             enforcement_enabled: app.config.api_mfa_enforcement_enabled,
         },
-        ApiMfaOperation::delete_crate(&krate.name),
+        ApiMfaOperation::delete_crate(&krate.name, params.message()),
     )
     .await?;
 

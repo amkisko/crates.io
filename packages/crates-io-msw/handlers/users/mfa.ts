@@ -10,6 +10,7 @@ export default http.get('/api/v1/me/mfa', () => {
 
   return HttpResponse.json({
     enabled: Boolean(user.apiMfaEnabled),
+    enforcement_active: true,
     credentials: [],
     grant_expires_at: null,
     has_verified_email: Boolean(user.email),

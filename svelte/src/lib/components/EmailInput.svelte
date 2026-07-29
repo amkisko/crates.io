@@ -26,7 +26,9 @@
   let emailOtpHint = $state<string | null>(null);
 
   let requiresEmailOtp = $derived(
-    Boolean(user.email_verified && user.email && value.trim() && value.trim().toLowerCase() !== user.email.toLowerCase()),
+    Boolean(
+      user.email_verified && user.email && value.trim() && value.trim().toLowerCase() !== user.email.toLowerCase(),
+    ),
   );
 
   function editEmail() {

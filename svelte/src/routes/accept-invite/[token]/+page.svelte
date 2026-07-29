@@ -27,12 +27,10 @@
       }
 
       let status = response.response.status;
-      if (status === 403 || status === 401) {
-        // Not signed in as the invitee (or at all).
-        if (!session.currentUser) {
-          result = 'need-login';
-          return;
-        }
+      // Not signed in as the invitee (or at all).
+      if ((status === 403 || status === 401) && !session.currentUser) {
+        result = 'need-login';
+        return;
       }
 
       errorText = (response.error as unknown as { errors?: { detail?: string }[] })?.errors?.[0]?.detail;

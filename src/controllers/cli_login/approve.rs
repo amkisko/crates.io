@@ -5,10 +5,9 @@ use crate::controllers::api_mfa::email_codes::require_email_code;
 use crate::controllers::api_mfa::webauthn_util::complete_passkey_authentication;
 use crate::controllers::token::mint_api_token_for_user;
 use crate::models::{
-    ApiToken, CliLoginSession, NewUserSecurityEvent, STATUS_PENDING, STATUS_READY,
-    SecurityEventType, WebauthnCredential,
+    CliLoginSession, NewUserSecurityEvent, STATUS_PENDING, STATUS_READY, SecurityEventType,
+    WebauthnCredential,
 };
-use crate::schema::api_tokens;
 use crate::util::errors::{AppResult, bad_request, not_found, server_error};
 use crate::util::no_store;
 use axum::Json;
@@ -16,8 +15,7 @@ use axum::extract::Path;
 use axum_extra::TypedHeader;
 use axum_extra::headers::CacheControl;
 use chrono::{DateTime, Utc};
-use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::AsyncConnection;
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 
@@ -181,53 +179,40 @@ pub async fn approve_cli_login(
         }
     }
 
-    // Claim before mint so a losing concurrent approver never creates an orphan token.
-    if !session.claim(user.id, &conn).await? {
-        return Err(bad_request(
-            "this CLI login session was already claimed by another approval",
-        ));
-    }
+    // Claim, token insert, encrypted redeem payload, and ready transition commit
+    // together. Any failure rolls all four back, so an unreachable live token
+    // cannot be left behind.
+    let minted = conn
+        .transaction(async |conn| {
+            if !session.claim(user.id, conn).await? {
+                return Err(bad_request(
+                    "this CLI login session was already claimed by another approval",
+                ));
+            }
 
-    let minted = match mint_api_token_for_user(
-        &app,
-        user,
-        name,
-        body.crate_scopes,
-        body.endpoint_scopes,
-        body.expired_at,
-        &mut conn,
-    )
-    .await
-    {
-        Ok(minted) => minted,
-        Err(err) => {
-            // Best-effort unlock so the user can correct scopes and retry.
-            let _ = session.release_claim(user.id, &conn).await;
-            return Err(err);
-        }
-    };
+            let minted = mint_api_token_for_user(
+                &app,
+                user,
+                name,
+                body.crate_scopes,
+                body.endpoint_scopes,
+                body.expired_at,
+                conn,
+            )
+            .await?;
+            let sealed = seal_redeem_token(&app.config.token_encryption, &minted.plaintext)?;
+            if !session
+                .mark_ready(user.id, minted.token.id, &sealed, conn)
+                .await?
+            {
+                return Err(server_error(
+                    "failed to attach minted token to CLI login session",
+                ));
+            }
 
-    let sealed = match seal_redeem_token(&app.config.token_encryption, &minted.plaintext) {
-        Ok(sealed) => sealed,
-        Err(err) => {
-            let _ = session.release_claim(user.id, &conn).await;
-            return Err(err);
-        }
-    };
-    let marked = session
-        .mark_ready(user.id, minted.token.id, &sealed, &conn)
+            Ok(minted)
+        })
         .await?;
-    if !marked {
-        // Mint succeeded but the session was not ready; revoke so the token cannot linger.
-        let _ = diesel::update(ApiToken::belonging_to(user).find(minted.token.id))
-            .set(api_tokens::revoked.eq(true))
-            .execute(&mut conn)
-            .await;
-        let _ = session.release_claim(user.id, &conn).await;
-        return Err(server_error(
-            "failed to attach minted token to CLI login session",
-        ));
-    }
 
     NewUserSecurityEvent::new(
         user.id,

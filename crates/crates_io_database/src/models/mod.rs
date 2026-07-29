@@ -2,8 +2,8 @@ pub use self::action::{NewVersionOwnerAction, VersionAction, VersionOwnerAction}
 pub use self::api_mfa::{
     ApiMfaChallenge, ApiMfaEmailOtp, ApiMfaGrant, DEFAULT_EMAIL_OTP_DURATION_SECS,
     KIND_AUTHENTICATION, KIND_REGISTRATION, MAX_PASSKEYS_PER_USER, MAX_PENDING_CHALLENGES_PER_USER,
-    NewApiMfaChallenge, NewApiMfaGrant, NewWebauthnCredential, WebauthnCeremonyState,
-    WebauthnCredential,
+    NewApiMfaChallenge, NewApiMfaChallengeOperation, NewApiMfaGrant, NewWebauthnCredential,
+    WebauthnCeremonyState, WebauthnCredential,
 };
 pub use self::category::{Category, CrateCategory, NewCategory};
 pub use self::cli_login::{
@@ -20,7 +20,7 @@ pub use self::default_versions::{update_default_version, verify_default_version}
 pub use self::deleted_crate::NewDeletedCrate;
 pub use self::dependency::{Dependency, DependencyKind, ReverseDependency};
 pub use self::download::VersionDownload;
-pub use self::email::{Email, NewEmail};
+pub use self::email::{ConfirmedEmail, Email, NewEmail};
 pub use self::follow::Follow;
 pub use self::keyword::{CrateKeyword, Keyword};
 pub use self::krate::{Crate, CrateName, NewCrate};

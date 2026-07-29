@@ -11,7 +11,7 @@ import PageTestWrapper from './PageTestWrapper.svelte';
 const callback = vi.hoisted(() => vi.fn());
 
 vi.mock('$app/state', () => ({
-  page: { params: { id: 'mfa_test' } },
+  page: { params: { id: 'mfa_test' }, url: new URL('https://crates.io/mfa/verify/mfa_test') },
 }));
 
 vi.mock('./localhost-callback', () => ({
@@ -28,8 +28,10 @@ function installApiHandlers(worker: SetupWorker) {
         status: 'pending',
         acknowledged: false,
         operation: 'publish',
+        operation_summary: 'Publish example 1.0.0',
         crate_name: 'example',
         expires_at: '2099-01-01T00:00:00Z',
+        localhost_port: null,
       }),
     ),
     http.post('/api/v1/mfa/challenges/mfa_test/start', () =>
@@ -78,7 +80,7 @@ describe('/mfa/verify/[id]', () => {
 
   test('reports callback success only after Cargo receives the OTP', async ({ worker }) => {
     installApiHandlers(worker);
-    callback.mockResolvedValue(undefined);
+    callback.mockImplementation(async () => {});
     mockPasskey();
 
     await render(PageTestWrapper);
@@ -90,7 +92,7 @@ describe('/mfa/verify/[id]', () => {
 
   test('shows callback failure and lets the user retry', async ({ worker }) => {
     installApiHandlers(worker);
-    callback.mockRejectedValueOnce(new Error('connection refused')).mockResolvedValueOnce(undefined);
+    callback.mockRejectedValueOnce(new Error('connection refused')).mockImplementationOnce(async () => {});
     mockPasskey();
 
     await render(PageTestWrapper);

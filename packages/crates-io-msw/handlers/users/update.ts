@@ -50,8 +50,7 @@ export default http.put<{ user_id: string }>('/api/v1/users/:user_id', async ({ 
           {
             errors: [
               {
-                detail:
-                  'email verification code required; request one with POST /api/v1/me/mfa/email_codes',
+                detail: 'email verification code required; request one with POST /api/v1/me/mfa/email_codes',
               },
             ],
           },

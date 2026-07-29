@@ -20,6 +20,8 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
             api_mfa_challenges::id.eq("mfa_keep_recent"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
+            api_mfa_challenges::mutation_fingerprint.eq(vec![1; 32]),
+            api_mfa_challenges::operation_summary.eq("Publish keep"),
             api_mfa_challenges::expires_at.eq(Utc::now() + TimeDelta::minutes(5)),
             api_mfa_challenges::auth_state_json.eq(Some(json!({ "state": true }))),
         ))
@@ -31,6 +33,8 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
             api_mfa_challenges::id.eq("mfa_clear_auth_state"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
+            api_mfa_challenges::mutation_fingerprint.eq(vec![2; 32]),
+            api_mfa_challenges::operation_summary.eq("Publish clear"),
             api_mfa_challenges::expires_at.eq(Utc::now() - TimeDelta::hours(1)),
             api_mfa_challenges::auth_state_json.eq(Some(json!({ "state": true }))),
         ))
@@ -42,6 +46,8 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
             api_mfa_challenges::id.eq("mfa_delete_old"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
+            api_mfa_challenges::mutation_fingerprint.eq(vec![3; 32]),
+            api_mfa_challenges::operation_summary.eq("Publish old"),
             api_mfa_challenges::expires_at.eq(Utc::now() - TimeDelta::days(2)),
         ))
         .execute(&mut conn)

@@ -42,7 +42,7 @@
     let bytes = new Uint8Array(buffer);
     let binary = '';
     for (let byte of bytes) {
-      binary += String.fromCharCode(byte);
+      binary += String.fromCodePoint(byte);
     }
     return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
   }
@@ -56,17 +56,17 @@
     let binary = atob(padded);
     let bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+      bytes[i] = binary.codePointAt(i)!;
     }
     return bytes.buffer;
   }
 
   function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
     return {
-      ...(options as PublicKeyCredentialRequestOptions),
+      ...(options as unknown as PublicKeyCredentialRequestOptions),
       challenge: b64urlToBuffer(options.challenge as string),
       allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as PublicKeyCredentialDescriptor),
+        ...(cred as unknown as PublicKeyCredentialDescriptor),
         id: b64urlToBuffer(cred.id as string),
       })),
     };
@@ -145,8 +145,9 @@
         body: { credential },
       });
 
-      if (result.error) {
-        let detail = (result.error as { errors?: { detail?: string }[] })?.errors?.[0]?.detail;
+      let error = (result as unknown as { error?: { errors?: { detail?: string }[] } }).error;
+      if (error) {
+        let detail = error.errors?.[0]?.detail;
         throw new Error(detail ?? 'Failed to revoke API token');
       }
 

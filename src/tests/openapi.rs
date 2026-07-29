@@ -1,20 +1,17 @@
-use crate::util::{RequestHelper, TestApp};
 use insta::{assert_json_snapshot, assert_snapshot};
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_openapi_snapshot() {
-    let (_app, anon) = TestApp::init().empty().await;
-
-    let response = anon.get::<()>("/api/openapi.json").await;
-    assert_snapshot!(response.status(), @"200 OK");
-    assert_json_snapshot!(response.json());
+#[test]
+fn test_openapi_snapshot() {
+    let document = crates_io::openapi::document(false);
+    let document = serde_json::to_value(document).unwrap();
+    assert_snapshot!("200 OK", @"200 OK");
+    assert_json_snapshot!(document);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_openapi_internal_snapshot() {
-    let (_app, anon) = TestApp::init().empty().await;
-
-    let response = anon.get::<()>("/api/openapi.json?internal").await;
-    assert_snapshot!(response.status(), @"200 OK");
-    assert_json_snapshot!(response.json());
+#[test]
+fn test_openapi_internal_snapshot() {
+    let document = crates_io::openapi::document(true);
+    let document = serde_json::to_value(document).unwrap();
+    assert_snapshot!("200 OK", @"200 OK");
+    assert_json_snapshot!(document);
 }

@@ -31,8 +31,11 @@ pub struct ApiMfaChallenge {
     pub id: String,
     pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
+    pub mutation_fingerprint: Vec<u8>,
     pub operation: String,
+    pub operation_summary: String,
     pub otp_consumed_at: Option<DateTime<Utc>>,
+    pub sealed_otp: Option<String>,
     pub user_id: i32,
     pub verified_at: Option<DateTime<Utc>>,
 }
@@ -46,9 +49,20 @@ pub struct NewApiMfaChallenge {
     pub api_token_id: Option<i32>,
     pub operation: String,
     pub crate_name: Option<String>,
+    pub mutation_fingerprint: Vec<u8>,
+    pub operation_summary: String,
     pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
     pub expires_at: DateTime<Utc>,
+}
+
+/// Exact mutation details bound to a new API MFA challenge.
+#[derive(Debug)]
+pub struct NewApiMfaChallengeOperation {
+    pub operation: String,
+    pub crate_name: Option<String>,
+    pub mutation_fingerprint: Vec<u8>,
+    pub operation_summary: String,
 }
 
 impl ApiMfaChallenge {
@@ -75,6 +89,12 @@ impl ApiMfaChallenge {
         Sha256::digest(secret.as_bytes()).as_slice().to_vec()
     }
 
+    /// Whether a client-held callback secret authorizes callback changes or OTP recovery.
+    pub fn localhost_callback_secret_matches(&self, secret: &str) -> bool {
+        self.localhost_callback_secret_hash.as_deref()
+            == Some(Self::hash_localhost_callback_secret(secret).as_slice())
+    }
+
     /// Whether passkey verification has acknowledged this operation.
     pub fn is_acknowledged(&self) -> bool {
         self.verified_at.is_some()
@@ -97,12 +117,14 @@ impl ApiMfaChallenge {
         api_token_id: i32,
         operation: &str,
         crate_name: Option<&str>,
+        mutation_fingerprint: &[u8],
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<Option<Self>> {
         let mut query = api_mfa_challenges::table
             .filter(api_mfa_challenges::user_id.eq(user_id))
             .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
             .filter(api_mfa_challenges::operation.eq(operation))
+            .filter(api_mfa_challenges::mutation_fingerprint.eq(mutation_fingerprint))
             .filter(api_mfa_challenges::verified_at.is_null())
             .filter(api_mfa_challenges::expires_at.gt(now))
             .into_boxed();
@@ -139,11 +161,13 @@ impl ApiMfaChallenge {
         api_token_id: i32,
         operation: &str,
         crate_name: Option<&str>,
+        mutation_fingerprint: &[u8],
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<usize> {
         let base = api_mfa_challenges::table
             .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
             .filter(api_mfa_challenges::operation.eq(operation))
+            .filter(api_mfa_challenges::mutation_fingerprint.eq(mutation_fingerprint))
             .filter(api_mfa_challenges::verified_at.is_null())
             .filter(api_mfa_challenges::expires_at.le(now));
 
@@ -210,6 +234,7 @@ impl ApiMfaChallenge {
     pub async fn mark_verified(
         &self,
         hashed_otp: Vec<u8>,
+        sealed_otp: Option<String>,
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<bool> {
         let updated = diesel::update(
@@ -219,6 +244,7 @@ impl ApiMfaChallenge {
         )
         .set((
             api_mfa_challenges::hashed_otp.eq(hashed_otp),
+            api_mfa_challenges::sealed_otp.eq(sealed_otp),
             api_mfa_challenges::verified_at.eq(Utc::now()),
             api_mfa_challenges::auth_state_json.eq(None::<JsonValue>),
         ))
@@ -234,6 +260,7 @@ impl ApiMfaChallenge {
         otp: &str,
         operation: &str,
         crate_name: Option<&str>,
+        mutation_fingerprint: &[u8],
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<bool> {
         let hashed = Self::hash_otp(otp);
@@ -241,6 +268,7 @@ impl ApiMfaChallenge {
             .filter(api_mfa_challenges::user_id.eq(user_id))
             .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
             .filter(api_mfa_challenges::operation.eq(operation))
+            .filter(api_mfa_challenges::mutation_fingerprint.eq(mutation_fingerprint))
             .filter(api_mfa_challenges::hashed_otp.eq(hashed))
             .filter(api_mfa_challenges::otp_consumed_at.is_null())
             .filter(api_mfa_challenges::verified_at.is_not_null())
@@ -270,8 +298,7 @@ impl NewApiMfaChallenge {
     pub fn new(
         user_id: i32,
         api_token_id: Option<i32>,
-        operation: impl Into<String>,
-        crate_name: Option<String>,
+        operation: NewApiMfaChallengeOperation,
         localhost_port: Option<i32>,
         localhost_callback_secret: Option<&str>,
     ) -> Self {
@@ -279,8 +306,10 @@ impl NewApiMfaChallenge {
             id: ApiMfaChallenge::generate_id(),
             user_id,
             api_token_id,
-            operation: operation.into(),
-            crate_name,
+            operation: operation.operation,
+            crate_name: operation.crate_name,
+            mutation_fingerprint: operation.mutation_fingerprint,
+            operation_summary: operation.operation_summary,
             localhost_callback_secret_hash: localhost_callback_secret
                 .map(ApiMfaChallenge::hash_localhost_callback_secret),
             localhost_port,

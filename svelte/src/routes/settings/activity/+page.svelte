@@ -71,7 +71,7 @@
     if (event.ip) {
       parts.push(`IP ${event.ip}`);
     }
-    return parts.length ? parts.join(' · ') : null;
+    return parts.length === 0 ? null : parts.join(' · ');
   }
 
   async function loadMore() {
@@ -100,50 +100,45 @@
 <PageHeader title="Account Settings" />
 
 <SettingsPage>
-  <h2>Recent security activity</h2>
+  <section aria-labelledby="activity-heading">
+    <h2 id="activity-heading">Recent security activity</h2>
 
-  <p class="explainer">
-    Recent sign-ins, API token changes, CLI login approvals, and API MFA actions from the last 90 days. Some events may
-    show a truncated IP address. Only you can see this list; it is not used for analytics.
-  </p>
-  <p class="privacy">
-    See the
-    <a href="https://foundation.rust-lang.org/policies/privacy-policy/">Rust Foundation privacy notice</a>
-    for how crates.io handles account data.
-  </p>
+    <p class="explainer">Sign-ins, token changes, and API MFA events from the last 90 days.</p>
 
-  {#if events.length === 0}
-    <p class="empty" data-test-activity-empty>No recent security activity.</p>
-  {:else}
-    <ul class="events" data-test-activity-list>
-      {#each events as event (event.id)}
-        <li class="event" data-test-activity-event={event.event_type}>
-          <div class="main">
-            <span class="label">{labelFor(event)}</span>
-            {#if detailFor(event)}
-              <span class="detail">{detailFor(event)}</span>
-            {/if}
-          </div>
-          <time datetime={event.created_at} title={event.created_at}>
-            {formatDistanceToNow(event.created_at, { addSuffix: true })}
-          </time>
-        </li>
-      {/each}
-    </ul>
-    {#if meta.next_page}
-      <button
-        type="button"
-        class="button button--small"
-        data-test-activity-load-more
-        disabled={loadingMore}
-        onclick={loadMore}
-      >
-        {loadingMore ? 'Loading…' : `Load more (${events.length} of ${meta.total})`}
-      </button>
-    {:else if meta.total > 0}
-      <p class="more" data-test-activity-complete>Showing all {events.length} events.</p>
+    {#if events.length === 0}
+      <p class="empty" data-test-activity-empty>No recent security activity.</p>
+    {:else}
+      <ul role="list" class="events" data-test-activity-list aria-labelledby="activity-heading">
+        {#each events as event (event.id)}
+          <li class="event" data-test-activity-event={event.event_type}>
+            <div class="main">
+              <span class="label">{labelFor(event)}</span>
+              {#if detailFor(event)}
+                <span class="detail">{detailFor(event)}</span>
+              {/if}
+            </div>
+            <time datetime={event.created_at} title={new Date(event.created_at).toLocaleString()}>
+              {formatDistanceToNow(event.created_at, { addSuffix: true })}
+            </time>
+          </li>
+        {/each}
+      </ul>
+      {#if meta.next_page}
+        <button
+          type="button"
+          class="button button--small"
+          data-test-activity-load-more
+          disabled={loadingMore}
+          aria-busy={loadingMore}
+          onclick={loadMore}
+        >
+          {loadingMore ? 'Loading…' : `Load more (${events.length} of ${meta.total})`}
+        </button>
+      {:else if meta.total > 0}
+        <p class="more" data-test-activity-complete>Showing all {events.length} events.</p>
+      {/if}
     {/if}
-  {/if}
+  </section>
 </SettingsPage>
 
 <style>
@@ -152,16 +147,8 @@
   }
 
   .explainer {
-    margin: 0 0 var(--space-2xs);
-    color: var(--grey600);
-  }
-
-  .privacy {
     margin: 0 0 var(--space-m);
-
-    a {
-      text-decoration: underline;
-    }
+    color: var(--grey600);
   }
 
   .empty {

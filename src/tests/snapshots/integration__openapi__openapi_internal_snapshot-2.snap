@@ -1,6 +1,6 @@
 ---
 source: src/tests/openapi.rs
-expression: response.json()
+expression: document
 ---
 {
   "components": {
@@ -1648,6 +1648,42 @@ expression: response.json()
           }
         ],
         "summary": "End the current session.",
+        "tags": [
+          "session"
+        ]
+      }
+    },
+    "/api/private/session/all": {
+      "delete": {
+        "description": "Bumps `users.session_generation` so cookies that still carry an older generation\nfail cookie authentication. Clears the current cookie as well.",
+        "operationId": "end_all_sessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "ok": {
+                      "example": true,
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Invalidate every browser session for the authenticated user (logout everywhere).",
         "tags": [
           "session"
         ]
@@ -4397,6 +4433,7 @@ expression: response.json()
     },
     "/api/v1/me/crate_owner_invitations/accept/{token}": {
       "put": {
+        "description": "Requires a cookie session for the invited user. The path token selects the\ninvitation; it is not a standalone bearer capability.",
         "operationId": "accept_crate_owner_invitation_with_token",
         "parameters": [
           {
@@ -4446,6 +4483,11 @@ expression: response.json()
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
         "summary": "Accept a crate owner invitation with a token.",
         "tags": [
           "owners"
@@ -5300,6 +5342,7 @@ expression: response.json()
     },
     "/api/v1/me/tokens/{id}": {
       "delete": {
+        "description": "When API MFA is enabled, a passkey assertion is required (same as token create).\nSelf-revoke of the current token via `DELETE /api/v1/tokens/current` stays free.",
         "operationId": "revoke_api_token",
         "parameters": [
           {
@@ -5313,6 +5356,22 @@ expression: response.json()
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Request body for revoking an API token by id.",
+                "properties": {
+                  "credential": {
+                    "description": "Passkey assertion required when API MFA is enabled (after `authorize/start`)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -5579,6 +5638,10 @@ expression: response.json()
                       "description": "Opaque operation / transaction identifier.",
                       "type": "string"
                     },
+                    "operation_summary": {
+                      "description": "Server-generated description of the exact mutation being approved.",
+                      "type": "string"
+                    },
                     "recommended_poll_interval_secs": {
                       "description": "Suggested seconds between CLI polls while status is `pending`.",
                       "format": "int64",
@@ -5600,6 +5663,7 @@ expression: response.json()
                     "acknowledged",
                     "verified",
                     "operation",
+                    "operation_summary",
                     "expires_at",
                     "recommended_poll_interval_secs"
                   ],
@@ -5688,6 +5752,52 @@ expression: response.json()
           }
         },
         "summary": "Finish challenge verification, issue OTP + grant.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/mfa/challenges/{id}/recover": {
+      "post": {
+        "description": "The callback secret lives only in the verification URL fragment and request\nheader. The server stores only its hash.",
+        "operationId": "recover_api_mfa_challenge_callback",
+        "parameters": [
+          {
+            "description": "Operation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "localhost_callback_url": {
+                      "description": "URL for the browser to retry against the waiting loopback listener.",
+                      "type": "string"
+                    },
+                    "operation_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "localhost_callback_url",
+                    "operation_id"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Recover a verified callback after a browser reload or transient delivery failure.",
         "tags": [
           "users"
         ]

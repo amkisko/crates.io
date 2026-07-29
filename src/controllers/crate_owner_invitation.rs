@@ -390,7 +390,7 @@ pub async fn handle_crate_owner_invitation(
                 metrics: &state.instance_metrics,
                 enforcement_enabled: state.config.api_mfa_enforcement_enabled,
             },
-            ApiMfaOperation::accept_owner_invite(crate_name),
+            ApiMfaOperation::accept_owner_invite(&crate_name, invitation.crate_id),
         )
         .await?;
         invitation.accept(&mut conn).await?;
@@ -445,7 +445,7 @@ pub async fn accept_crate_owner_invitation_with_token(
             metrics: &state.instance_metrics,
             enforcement_enabled: state.config.api_mfa_enforcement_enabled,
         },
-        ApiMfaOperation::accept_owner_invite(crate_name),
+        ApiMfaOperation::accept_owner_invite(&crate_name, invitation.crate_id),
     )
     .await?;
 

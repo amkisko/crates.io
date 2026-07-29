@@ -233,7 +233,7 @@ export class SessionState {
     this.state = 'logging-out';
 
     try {
-      await this.#client.DELETE('/api/private/session/all');
+      await this.#client.DELETE('/api/private/session/all', {});
     } finally {
       this.#clearSudo();
       localStorage.removeItem(LOGIN_KEY);

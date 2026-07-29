@@ -60,7 +60,7 @@ pub async fn delete_trustpub_gitlab_config(
             metrics: &state.instance_metrics,
             enforcement_enabled: state.config.api_mfa_enforcement_enabled,
         },
-        ApiMfaOperation::change_trusted_publishing(&krate.name),
+        ApiMfaOperation::delete_trusted_publishing(&krate.name, "GitLab CI/CD", id),
     )
     .await?;
 

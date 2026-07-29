@@ -1,7 +1,7 @@
 use bon::Builder;
 use diesel::dsl::sql;
 use diesel::prelude::*;
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use secrecy::SecretString;
 
 use crate::models::User;
@@ -18,6 +18,14 @@ pub struct Email {
     pub verified: bool,
     #[diesel(deserialize_as = String, serialize_as = String)]
     pub token: SecretString,
+}
+
+/// Result of an atomic email confirmation.
+pub struct ConfirmedEmail {
+    /// Updated email row.
+    pub email: Email,
+    /// Whether a staged replacement address was promoted.
+    pub promoted_pending: bool,
 }
 
 #[derive(Debug, Insertable, AsChangeset, Builder)]
@@ -111,37 +119,45 @@ impl Email {
     /// Confirms a token: promotes `pending_email` when set, otherwise marks `email` verified.
     pub async fn confirm_token(
         token: &str,
-        mut conn: &AsyncPgConnection,
-    ) -> QueryResult<Option<Email>> {
-        let Some(row) = emails::table
-            .filter(emails::token.eq(token))
-            .select(Self::as_select())
-            .first::<Self>(&mut conn)
-            .await
-            .optional()?
-        else {
-            return Ok(None);
-        };
+        conn: &mut AsyncPgConnection,
+    ) -> QueryResult<Option<ConfirmedEmail>> {
+        conn.transaction(async |conn| {
+            let Some(row) = emails::table
+                .filter(emails::token.eq(token))
+                .for_update()
+                .select(Self::as_select())
+                .first::<Self>(conn)
+                .await
+                .optional()?
+            else {
+                return Ok(None);
+            };
 
-        if let Some(pending) = row.pending_email.as_deref() {
-            let updated = diesel::update(emails::table.find(row.id))
-                .set((
-                    emails::email.eq(pending),
-                    emails::pending_email.eq(None::<String>),
-                    emails::verified.eq(true),
-                    emails::token.eq(sql("DEFAULT")),
-                ))
-                .returning(Self::as_returning())
-                .get_result(&mut conn)
-                .await?;
-            Ok(Some(updated))
-        } else {
-            let updated = diesel::update(emails::table.find(row.id))
-                .set(emails::verified.eq(true))
-                .returning(Self::as_returning())
-                .get_result(&mut conn)
-                .await?;
-            Ok(Some(updated))
-        }
+            let promoted_pending = row.pending_email.is_some();
+            let updated = if let Some(pending) = row.pending_email.as_deref() {
+                diesel::update(emails::table.find(row.id).filter(emails::token.eq(token)))
+                    .set((
+                        emails::email.eq(pending),
+                        emails::pending_email.eq(None::<String>),
+                        emails::verified.eq(true),
+                        emails::token.eq(sql("DEFAULT")),
+                    ))
+                    .returning(Self::as_returning())
+                    .get_result(conn)
+                    .await?
+            } else {
+                diesel::update(emails::table.find(row.id).filter(emails::token.eq(token)))
+                    .set(emails::verified.eq(true))
+                    .returning(Self::as_returning())
+                    .get_result(conn)
+                    .await?
+            };
+
+            Ok(Some(ConfirmedEmail {
+                email: updated,
+                promoted_pending,
+            }))
+        })
+        .await
     }
 }

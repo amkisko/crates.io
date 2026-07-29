@@ -175,10 +175,10 @@
 
   function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
     return {
-      ...(options as PublicKeyCredentialRequestOptions),
+      ...(options as unknown as PublicKeyCredentialRequestOptions),
       challenge: b64urlToBuffer(options.challenge as string),
       allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as PublicKeyCredentialDescriptor),
+        ...(cred as unknown as PublicKeyCredentialDescriptor),
         id: b64urlToBuffer(cred.id as string),
       })),
     };

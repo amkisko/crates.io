@@ -25,8 +25,7 @@ export function serializeUser(
       email: user.email,
       email_pending: user.emailPending ?? null,
       email_verified: user.emailVerified,
-      email_verification_sent:
-        user.emailVerified || Boolean(user.emailVerificationToken) || Boolean(user.emailPending),
+      email_verification_sent: user.emailVerified || Boolean(user.emailVerificationToken) || Boolean(user.emailPending),
       is_admin: user.isAdmin,
       publish_notifications: user.publishNotifications,
       api_mfa_enabled: user.apiMfaEnabled ?? false,

@@ -1,6 +1,11 @@
 -- Browser-assisted cargo login: CLI creates a session, user picks scopes in the
 -- browser, token is delivered once via poll (never shown in the UI).
-CREATE TABLE cli_login_sessions (
+-- safety-assured:start
+--
+-- This table and its indexes are created together while the table is empty, so
+-- non-concurrent index creation cannot block live table writes. Integer foreign
+-- keys intentionally match the referenced integer IDs.
+CREATE TABLE IF NOT EXISTS cli_login_sessions (
     id VARCHAR PRIMARY KEY,
     -- Set when the browser claims/approves the session
     user_id INTEGER REFERENCES users (id) ON DELETE CASCADE,
@@ -27,13 +32,13 @@ CREATE TABLE cli_login_sessions (
         CHECK (localhost_port IS NULL OR (localhost_port >= 1024 AND localhost_port <= 65535))
 );
 
-CREATE INDEX cli_login_sessions_expires_at_idx
+CREATE INDEX IF NOT EXISTS cli_login_sessions_expires_at_idx
     ON cli_login_sessions (expires_at);
-CREATE INDEX cli_login_sessions_pending_ip_idx
+CREATE INDEX IF NOT EXISTS cli_login_sessions_pending_ip_idx
     ON cli_login_sessions (client_ip)
     WHERE status = 'pending';
 -- Create rate-limit COUNT(client_ip) WHERE created_at >= …
-CREATE INDEX cli_login_sessions_ip_created_idx
+CREATE INDEX IF NOT EXISTS cli_login_sessions_ip_created_idx
     ON cli_login_sessions (client_ip, created_at);
 
 COMMENT ON TABLE cli_login_sessions IS
@@ -47,3 +52,5 @@ COMMENT ON COLUMN cli_login_sessions.poll_secret_hash IS
 
 COMMENT ON COLUMN cli_login_sessions.sealed_token IS
     'Sealed (encrypted) redeem blob between approve and first successful poll; never raw API token plaintext';
+
+-- safety-assured:end

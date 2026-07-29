@@ -2,11 +2,13 @@ use super::webauthn_util::{
     build_webauthn, parse_auth_response, passkeys_from_credentials, record_passkey_authentication,
 };
 use crate::api_mfa::{
-    RECOMMENDED_POLL_INTERVAL_SECS, insert_challenge_or_reuse_pending,
+    ApiMfaCallback, ApiMfaOperation, RECOMMENDED_POLL_INTERVAL_SECS,
+    insert_challenge_or_reuse_pending, mfa_callback_secret_from_headers,
     normalize_challenge_operation, public_mfa_urls,
 };
 use crate::app::AppState;
 use crate::auth::{AuthCheck, AuthHeader, Authentication};
+use crate::middleware::real_ip::RealIp;
 use crate::models::{
     ApiMfaChallenge, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaGrant, WebauthnCredential,
 };
@@ -17,10 +19,13 @@ use axum::Json;
 use axum::extract::Path;
 use axum_extra::TypedHeader;
 use axum_extra::headers::CacheControl;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use diesel_async::AsyncConnection;
 use http::request::Parts;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use webauthn_rs::prelude::*;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -93,12 +98,20 @@ pub async fn create_api_mfa_challenge(
     }
 
     let operation = normalize_challenge_operation(body.operation.as_deref())?;
+    if operation != "manual" {
+        return Err(bad_request(
+            "operation preflight cannot authorize a mutation; perform the exact mutation and use \
+             the challenge returned by its mfa_required response",
+        ));
+    }
+    let operation = ApiMfaOperation::manual(body.crate_name);
 
     if let Some(existing) = ApiMfaChallenge::find_pending_for_operation(
         user.id,
         token.id,
-        &operation,
-        body.crate_name.as_deref(),
+        operation.kind,
+        operation.crate_name.as_deref(),
+        &operation.mutation_fingerprint,
         &conn,
     )
     .await?
@@ -115,8 +128,9 @@ pub async fn create_api_mfa_challenge(
 
     ApiMfaChallenge::delete_expired_pending_for_operation(
         token.id,
-        &operation,
-        body.crate_name.as_deref(),
+        operation.kind,
+        operation.crate_name.as_deref(),
+        &operation.mutation_fingerprint,
         &conn,
     )
     .await?;
@@ -133,9 +147,10 @@ pub async fn create_api_mfa_challenge(
         user.id,
         token.id,
         &operation,
-        body.crate_name,
-        body.port,
-        None,
+        ApiMfaCallback {
+            port: body.port,
+            secret: None,
+        },
         &mut conn,
     )
     .await?;
@@ -175,6 +190,8 @@ pub struct GetChallengeResponse {
     /// Alias of `acknowledged` for older clients.
     pub verified: bool,
     pub operation: String,
+    /// Server-generated description of the exact mutation being approved.
+    pub operation_summary: String,
     pub crate_name: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub localhost_port: Option<i32>,
@@ -230,12 +247,9 @@ pub async fn get_api_mfa_challenge(
             app.instance_metrics.api_mfa_challenge_polls_total.inc();
         }
     } else {
+        let bucket_key = challenge_rate_limit_key(&challenge.id, &req)?;
         app.rate_limiter
-            .check_rate_limit(
-                challenge.user_id,
-                LimitedAction::ApiMfaChallengePoll,
-                &mut conn,
-            )
+            .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengePoll, &mut conn)
             .await?;
     }
 
@@ -252,6 +266,7 @@ pub async fn get_api_mfa_challenge(
             acknowledged,
             verified: acknowledged,
             operation: challenge.operation,
+            operation_summary: challenge.operation_summary,
             crate_name: challenge.crate_name,
             expires_at: challenge.expires_at,
             localhost_port: challenge.localhost_port,
@@ -276,19 +291,27 @@ fn authorize_challenge_read(auth: &Authentication, challenge: &ApiMfaChallenge) 
 
 async fn rate_limit_challenge_ceremony(
     app: &AppState,
-    challenge_user_id: i32,
+    challenge_id: &str,
+    req: &Parts,
     conn: &mut diesel_async::AsyncPgConnection,
 ) -> AppResult<()> {
-    // Per-owner bucket only: `publish_limit_buckets.user_id` references `users`,
-    // so synthetic IP ids cannot be used here (see CLI login create rate limit).
+    let bucket_key = challenge_rate_limit_key(challenge_id, req)?;
     app.rate_limiter
-        .check_rate_limit(
-            challenge_user_id,
-            LimitedAction::ApiMfaChallengeCreate,
-            conn,
-        )
+        .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengeCreate, conn)
         .await?;
     Ok(())
+}
+
+fn challenge_rate_limit_key(challenge_id: &str, req: &Parts) -> AppResult<String> {
+    let real_ip = req
+        .extensions
+        .get::<RealIp>()
+        .ok_or_else(|| server_error("request is missing its resolved client IP"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(challenge_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(real_ip.to_string().as_bytes());
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -311,6 +334,7 @@ pub struct StartChallengeAuthResponse {
 pub async fn start_api_mfa_challenge(
     app: AppState,
     Path(id): Path<String>,
+    req: Parts,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<StartChallengeAuthResponse>)> {
     let mut conn = app.db_write().await?;
 
@@ -321,7 +345,7 @@ pub async fn start_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     }
 
-    rate_limit_challenge_ceremony(&app, challenge.user_id, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, &challenge.id, &req, &mut conn).await?;
 
     let credentials = WebauthnCredential::for_user(challenge.user_id, &conn).await?;
     if credentials.is_empty() {
@@ -381,6 +405,7 @@ pub struct FinishChallengeAuthResponse {
 pub async fn finish_api_mfa_challenge(
     app: AppState,
     Path(id): Path<String>,
+    req: Parts,
     Json(body): Json<FinishChallengeAuthRequest>,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<FinishChallengeAuthResponse>)> {
     let mut conn = app.db_write().await?;
@@ -392,7 +417,7 @@ pub async fn finish_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     }
 
-    rate_limit_challenge_ceremony(&app, challenge.user_id, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, &challenge.id, &req, &mut conn).await?;
 
     let Some(state_json) = challenge.auth_state_json.clone() else {
         return Err(bad_request("passkey authentication has not been started"));
@@ -411,6 +436,18 @@ pub async fn finish_api_mfa_challenge(
     let otp = ApiMfaChallenge::generate_otp();
     let hashed_otp = ApiMfaChallenge::hash_otp(&otp);
     let issue_grant = challenge.localhost_port.is_none();
+    let callback_secret = mfa_callback_secret_from_headers(&req)?;
+    if challenge.localhost_port.is_some()
+        && callback_secret
+            .as_deref()
+            .is_none_or(|secret| !challenge.localhost_callback_secret_matches(secret))
+    {
+        return Err(forbidden("invalid localhost callback secret"));
+    }
+    let sealed_otp = challenge
+        .localhost_port
+        .map(|_| seal_callback_otp(&app.config.token_encryption, &otp))
+        .transpose()?;
     let grant_token_id = if issue_grant {
         challenge.api_token_id.ok_or_else(|| {
             bad_request("challenge is missing api_token_id; cannot issue a token-bound grant")
@@ -424,7 +461,10 @@ pub async fn finish_api_mfa_challenge(
     // leave a verified challenge without a retry path for stock cargo.
     let grant_expires_at: Option<Option<DateTime<Utc>>> = conn
         .transaction(async |conn| {
-            if !challenge.mark_verified(hashed_otp, conn).await? {
+            if !challenge
+                .mark_verified(hashed_otp, sealed_otp, conn)
+                .await?
+            {
                 return Ok::<_, diesel::result::Error>(None);
             }
 
@@ -437,6 +477,7 @@ pub async fn finish_api_mfa_challenge(
                 grant_token_id,
                 challenge.operation.clone(),
                 challenge.crate_name.clone(),
+                challenge.mutation_fingerprint.clone(),
             )
             .insert(conn)
             .await?;
@@ -476,4 +517,91 @@ pub async fn finish_api_mfa_challenge(
             operation_id: challenge.id,
         }),
     ))
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct RecoverChallengeCallbackResponse {
+    /// URL for the browser to retry against the waiting loopback listener.
+    pub localhost_callback_url: String,
+    pub operation_id: String,
+}
+
+/// Recover a verified callback after a browser reload or transient delivery failure.
+///
+/// The callback secret lives only in the verification URL fragment and request
+/// header. The server stores only its hash.
+#[utoipa::path(
+    post,
+    path = "/api/v1/mfa/challenges/{id}/recover",
+    params(("id" = String, Path, description = "Operation ID")),
+    tag = "users",
+    extensions(("x-internal" = json!(true))),
+    responses((status = 200, description = "Successful Response", body = inline(RecoverChallengeCallbackResponse))),
+)]
+pub async fn recover_api_mfa_challenge_callback(
+    app: AppState,
+    Path(id): Path<String>,
+    req: Parts,
+) -> AppResult<(
+    TypedHeader<CacheControl>,
+    Json<RecoverChallengeCallbackResponse>,
+)> {
+    let mut conn = app.db_write().await?;
+    let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
+        return Err(not_found());
+    };
+
+    rate_limit_challenge_ceremony(&app, &challenge.id, &req, &mut conn).await?;
+    let Some(secret) = mfa_callback_secret_from_headers(&req)? else {
+        return Err(not_found());
+    };
+    if !challenge.localhost_callback_secret_matches(&secret) {
+        return Err(not_found());
+    }
+    if challenge.verified_at.is_none() {
+        return Err(bad_request("this challenge has not been acknowledged"));
+    }
+    if challenge.otp_consumed_at.is_some() {
+        return Err(bad_request("this challenge OTP has already been consumed"));
+    }
+
+    let port = challenge
+        .localhost_port
+        .ok_or_else(|| bad_request("this challenge has no localhost callback"))?;
+    let sealed = challenge
+        .sealed_otp
+        .as_deref()
+        .ok_or_else(|| server_error("verified callback challenge is missing its sealed OTP"))?;
+    let otp = open_callback_otp(&app.config.token_encryption, sealed)?;
+
+    Ok((
+        no_store(),
+        Json(RecoverChallengeCallbackResponse {
+            localhost_callback_url: format!("http://127.0.0.1:{port}/?code={otp}"),
+            operation_id: challenge.id,
+        }),
+    ))
+}
+
+fn seal_callback_otp(
+    encryption: &crates_io_encryption::TokenEncryption,
+    otp: &str,
+) -> AppResult<String> {
+    let ciphertext = encryption
+        .encrypt(otp)
+        .map_err(|err| server_error(format!("failed to seal API MFA callback OTP: {err}")))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(ciphertext))
+}
+
+fn open_callback_otp(
+    encryption: &crates_io_encryption::TokenEncryption,
+    sealed: &str,
+) -> AppResult<String> {
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(sealed)
+        .map_err(|err| server_error(format!("corrupt API MFA callback OTP: {err}")))?;
+    encryption
+        .decrypt(&ciphertext)
+        .map(|otp| otp.expose_secret().to_owned())
+        .map_err(|err| server_error(format!("failed to open API MFA callback OTP: {err}")))
 }

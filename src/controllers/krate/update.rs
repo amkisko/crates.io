@@ -87,7 +87,7 @@ pub async fn update_crate(
                 metrics: &app.instance_metrics,
                 enforcement_enabled: app.config.api_mfa_enforcement_enabled,
             },
-            ApiMfaOperation::change_trustpub_only(&krate.name),
+            ApiMfaOperation::change_trustpub_only(&krate.name, trustpub_only),
         )
         .await?;
     }

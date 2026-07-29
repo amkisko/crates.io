@@ -14,6 +14,7 @@ use crate::util::errors::{ApiMfaRequired, AppResult, BoxedAppError, bad_request}
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use http::request::Parts;
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 /// Header carrying a one-time OTP after passkey verification (RubyGems-compatible alias: `OTP`).
@@ -31,6 +32,13 @@ pub const CRATES_MFA_OPERATION_ID_HEADER: &str = "crates-mfa-operation-id";
 
 /// Recommended CLI poll interval for challenge acknowledgment (seconds).
 pub const RECOMMENDED_POLL_INTERVAL_SECS: u64 = 2;
+
+/// Optional loopback delivery details supplied by a Cargo client.
+#[derive(Clone, Copy)]
+pub(crate) struct ApiMfaCallback<'a> {
+    pub(crate) port: Option<i32>,
+    pub(crate) secret: Option<&'a str>,
+}
 
 /// Allowed `operation` values for preflight `POST /api/v1/mfa/challenges`.
 pub const ALLOWED_CHALLENGE_OPERATIONS: &[&str] = &[
@@ -65,67 +73,155 @@ pub fn normalize_challenge_operation(raw: Option<&str>) -> AppResult<String> {
 pub struct ApiMfaOperation {
     pub kind: &'static str,
     pub crate_name: Option<String>,
+    pub mutation_fingerprint: Vec<u8>,
+    pub summary: String,
 }
 
 impl ApiMfaOperation {
-    pub fn publish(crate_name: impl Into<String>) -> Self {
+    fn new(
+        kind: &'static str,
+        crate_name: Option<String>,
+        summary: String,
+        mutation_fields: &[&[u8]],
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        for field in std::iter::once(kind.as_bytes())
+            .chain(crate_name.as_deref().map(str::as_bytes))
+            .chain(mutation_fields.iter().copied())
+        {
+            hasher.update(field.len().to_be_bytes());
+            hasher.update(field);
+        }
+
         Self {
-            kind: "publish",
-            crate_name: Some(crate_name.into()),
+            kind,
+            crate_name,
+            mutation_fingerprint: hasher.finalize().to_vec(),
+            summary,
         }
     }
 
-    pub fn yank(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "yank",
-            crate_name: Some(crate_name.into()),
-        }
+    /// Bind a publish approval to the exact crate version and tarball bytes.
+    pub fn publish(crate_name: &str, version: &str, tarball_sha256: &[u8]) -> Self {
+        Self::new(
+            "publish",
+            Some(crate_name.to_owned()),
+            format!("Publish {crate_name} {version}"),
+            &[version.as_bytes(), tarball_sha256],
+        )
     }
 
-    pub fn unyank(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "unyank",
-            crate_name: Some(crate_name.into()),
-        }
+    /// Bind a yank approval to the exact version and optional public message.
+    pub fn yank(crate_name: &str, version: &str, yank_message: Option<&str>) -> Self {
+        let message = yank_message.unwrap_or_default();
+        Self::new(
+            "yank",
+            Some(crate_name.to_owned()),
+            format!("Yank {crate_name} {version}"),
+            &[version.as_bytes(), message.as_bytes()],
+        )
     }
 
-    pub fn change_owners(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "change-owners",
-            crate_name: Some(crate_name.into()),
-        }
+    /// Bind an unyank approval to the exact version.
+    pub fn unyank(crate_name: &str, version: &str) -> Self {
+        Self::new(
+            "unyank",
+            Some(crate_name.to_owned()),
+            format!("Unyank {crate_name} {version}"),
+            &[version.as_bytes()],
+        )
+    }
+
+    /// Bind an owner change to its direction and exact submitted owner list.
+    pub fn change_owners(crate_name: &str, add: bool, owners: &[String]) -> Self {
+        let direction = if add { "Add" } else { "Remove" };
+        let mut fields = Vec::with_capacity(owners.len() + 1);
+        fields.push(if add {
+            b"add".as_slice()
+        } else {
+            b"remove".as_slice()
+        });
+        fields.extend(owners.iter().map(String::as_bytes));
+        Self::new(
+            "change-owners",
+            Some(crate_name.to_owned()),
+            format!("{direction} owners for {crate_name}: {}", owners.join(", ")),
+            &fields,
+        )
     }
 
     /// Toggle `trustpub_only` on crate settings (`PATCH /api/v1/crates/{name}`).
-    pub fn change_trustpub_only(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "change-trustpub-only",
-            crate_name: Some(crate_name.into()),
-        }
+    pub fn change_trustpub_only(crate_name: &str, enabled: bool) -> Self {
+        let value = if enabled {
+            b"true".as_slice()
+        } else {
+            b"false".as_slice()
+        };
+        Self::new(
+            "change-trustpub-only",
+            Some(crate_name.to_owned()),
+            format!(
+                "{} Trusted Publishing-only mode for {crate_name}",
+                if enabled { "Enable" } else { "Disable" }
+            ),
+            &[value],
+        )
     }
 
-    /// Create or delete Trusted Publishing configs for a crate.
-    pub fn change_trusted_publishing(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "change-trusted-publishing",
-            crate_name: Some(crate_name.into()),
-        }
+    /// Bind Trusted Publishing configuration creation to its exact fields.
+    pub fn create_trusted_publishing(crate_name: &str, provider: &str, fields: &[&str]) -> Self {
+        let mut mutation_fields = Vec::with_capacity(fields.len() + 2);
+        mutation_fields.push(b"create".as_slice());
+        mutation_fields.push(provider.as_bytes());
+        mutation_fields.extend(fields.iter().map(|field| field.as_bytes()));
+        Self::new(
+            "change-trusted-publishing",
+            Some(crate_name.to_owned()),
+            format!("Create {provider} Trusted Publishing config for {crate_name}"),
+            &mutation_fields,
+        )
+    }
+
+    /// Bind Trusted Publishing configuration deletion to provider and row id.
+    pub fn delete_trusted_publishing(crate_name: &str, provider: &str, id: i32) -> Self {
+        let id = id.to_string();
+        Self::new(
+            "change-trusted-publishing",
+            Some(crate_name.to_owned()),
+            format!("Delete {provider} Trusted Publishing config {id} for {crate_name}"),
+            &[b"delete", provider.as_bytes(), id.as_bytes()],
+        )
     }
 
     /// Delete a crate (`DELETE /api/v1/crates/{name}`).
-    pub fn delete_crate(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "delete-crate",
-            crate_name: Some(crate_name.into()),
-        }
+    pub fn delete_crate(crate_name: &str, message: Option<&str>) -> Self {
+        Self::new(
+            "delete-crate",
+            Some(crate_name.to_owned()),
+            format!("Delete crate {crate_name}"),
+            &[message.unwrap_or_default().as_bytes()],
+        )
     }
 
     /// Accept a crate owner invitation (cookie session).
-    pub fn accept_owner_invite(crate_name: impl Into<String>) -> Self {
-        Self {
-            kind: "accept-owner-invite",
-            crate_name: Some(crate_name.into()),
-        }
+    pub fn accept_owner_invite(crate_name: &str, invitation_id: i32) -> Self {
+        let invitation_id = invitation_id.to_string();
+        Self::new(
+            "accept-owner-invite",
+            Some(crate_name.to_owned()),
+            format!("Accept owner invitation for {crate_name}"),
+            &[invitation_id.as_bytes()],
+        )
+    }
+
+    /// A preflight challenge never authorizes a mutation.
+    pub fn manual(crate_name: Option<String>) -> Self {
+        Self::new(
+            "manual",
+            crate_name,
+            "Verify API MFA passkey".to_owned(),
+            &[b"preflight-only"],
+        )
     }
 }
 
@@ -266,6 +362,7 @@ async fn ensure_api_mfa_inner(
         token_id,
         operation.kind,
         operation.crate_name.as_deref(),
+        &operation.mutation_fingerprint,
         conn,
     )
     .await?
@@ -280,6 +377,7 @@ async fn ensure_api_mfa_inner(
             &otp,
             operation.kind,
             operation.crate_name.as_deref(),
+            &operation.mutation_fingerprint,
             conn,
         )
         .await?
@@ -314,8 +412,10 @@ async fn ensure_api_mfa_inner(
         user.id,
         token_id,
         operation,
-        localhost_port,
-        localhost_callback_secret.as_deref(),
+        ApiMfaCallback {
+            port: localhost_port,
+            secret: localhost_callback_secret.as_deref(),
+        },
         parts,
         conn,
         deps,
@@ -330,6 +430,7 @@ async fn ensure_api_mfa_inner(
         deps.webauthn,
         &challenge,
         operation,
+        localhost_callback_secret.as_deref(),
     )))
 }
 
@@ -349,8 +450,7 @@ async fn resolve_or_create_challenge(
     user_id: i32,
     api_token_id: i32,
     operation: &ApiMfaOperation,
-    localhost_port: Option<i32>,
-    localhost_callback_secret: Option<&str>,
+    callback: ApiMfaCallback<'_>,
     parts: &Parts,
     conn: &mut AsyncPgConnection,
     deps: &ApiMfaEnsureDeps<'_>,
@@ -362,15 +462,10 @@ async fn resolve_or_create_challenge(
         && existing.api_token_id == Some(api_token_id)
         && existing.operation == operation.kind
         && existing.crate_name.as_deref() == operation.crate_name.as_deref()
+        && existing.mutation_fingerprint == operation.mutation_fingerprint
         && !existing.is_acknowledged()
     {
-        return refresh_challenge_localhost_callback(
-            existing,
-            localhost_port,
-            localhost_callback_secret,
-            conn,
-        )
-        .await;
+        return refresh_challenge_localhost_callback(existing, callback, conn).await;
     }
 
     // Reuse an in-flight pending challenge for the same token + operation.
@@ -379,17 +474,12 @@ async fn resolve_or_create_challenge(
         api_token_id,
         operation.kind,
         operation.crate_name.as_deref(),
+        &operation.mutation_fingerprint,
         conn,
     )
     .await?
     {
-        return refresh_challenge_localhost_callback(
-            existing,
-            localhost_port,
-            localhost_callback_secret,
-            conn,
-        )
-        .await;
+        return refresh_challenge_localhost_callback(existing, callback, conn).await;
     }
 
     deps.rate_limiter
@@ -401,6 +491,7 @@ async fn resolve_or_create_challenge(
         api_token_id,
         operation.kind,
         operation.crate_name.as_deref(),
+        &operation.mutation_fingerprint,
         conn,
     )
     .await?;
@@ -413,16 +504,8 @@ async fn resolve_or_create_challenge(
         )));
     }
 
-    let (challenge, created) = insert_challenge_or_reuse_pending(
-        user_id,
-        api_token_id,
-        operation.kind,
-        operation.crate_name.clone(),
-        localhost_port,
-        localhost_callback_secret,
-        conn,
-    )
-    .await?;
+    let (challenge, created) =
+        insert_challenge_or_reuse_pending(user_id, api_token_id, operation, callback, conn).await?;
 
     if created {
         deps.metrics.api_mfa_challenges_created_total.inc();
@@ -438,18 +521,17 @@ async fn resolve_or_create_challenge(
 /// created.
 async fn refresh_challenge_localhost_callback(
     existing: ApiMfaChallenge,
-    localhost_port: Option<i32>,
-    localhost_callback_secret: Option<&str>,
+    callback: ApiMfaCallback<'_>,
     conn: &mut AsyncPgConnection,
 ) -> AppResult<ApiMfaChallenge> {
-    let Some(localhost_port) = localhost_port else {
+    let Some(localhost_port) = callback.port else {
         return Ok(existing);
     };
 
     match existing.localhost_port {
         Some(existing_port) if existing_port == localhost_port => Ok(existing),
         Some(_) => {
-            let Some(secret) = localhost_callback_secret else {
+            let Some(secret) = callback.secret else {
                 return Ok(existing);
             };
             let supplied_hash = ApiMfaChallenge::hash_localhost_callback_secret(secret);
@@ -462,8 +544,9 @@ async fn refresh_challenge_localhost_callback(
                 .await?)
         }
         None => {
-            let secret_hash =
-                localhost_callback_secret.map(ApiMfaChallenge::hash_localhost_callback_secret);
+            let secret_hash = callback
+                .secret
+                .map(ApiMfaChallenge::hash_localhost_callback_secret);
             Ok(existing
                 .update_localhost_callback(localhost_port, secret_hash, conn)
                 .await?)
@@ -474,25 +557,26 @@ async fn refresh_challenge_localhost_callback(
 /// Inserts a challenge, or reuses the pending row when a concurrent insert hit the unique index.
 ///
 /// Returns `(challenge, created)` where `created` is false on unique-violation reuse.
-pub async fn insert_challenge_or_reuse_pending(
+pub(crate) async fn insert_challenge_or_reuse_pending(
     user_id: i32,
     api_token_id: i32,
-    operation: &str,
-    crate_name: Option<String>,
-    localhost_port: Option<i32>,
-    localhost_callback_secret: Option<&str>,
+    operation: &ApiMfaOperation,
+    callback: ApiMfaCallback<'_>,
     conn: &mut AsyncPgConnection,
 ) -> AppResult<(ApiMfaChallenge, bool)> {
     use diesel::result::{DatabaseErrorKind, Error as DieselError};
 
-    let crate_name_for_lookup = crate_name.clone();
     match NewApiMfaChallenge::new(
         user_id,
         Some(api_token_id),
-        operation,
-        crate_name,
-        localhost_port,
-        localhost_callback_secret,
+        crates_io_database::models::NewApiMfaChallengeOperation {
+            operation: operation.kind.to_owned(),
+            crate_name: operation.crate_name.clone(),
+            mutation_fingerprint: operation.mutation_fingerprint.clone(),
+            operation_summary: operation.summary.clone(),
+        },
+        callback.port,
+        callback.secret,
     )
     .insert(conn)
     .await
@@ -502,8 +586,9 @@ pub async fn insert_challenge_or_reuse_pending(
             let existing = ApiMfaChallenge::find_pending_for_operation(
                 user_id,
                 api_token_id,
-                operation,
-                crate_name_for_lookup.as_deref(),
+                operation.kind,
+                operation.crate_name.as_deref(),
+                &operation.mutation_fingerprint,
                 conn,
             )
             .await?
@@ -512,13 +597,7 @@ pub async fn insert_challenge_or_reuse_pending(
                     "API MFA challenge unique conflict but no pending row found",
                 )
             })?;
-            let existing = refresh_challenge_localhost_callback(
-                existing,
-                localhost_port,
-                localhost_callback_secret,
-                conn,
-            )
-            .await?;
+            let existing = refresh_challenge_localhost_callback(existing, callback, conn).await?;
             Ok((existing, false))
         }
         Err(err) => Err(err.into()),
@@ -529,8 +608,17 @@ fn api_mfa_required_error(
     webauthn: &WebauthnConfig,
     challenge: &ApiMfaChallenge,
     operation: &ApiMfaOperation,
+    localhost_callback_secret: Option<&str>,
 ) -> BoxedAppError {
-    let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
+    let (mut verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
+    if challenge.localhost_port.is_some()
+        && let Some(secret) = localhost_callback_secret
+        && challenge.localhost_callback_secret_matches(secret)
+    {
+        // URL fragments are not sent in HTTP requests or server access logs.
+        verification_url.push_str("#callback_secret=");
+        verification_url.push_str(secret);
+    }
 
     let detail = format!(
         "API MFA required. Open this link to verify with your passkey:\n\n\
@@ -540,6 +628,7 @@ fn api_mfa_required_error(
     ApiMfaRequired {
         operation_id: challenge.id.clone(),
         operation: operation.kind.to_string(),
+        operation_summary: operation.summary.clone(),
         crate_name: operation.crate_name.clone(),
         verification_url,
         poll_url,
@@ -593,7 +682,7 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
     Ok(Some(port))
 }
 
-fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Option<String>> {
+pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Option<String>> {
     let Some(secret) = parts
         .headers
         .get(CRATES_MFA_CALLBACK_SECRET_HEADER)

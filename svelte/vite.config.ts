@@ -62,6 +62,17 @@ export default defineConfig({
   test: {
     expect: { requireAssertions: true },
 
+    coverage: {
+      provider: 'v8',
+      reportsDirectory: '../coverage/svelte',
+      thresholds: {
+        statements: 70,
+        branches: 55,
+        functions: 70,
+        lines: 72,
+      },
+    },
+
     projects: [
       {
         extends: './vite.config.ts',
