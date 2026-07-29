@@ -5,7 +5,7 @@ use crate::email::Emails;
 use crate::middleware::log_request::RequestLogExt;
 use crate::middleware::real_ip::RealIp;
 use crate::models::{
-    NewEmail, NewOauthGithub, NewUser, NewUserSecurityEvent, OauthGithub, SecurityEventType,
+    NewEmail, NewOauthGithub, NewUser, NewUserSecurityEvent, OauthGithub, SecurityEventType, User,
 };
 use crate::schema::{oauth_github, users};
 use crate::util::diesel::is_read_only_error;
@@ -134,9 +134,14 @@ pub async fn authorize_session(
 
     let mut conn = app.db_write().await?;
     let user_id = save_user_to_database(&ghuser, &encrypted_token, &app.emails, &mut conn).await?;
+    let user = User::find(&conn, user_id).await?;
 
     // Log in by setting a cookie and the middleware authentication
     session.insert("user_id".to_string(), user_id.to_string());
+    session.insert(
+        "session_generation".to_string(),
+        user.session_generation.to_string(),
+    );
 
     let ip = req.extensions.get::<RealIp>().map(|ip| ip.to_string());
     NewUserSecurityEvent::new(
@@ -327,7 +332,51 @@ async fn find_user_by_gh_id(mut conn: &AsyncPgConnection, gh_id: i32) -> QueryRe
 )]
 pub async fn end_session(session: SessionExtension) -> OkResponse {
     session.remove("user_id");
+    session.remove("session_generation");
     OkResponse::new()
+}
+
+/// Invalidate every browser session for the authenticated user (logout everywhere).
+///
+/// Bumps `users.session_generation` so cookies that still carry an older generation
+/// fail cookie authentication. Clears the current cookie as well.
+#[utoipa::path(
+    delete,
+    path = "/api/private/session/all",
+    security(("cookie" = [])),
+    tag = "session",
+    extensions(("x-internal" = json!(true))),
+    responses((status = 200, description = "Successful Response", body = inline(OkResponse))),
+)]
+pub async fn end_all_sessions(
+    app: AppState,
+    session: SessionExtension,
+    req: Parts,
+) -> AppResult<OkResponse> {
+    use crate::auth::AuthCheck;
+
+    let mut conn = app.db_write().await?;
+    let auth = AuthCheck::only_cookie().check(&req, &mut conn).await?;
+    let user_id = auth.user_id();
+
+    diesel::update(users::table.find(user_id))
+        .set(users::session_generation.eq(users::session_generation + 1))
+        .execute(&mut conn)
+        .await?;
+
+    NewUserSecurityEvent::new(
+        user_id,
+        SecurityEventType::SessionLogoutAll,
+        None,
+        req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
+        serde_json::json!({}),
+    )
+    .record(&mut conn)
+    .await;
+
+    session.remove("user_id");
+    session.remove("session_generation");
+    Ok(OkResponse::new())
 }
 
 #[cfg(test)]

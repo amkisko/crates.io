@@ -65,6 +65,22 @@
       To update your name and GitHub account, change them in your GitHub profile, then sign out and login again to
       crates.io. You cannot change these settings directly on crates.io, but we accept whatever values come from GitHub.
     </p>
+
+    <div class="session-controls" data-test-session-controls>
+      <h3>Sessions</h3>
+      <p>
+        Sign out everywhere invalidates all browser sessions for this account (useful if you lost a device or shared a
+        computer).
+      </p>
+      <button
+        type="button"
+        class="button button--small"
+        data-test-logout-everywhere
+        onclick={() => session.logoutEverywhere()}
+      >
+        Sign out everywhere
+      </button>
+    </div>
   </div>
 
   <div class="me-email">
@@ -124,6 +140,20 @@
 
     p {
       line-height: 1.5;
+    }
+
+    .session-controls {
+      margin-top: var(--space-m);
+      clear: both;
+
+      h3 {
+        margin: 0 0 var(--space-2xs);
+        font-size: 1rem;
+      }
+
+      p {
+        margin: 0 0 var(--space-xs);
+      }
     }
 
     @media only screen and (max-width: 550px) {

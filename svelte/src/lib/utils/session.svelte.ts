@@ -227,6 +227,19 @@ export class SessionState {
       globalThis.location.assign(resolve('/'));
     }
   }
+
+  /** Invalidate every browser session (bumps server-side session generation). */
+  async logoutEverywhere(): Promise<void> {
+    this.state = 'logging-out';
+
+    try {
+      await this.#client.DELETE('/api/private/session/all');
+    } finally {
+      this.#clearSudo();
+      localStorage.removeItem(LOGIN_KEY);
+      globalThis.location.assign(resolve('/'));
+    }
+  }
 }
 
 export const [getSession, setSession] = createContext<SessionState>();

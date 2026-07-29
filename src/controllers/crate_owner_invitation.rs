@@ -1,3 +1,4 @@
+use crate::api_mfa::{ApiMfaEnsureDeps, ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::AuthCheck;
 use crate::auth::Authentication;
@@ -368,14 +369,30 @@ pub async fn handle_crate_owner_invitation(
     let crate_invite = crate_invite.crate_owner_invite;
 
     let mut conn = state.db_write().await?;
-    let user_id = AuthCheck::default()
-        .check(&parts, &mut conn)
-        .await?
-        .user_id();
+    let auth = AuthCheck::default().check(&parts, &mut conn).await?;
+    let user_id = auth.user_id();
     let invitation =
         CrateOwnerInvitation::find_by_id(user_id, crate_invite.crate_id, &conn).await?;
 
     if crate_invite.accepted {
+        let crate_name: String = crates::table
+            .find(invitation.crate_id)
+            .select(crates::name)
+            .first(&mut conn)
+            .await?;
+        ensure_api_mfa(
+            &auth,
+            &parts,
+            &mut conn,
+            ApiMfaEnsureDeps {
+                webauthn: &state.config.webauthn,
+                rate_limiter: &state.rate_limiter,
+                metrics: &state.instance_metrics,
+                enforcement_enabled: state.config.api_mfa_enforcement_enabled,
+            },
+            ApiMfaOperation::accept_owner_invite(crate_name),
+        )
+        .await?;
         invitation.accept(&mut conn).await?;
     } else {
         invitation.decline(&conn).await?;
@@ -387,21 +404,50 @@ pub async fn handle_crate_owner_invitation(
 }
 
 /// Accept a crate owner invitation with a token.
+///
+/// Requires a cookie session for the invited user. The path token selects the
+/// invitation; it is not a standalone bearer capability.
 #[utoipa::path(
     put,
     path = "/api/v1/me/crate_owner_invitations/accept/{token}",
     params(
         ("token" = String, Path, description = "Secret token sent to the user's email address"),
     ),
+    security(("cookie" = [])),
     tag = "owners",
     responses((status = 200, description = "Successful Response", body = inline(HandleResponse))),
 )]
 pub async fn accept_crate_owner_invitation_with_token(
     state: AppState,
+    parts: Parts,
     Path(token): Path<String>,
 ) -> AppResult<Json<HandleResponse>> {
     let mut conn = state.db_write().await?;
+    let auth = AuthCheck::only_cookie().check(&parts, &mut conn).await?;
     let invitation = CrateOwnerInvitation::find_by_token(&token, &conn).await?;
+
+    if invitation.invited_user_id != auth.user_id() {
+        return Err(forbidden("this invitation belongs to a different user"));
+    }
+
+    let crate_name: String = crates::table
+        .find(invitation.crate_id)
+        .select(crates::name)
+        .first(&mut conn)
+        .await?;
+    ensure_api_mfa(
+        &auth,
+        &parts,
+        &mut conn,
+        ApiMfaEnsureDeps {
+            webauthn: &state.config.webauthn,
+            rate_limiter: &state.rate_limiter,
+            metrics: &state.instance_metrics,
+            enforcement_enabled: state.config.api_mfa_enforcement_enabled,
+        },
+        ApiMfaOperation::accept_owner_invite(crate_name),
+    )
+    .await?;
 
     let crate_id = invitation.crate_id;
     invitation.accept(&mut conn).await?;

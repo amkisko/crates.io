@@ -14,9 +14,10 @@ Long-lived API token (`~/.cargo/credentials`):
 GitHub session / crates.io cookie:
 
 - Without API MFA: can mint tokens and act in the browser
-- With API MFA: publish, yank, and owner changes from the site require an active grant (Authorize for 15 minutes); Settings → New Token and CLI link-login approve require a passkey assertion (or email OTP on CLI approve when MFA is on with zero passkeys); registering an additional passkey requires a passkey assertion when one exists
-- Bootstrap / recovery: enabling API MFA, first passkey enrollment, and recovery enrollment (zero passkeys) require a verified-email OTP so a stolen session cookie alone cannot plant a passkey and turn on enforcement. Disabling API MFA requires a passkey assertion or email OTP. Enforcement may remain on with zero passkeys (dangerous actions stay blocked until a passkey is re-registered or MFA is disabled via email OTP).
+- With API MFA: publish, yank, and owner changes from the site require an active grant (Authorize for 15 minutes); Settings → New Token, token revoke-by-id, and CLI link-login approve require a passkey assertion (or email OTP on CLI approve when MFA is on with zero passkeys); registering an additional passkey requires a passkey assertion when one exists. Self-revoke of the current token (`DELETE /api/v1/tokens/current`) stays free.
+- Bootstrap / recovery: enabling API MFA, first passkey enrollment, and recovery enrollment (zero passkeys) require a verified-email OTP so a stolen session cookie alone cannot plant a passkey and turn on enforcement. Enabling MFA also bumps `users.session_generation` (other browsers are signed out; the enabling browser keeps a refreshed cookie). Disabling API MFA requires a passkey assertion or email OTP. Enforcement may remain on with zero passkeys (dangerous actions stay blocked until a passkey is re-registered or MFA is disabled via email OTP).
 - Changing away from a verified email requires an email OTP sent to the current verified address, and the verified inbox stays active until the new address is confirmed (`emails.pending_email`). A stolen session cannot redirect MFA recovery to an attacker inbox without both the OTP and control of the new inbox.
+- Sessions are signed client cookies carrying `user_id` and `session_generation`. Settings → Profile → Sign out everywhere bumps generation so every other browser session fails cookie auth.
 
 Trusted Publishing (`cio_tp_…`) OIDC token:
 
@@ -24,7 +25,7 @@ Trusted Publishing (`cio_tp_…`) OIDC token:
 
 Multi-owner / team crates:
 
-- Enforcement is per user (`users.api_mfa_enabled`). Crate protection is the weakest owner plus optional `trustpub_only`. Account MFA alone does not mandate MFA for every co-owner.
+- If any *individual* owner has `api_mfa_enabled`, dangerous mutates on that crate require MFA for the *acting* user (including team members and co-owners who have not opted in yet). Actors without MFA enabled get a clear error to enable API MFA first. Instant GitHub team owner-add is unchanged. Trusted Publishing OIDC publish still skips MFA. Optional `trustpub_only` remains a separate crate-level control.
 
 GitHub account 2FA does not protect a leaked cargo token ([rust-lang/crates.io#815](https://github.com/rust-lang/crates.io/issues/815)).
 
@@ -85,7 +86,15 @@ When `users.api_mfa_enabled` is true (API token or cookie session):
 
 Acceptance: an active `api_mfa_grants` row covering the operation/crate, or (token clients) a valid unused OTP bound to that same operation/crate, or (token clients without grant/OTP) the `403` challenge handshake.
 
+Grant matching:
+
+- Challenge acknowledgment issues a grant bound to `api_token_id` (only that token can ride it).
+- Settings → Authorize issues a wildcard grant with `api_token_id = NULL` (covers cookie sessions and any of that user’s tokens — stock cargo escape hatch).
+- Cookie requests accept only `api_token_id IS NULL` grants.
+
 Cookie sessions without a grant receive `400` asking the user to Authorize for 15 minutes under Settings → API MFA.
+
+Owner invitation accept (`PUT /api/v1/me/crate_owner_invitations/accept/{token}` and the authenticated accept path) requires a cookie session for the invitee. The path token selects the invitation; it is not a standalone bearer capability. When the invitee has API MFA enabled (or the crate already has an MFA owner), accept requires an Authorize grant.
 
 ## Manual authorize
 
@@ -108,7 +117,11 @@ Challenge acknowledgment remains scoped to the operation + crate that created th
 - `RATE_LIMITER_API_MFA_CHALLENGE_POLL_BURST` (default: `15`) — burst for those poll actions
 - `RATE_LIMITER_API_MFA_EMAIL_OTP_SEND_RATE_SECONDS` (default: `60`) — refill interval for email OTP sends
 - `RATE_LIMITER_API_MFA_EMAIL_OTP_SEND_BURST` (default: `3`) — burst for email OTP sends
-- `API_MFA_ENFORCEMENT_ENABLED` (default: `true`) — when `false`, skips MFA on dangerous mutates only (publish/yank/owners/delete/trustpub). Bootstrap / plant-prevention gates stay on (enable/disable OTP, passkey enroll/delete, New Token, CLI approve, verified-email change). Status GET reports `enabled` (user opt-in) and `enforcement_active` (this flag). Use for emergency bypass (e.g. WebAuthn/RP outage).
+- `RATE_LIMITER_CHANGE_OWNERS_RATE_SECONDS` / `_BURST` (defaults: `60` / `20`) — owner add/remove
+- `RATE_LIMITER_EMAIL_UPDATE_RATE_SECONDS` / `_BURST` (defaults: `60` / `5`) — email stage/resend
+- `RATE_LIMITER_TOKEN_CREATE_RATE_SECONDS` / `_BURST` (defaults: `60` / `10`) — API token create
+- `RATE_LIMITER_TOKEN_REVOKE_RATE_SECONDS` / `_BURST` (defaults: `60` / `20`) — API token revoke-by-id
+- `API_MFA_ENFORCEMENT_ENABLED` (default: `true`) — when `false`, skips MFA on dangerous mutates only (publish/yank/owners/delete/trustpub/invite-accept). Bootstrap / plant-prevention gates stay on (enable/disable OTP, passkey enroll/delete, New Token, token revoke-by-id, CLI approve, verified-email change). Status GET reports `enabled` (user opt-in) and `enforcement_active` (this flag). Use for emergency bypass (e.g. WebAuthn/RP outage).
 
 For local frontend development against a local API, set `WEBAUTHN_RP_ID=localhost` and `WEBAUTHN_RP_ORIGIN=http://localhost:5173` (or your SvelteKit origin).
 
@@ -174,14 +187,14 @@ Settings changes and successful challenge acknowledgments are recorded in the ow
 - Disabling API MFA requires a passkey assertion or email code.
 - Pending challenges are capped per user (currently 10) to limit write amplification from a stolen token.
 - WebAuthn ceremony state for register/authorize is stored server-side; challenge auth state lives on the challenge row.
-- Challenge acknowledgment and Settings → Authorize issue user-scoped grants (any of that user’s tokens or cookie session can ride them for the grant TTL). Challenge grants are scoped to operation + crate; Authorize is a wildcard. Stock cargo compatibility favors this over a single-use OTP attached to one request (RubyGems-style).
+- Challenge acknowledgment issues operation+crate grants bound to the API token that created the challenge. Settings → Authorize issues a user-scoped wildcard (`api_token_id` NULL) that cookie sessions and any of that user’s tokens can ride for the grant TTL (stock cargo escape hatch).
 
 ## Related improvement vectors (out of v1)
 
 Treat API MFA as the interactive publish step-up layer only. Separate tracks remain:
 
 - Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutate; it does not bind the published tarball to a long-term publisher key. Step-up MFA and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound step-up or for signed package bytes.
-- Tighter ceremony binding: bind acknowledgment to upload content hashes and/or prefer one-shot OTP / token-scoped grants once cargo speaks `mfa_required`; keep wildcard Authorize as the multi-use website escape hatch.
+- Tighter ceremony binding: bind acknowledgment to upload content hashes and/or prefer one-shot OTP once cargo speaks `mfa_required`. Challenge grants are already token-scoped; keep wildcard Authorize as the multi-use website escape hatch.
 - Scoped automation tokens: Trusted Publishing covers OIDC CI; non-OIDC automation still needs a human MFA step or a future short-lived / scoped automation token (npm-style bypass is a product decision, not part of this design).
 - Consumer trust policy: optional client or UI signals for `trustpub_only`, MFA-enabled owners, or signed crates; complements ecosystem mandates under [#815](https://github.com/rust-lang/crates.io/issues/815).
 - Public provenance: optional version metadata that a publish completed after an MFA ceremony or Trusted Publishing exchange, without exposing private activity IPs or challenge ids.

@@ -128,6 +128,7 @@ pub struct ApiMfaUpdateResponse {
 pub async fn update_api_mfa_status(
     app: AppState,
     req: Parts,
+    session: crates_io_session::SessionExtension,
     Json(body): Json<ApiMfaUpdateRequest>,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<ApiMfaUpdateResponse>)> {
     let mut conn = app.db_write().await?;
@@ -176,10 +177,29 @@ pub async fn update_api_mfa_status(
     }
 
     let previously_enabled = user.api_mfa_enabled;
-    diesel::update(users::table.find(user.id))
-        .set(users::api_mfa_enabled.eq(body.enabled))
-        .execute(&mut conn)
-        .await?;
+
+    // Enabling MFA bumps session generation so concurrent stolen cookies die;
+    // refresh the current cookie so this browser stays signed in.
+    let new_generation = if body.enabled && !previously_enabled {
+        diesel::update(users::table.find(user.id))
+            .set((
+                users::api_mfa_enabled.eq(true),
+                users::session_generation.eq(users::session_generation + 1),
+            ))
+            .returning(users::session_generation)
+            .get_result::<i32>(&mut conn)
+            .await?
+    } else {
+        diesel::update(users::table.find(user.id))
+            .set(users::api_mfa_enabled.eq(body.enabled))
+            .execute(&mut conn)
+            .await?;
+        user.session_generation
+    };
+
+    if body.enabled && !previously_enabled {
+        session.insert("session_generation".to_string(), new_generation.to_string());
+    }
 
     if body.enabled != previously_enabled {
         use crate::middleware::real_ip::RealIp;

@@ -275,6 +275,18 @@ async fn authenticate_via_cookie(
         internal("user_id from cookie not found in database")
     })?;
 
+    // Missing cookie field means generation 0 (pre-migration sessions).
+    let cookie_generation = session
+        .get("session_generation")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    if cookie_generation != user.session_generation {
+        parts
+            .request_log()
+            .add("cause", "session_generation mismatch");
+        return Ok(None);
+    }
+
     ensure_not_locked(&user)?;
 
     parts.request_log().add("uid", id);

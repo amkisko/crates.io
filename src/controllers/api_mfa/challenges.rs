@@ -410,6 +410,14 @@ pub async fn finish_api_mfa_challenge(
     let otp = ApiMfaChallenge::generate_otp();
     let hashed_otp = ApiMfaChallenge::hash_otp(&otp);
     let issue_grant = challenge.localhost_port.is_none();
+    let grant_token_id = if issue_grant {
+        challenge.api_token_id.ok_or_else(|| {
+            bad_request("challenge is missing api_token_id; cannot issue a token-bound grant")
+        })?
+    } else {
+        // Unused when only OTP callback is issued.
+        0
+    };
 
     // Ack + scoped grant in one transaction so a grant insert failure cannot
     // leave a verified challenge without a retry path for stock cargo.
@@ -425,6 +433,7 @@ pub async fn finish_api_mfa_challenge(
 
             let grant = NewApiMfaGrant::for_operation(
                 challenge.user_id,
+                grant_token_id,
                 challenge.operation.clone(),
                 challenge.crate_name.clone(),
             )

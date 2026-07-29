@@ -16,13 +16,26 @@ test.describe('Acceptance | /accept-invite/:token', { tag: '@acceptance' }, () =
     await expect(page.locator('[data-test-title]')).toHaveText('Page not found');
   });
 
-  test('shows error for unknown token', async ({ page }) => {
+  test('prompts sign-in when logged out', async ({ page }) => {
+    await page.goto('/accept-invite/unknown');
+    await expect(page).toHaveURL('/accept-invite/unknown');
+    await expect(page.locator('[data-test-need-login-message]')).toBeVisible();
+    await expect(page.locator('[data-test-accept-invite-login]')).toBeVisible();
+  });
+
+  test('shows error for unknown token when signed in', async ({ page, msw }) => {
+    let user = await msw.db.user.create({});
+    await msw.authenticateAs(user);
+
     await page.goto('/accept-invite/unknown');
     await expect(page).toHaveURL('/accept-invite/unknown');
     await expect(page.locator('[data-test-error-message]')).toHaveText('Not Found');
   });
 
   test('shows error for expired token', async ({ page, msw }) => {
+    let user = await msw.db.user.create({});
+    await msw.authenticateAs(user);
+
     let errorMessage =
       'The invitation to become an owner of the demo_crate crate expired. Please reach out to an owner of the crate to request a new invitation.';
     let error = HttpResponse.json({ errors: [{ detail: errorMessage }] }, { status: 410 });
@@ -39,6 +52,7 @@ test.describe('Acceptance | /accept-invite/:token', { tag: '@acceptance' }, () =
     let crate = await msw.db.crate.create({ name: 'nanomsg' });
     await msw.db.version.create({ crate });
     let invite = await msw.db.crateOwnerInvitation.create({ crate, invitee, inviter });
+    await msw.authenticateAs(invitee);
 
     await page.goto(`/accept-invite/${invite.token}`);
     await expect(page).toHaveURL(`/accept-invite/${invite.token}`);

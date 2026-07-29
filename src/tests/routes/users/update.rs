@@ -206,7 +206,10 @@ async fn test_verified_email_stays_until_pending_confirmed() {
     let me = user.show_me().await;
     assert_eq!(me.user.email.as_deref(), Some(old_email.as_str()));
     assert!(me.user.email_verified);
-    assert_eq!(me.user.email_pending.as_deref(), Some("pending@example.com"));
+    assert_eq!(
+        me.user.email_pending.as_deref(),
+        Some("pending@example.com")
+    );
 
     let token: String = emails::table
         .filter(emails::user_id.eq(model.id))

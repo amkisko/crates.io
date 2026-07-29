@@ -33,6 +33,8 @@ pub struct User {
     pub publish_notifications: bool,
     /// When true, API token actions require passkey step-up (grant or OTP).
     pub api_mfa_enabled: bool,
+    /// Bumped to invalidate all `cargo_session` cookies carrying an older value.
+    pub session_generation: i32,
     pub username: String,
     pub created_at: Option<DateTime<Utc>>,
 }

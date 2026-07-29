@@ -110,6 +110,7 @@ async fn cli_can_poll_until_acknowledged_then_publish() {
         .unwrap();
     NewApiMfaGrant::for_operation(
         user.as_model().id,
+        token.as_model().id,
         "publish",
         Some("foo_api_mfa_poll".into()),
     )
@@ -142,10 +143,15 @@ async fn scoped_grant_does_not_cover_other_crate() {
         .unwrap();
     insert_dummy_passkey(user.as_model().id, &mut conn).await;
 
-    NewApiMfaGrant::for_operation(user.as_model().id, "publish", Some("other_crate".into()))
-        .insert(&conn)
-        .await
-        .unwrap();
+    NewApiMfaGrant::for_operation(
+        user.as_model().id,
+        token.as_model().id,
+        "publish",
+        Some("other_crate".into()),
+    )
+    .insert(&conn)
+    .await
+    .unwrap();
 
     let response = token
         .publish_crate(PublishBuilder::new("foo_api_mfa_scope", "1.0.0"))
@@ -422,10 +428,7 @@ async fn kill_switch_skips_mutate_enforcement_but_keeps_bootstrap_otp() {
         .await
         .unwrap();
     let enable_without_otp = user
-        .put::<()>(
-            "/api/v1/me/mfa",
-            json!({ "enabled": true }).to_string(),
-        )
+        .put::<()>("/api/v1/me/mfa", json!({ "enabled": true }).to_string())
         .await;
     assert_snapshot!(enable_without_otp.status(), @"400 Bad Request");
     assert!(
@@ -434,6 +437,90 @@ async fn kill_switch_skips_mutate_enforcement_but_keeps_bootstrap_otp() {
             .contains("email verification code required"),
         "{}",
         enable_without_otp.text()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn challenge_grant_does_not_cover_other_token() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+    let other_token = user.db_new_token("other-token").await;
+
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    NewApiMfaGrant::for_operation(
+        user.as_model().id,
+        token.as_model().id,
+        "publish",
+        Some("foo_mfa_token_bind".into()),
+    )
+    .insert(&conn)
+    .await
+    .unwrap();
+
+    // Bound to `token`; a second token of the same user cannot ride it.
+    let blocked = other_token
+        .publish_crate(PublishBuilder::new("foo_mfa_token_bind", "1.0.0"))
+        .await;
+    assert_snapshot!(blocked.status(), @"403 Forbidden");
+    assert_eq!(blocked.json()["errors"][0]["id"], "mfa_required");
+
+    // Authorize wildcard still covers any token.
+    NewApiMfaGrant::for_user(user.as_model().id)
+        .insert(&conn)
+        .await
+        .unwrap();
+    let published = other_token
+        .publish_crate(PublishBuilder::new("foo_mfa_token_bind", "1.0.0"))
+        .await;
+    assert_snapshot!(published.status(), @"200 OK");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn crate_with_mfa_owner_requires_coowner_mfa() {
+    use crate::builders::CrateBuilder;
+    use crates_io::models::CrateOwner;
+
+    let (app, _, mfa_owner, _) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+    let coowner = app.db_new_user("coowner_no_mfa").await;
+    let coowner_token = coowner.db_new_token("coowner-token").await;
+
+    diesel::update(users::table.find(mfa_owner.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(mfa_owner.as_model().id, &mut conn).await;
+
+    let krate = CrateBuilder::new("foo_mfa_inherit", mfa_owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+    CrateOwner::builder()
+        .crate_id(krate.id)
+        .user_id(coowner.as_model().id)
+        .created_by(mfa_owner.as_model().id)
+        .build()
+        .insert(&mut conn)
+        .await
+        .unwrap();
+
+    let blocked = coowner_token
+        .publish_crate(PublishBuilder::new("foo_mfa_inherit", "1.0.1"))
+        .await;
+    assert_snapshot!(blocked.status(), @"400 Bad Request");
+    assert!(
+        blocked.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("requires API MFA because an owner enabled it"),
+        "{}",
+        blocked.text()
     );
 }
 

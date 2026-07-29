@@ -41,6 +41,14 @@ pg_enum! {
         CliLoginPoll = 6,
         // Sending an email OTP for API MFA enable/disable / passkey enrollment.
         ApiMfaEmailOtpSend = 7,
+        // Adding or removing crate owners.
+        ChangeOwners = 8,
+        // Staging or resending a user email change.
+        EmailUpdate = 9,
+        // Creating an API token (cookie session).
+        TokenCreate = 10,
+        // Revoking an API token by id.
+        TokenRevoke = 11,
     }
 }
 
@@ -60,6 +68,10 @@ impl LimitedAction {
             LimitedAction::CliLoginPoll => 2,
             // One email OTP send per minute sustains; burst allows a couple of resends.
             LimitedAction::ApiMfaEmailOtpSend => 60,
+            LimitedAction::ChangeOwners => 60,
+            LimitedAction::EmailUpdate => 60,
+            LimitedAction::TokenCreate => 60,
+            LimitedAction::TokenRevoke => 60,
         }
     }
 
@@ -74,6 +86,10 @@ impl LimitedAction {
             // Unused for CliLoginPoll (per-session min interval); kept for config symmetry.
             LimitedAction::CliLoginPoll => 1,
             LimitedAction::ApiMfaEmailOtpSend => 3,
+            LimitedAction::ChangeOwners => 20,
+            LimitedAction::EmailUpdate => 5,
+            LimitedAction::TokenCreate => 10,
+            LimitedAction::TokenRevoke => 20,
         }
     }
 
@@ -87,6 +103,10 @@ impl LimitedAction {
             LimitedAction::CliLoginCreate => "CLI_LOGIN_CREATE",
             LimitedAction::CliLoginPoll => "CLI_LOGIN_POLL",
             LimitedAction::ApiMfaEmailOtpSend => "API_MFA_EMAIL_OTP_SEND",
+            LimitedAction::ChangeOwners => "CHANGE_OWNERS",
+            LimitedAction::EmailUpdate => "EMAIL_UPDATE",
+            LimitedAction::TokenCreate => "TOKEN_CREATE",
+            LimitedAction::TokenRevoke => "TOKEN_REVOKE",
         }
     }
 
@@ -115,6 +135,18 @@ impl LimitedAction {
             }
             LimitedAction::ApiMfaEmailOtpSend => {
                 "You have requested too many API MFA email codes in a short period of time"
+            }
+            LimitedAction::ChangeOwners => {
+                "You have changed crate owners too many times in a short period of time"
+            }
+            LimitedAction::EmailUpdate => {
+                "You have updated your email address too many times in a short period of time"
+            }
+            LimitedAction::TokenCreate => {
+                "You have created too many API tokens in a short period of time"
+            }
+            LimitedAction::TokenRevoke => {
+                "You have revoked too many API tokens in a short period of time"
             }
         }
     }

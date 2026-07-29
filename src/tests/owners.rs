@@ -98,7 +98,7 @@ impl MockCookieUser {
     }
 }
 
-impl MockAnonymousUser {
+impl MockCookieUser {
     async fn accept_ownership_invitation_by_token(&self, token: &str) {
         #[derive(Deserialize)]
         struct Response {
@@ -112,6 +112,16 @@ impl MockAnonymousUser {
         assert!(response.crate_owner_invitation.accepted);
     }
 
+    async fn try_accept_ownership_invitation_by_token<T: serde::de::DeserializeOwned>(
+        &self,
+        token: &str,
+    ) -> Response<T> {
+        let url = format!("/api/v1/me/crate_owner_invitations/accept/{token}");
+        self.put(&url, &[] as &[u8]).await
+    }
+}
+
+impl MockAnonymousUser {
     async fn try_accept_ownership_invitation_by_token<T: serde::de::DeserializeOwned>(
         &self,
         token: &str,
@@ -578,8 +588,22 @@ async fn test_accept_invitation_by_mail() {
     // Retrieve the ownership invitation
     let invite_token = extract_token_from_invite_email(&app.emails().await);
 
-    // Accept the invitation anonymously with a token
-    anon.accept_ownership_invitation_by_token(&invite_token)
+    // Anonymous accept is rejected (token is not a bearer capability).
+    let anon_response = anon
+        .try_accept_ownership_invitation_by_token::<()>(&invite_token)
+        .await;
+    assert_eq!(anon_response.status(), StatusCode::FORBIDDEN);
+
+    // Wrong user cannot accept with the email token.
+    let other_user = app.db_new_user("user_other").await;
+    let wrong_user_response = other_user
+        .try_accept_ownership_invitation_by_token::<()>(&invite_token)
+        .await;
+    assert_eq!(wrong_user_response.status(), StatusCode::FORBIDDEN);
+
+    // Invitee accepts while signed in; path token selects the invitation.
+    invited_user
+        .accept_ownership_invitation_by_token(&invite_token)
         .await;
 
     // New owner's invitation list should now be empty
@@ -740,7 +764,7 @@ async fn test_accept_expired_invitation_by_mail() {
     let mut conn = app.db_conn().await;
 
     let owner = owner.as_model();
-    let _invited_user = app.db_new_user("demo_user").await;
+    let invited_user = app.db_new_user("demo_user").await;
     let krate = CrateBuilder::new("demo_crate", owner.id)
         .expect_build(&mut conn)
         .await;
@@ -757,8 +781,8 @@ async fn test_accept_expired_invitation_by_mail() {
     // Retrieve the ownership invitation
     let invite_token = extract_token_from_invite_email(&app.emails().await);
 
-    // Try to accept the invitation, and ensure it fails.
-    let resp = anon
+    // Try to accept the invitation while signed in, and ensure it fails.
+    let resp = invited_user
         .try_accept_ownership_invitation_by_token::<()>(&invite_token)
         .await;
     assert_eq!(resp.status(), StatusCode::GONE);

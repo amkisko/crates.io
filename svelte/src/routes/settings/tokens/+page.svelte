@@ -17,13 +17,16 @@
   import SettingsPage from '$lib/components/SettingsPage.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
+  import { getSession } from '$lib/utils/session.svelte';
   import { scopeDescription } from '$lib/utils/token-scopes';
   import { getTokenPageState } from './+layout.svelte';
 
   type ApiToken = components['schemas']['ApiToken'];
 
   let notifications = getNotifications();
+  let session = getSession();
   let client = createClient({ fetch });
+  let apiMfaEnabled = $derived(session.currentUser?.api_mfa_enabled ?? false);
 
   let { data } = $props();
 
@@ -34,6 +37,77 @@
   let pendingToken = $derived(tokenPageState.pendingToken);
 
   let isClipboardSupported = browser && Boolean(navigator.clipboard?.writeText);
+
+  function bufferToB64url(buffer: ArrayBuffer): string {
+    let bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+  }
+
+  function b64urlToBuffer(value: string): ArrayBuffer {
+    let padded = value.replaceAll('-', '+').replaceAll('_', '/');
+    let pad = padded.length % 4;
+    if (pad) {
+      padded += '='.repeat(4 - pad);
+    }
+    let binary = atob(padded);
+    let bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
+    return {
+      ...(options as PublicKeyCredentialRequestOptions),
+      challenge: b64urlToBuffer(options.challenge as string),
+      allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
+        ...(cred as PublicKeyCredentialDescriptor),
+        id: b64urlToBuffer(cred.id as string),
+      })),
+    };
+  }
+
+  function serializeAssertion(credential: PublicKeyCredential) {
+    let assertion = credential.response as AuthenticatorAssertionResponse;
+    return {
+      id: credential.id,
+      rawId: bufferToB64url(credential.rawId),
+      type: credential.type,
+      response: {
+        clientDataJSON: bufferToB64url(assertion.clientDataJSON),
+        authenticatorData: bufferToB64url(assertion.authenticatorData),
+        signature: bufferToB64url(assertion.signature),
+        userHandle: assertion.userHandle ? bufferToB64url(assertion.userHandle) : null,
+      },
+    };
+  }
+
+  async function assertPasskeyIfNeeded(): Promise<unknown | undefined> {
+    if (!apiMfaEnabled) return undefined;
+
+    if (!globalThis.PublicKeyCredential) {
+      throw new Error('This browser does not support passkeys.');
+    }
+
+    let start = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
+    if (!start.ok) {
+      let body = await start.json().catch(() => null);
+      throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
+    }
+    let { public_key } = await start.json();
+    let credential = (await navigator.credentials.get({
+      publicKey: revivePublicKeyRequest(public_key),
+    })) as PublicKeyCredential | null;
+    if (!credential) {
+      throw new Error('Passkey verification was cancelled');
+    }
+    return serializeAssertion(credential);
+  }
 
   onDestroy(() => {
     tokenPageState.pendingToken = null;
@@ -65,17 +139,22 @@
   async function revokeToken(token: ApiToken) {
     revokingTokenIds.add(token.id);
     try {
+      let credential = await assertPasskeyIfNeeded();
       let result = await client.DELETE('/api/v1/me/tokens/{id}', {
         params: { path: { id: token.id } },
+        body: { credential },
       });
 
       if (result.error) {
-        throw new Error('Failed to revoke API token');
+        let detail = (result.error as { errors?: { detail?: string }[] })?.errors?.[0]?.detail;
+        throw new Error(detail ?? 'Failed to revoke API token');
       }
 
       revokedTokenIds.add(token.id);
-    } catch {
-      notifications.error('An unknown error occurred while revoking this token');
+    } catch (error) {
+      notifications.error(
+        error instanceof Error ? error.message : 'An unknown error occurred while revoking this token',
+      );
     } finally {
       revokingTokenIds.delete(token.id);
     }

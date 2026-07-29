@@ -9,6 +9,7 @@ use crate::models::{
     CrateOwner, NewCrateOwnerInvitation, NewCrateOwnerInvitationOutcome, NewTeam,
     krate::NewOwnerInvite, token::EndpointScope,
 };
+use crate::rate_limiter::LimitedAction;
 use crate::util::errors::{AppResult, BoxedAppError, bad_request, crate_not_found, custom};
 use crate::views::EncodableOwner;
 use crate::{App, app::AppState};
@@ -190,6 +191,10 @@ async fn modify_owners(
         .with_endpoint_scope(EndpointScope::ChangeOwners)
         .for_crate(&crate_name)
         .check(&parts, &mut conn)
+        .await?;
+
+    app.rate_limiter
+        .check_rate_limit(auth.user_id(), LimitedAction::ChangeOwners, &mut conn)
         .await?;
 
     ensure_api_mfa(

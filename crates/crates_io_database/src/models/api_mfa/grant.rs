@@ -12,6 +12,7 @@ pub const DEFAULT_GRANT_DURATION_SECS: i64 = 15 * 60;
 #[derive(Clone, Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = api_mfa_grants, check_for_backend(diesel::pg::Pg))]
 pub struct ApiMfaGrant {
+    pub api_token_id: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub crate_name: Option<String>,
     pub expires_at: DateTime<Utc>,
@@ -25,36 +26,67 @@ pub struct ApiMfaGrant {
 #[diesel(table_name = api_mfa_grants, check_for_backend(diesel::pg::Pg))]
 pub struct NewApiMfaGrant {
     pub user_id: i32,
+    pub api_token_id: Option<i32>,
     pub operation: Option<String>,
     pub crate_name: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
 impl ApiMfaGrant {
-    /// Returns whether `user_id` has a non-expired grant covering `operation` / `crate_name`.
+    /// Returns whether there is a non-expired grant covering this auth + operation.
     ///
-    /// A grant with `operation = NULL` is a wildcard (manual authorize) and covers any action.
-    /// Otherwise the grant must match both `operation` and `crate_name` (NULL-safe).
+    /// - A grant with `operation = NULL` is a wildcard (manual authorize) and covers any action.
+    /// - Otherwise the grant must match both `operation` and `crate_name` (NULL-safe).
+    /// - `api_token_id = NULL` grants (Authorize wildcard) cover cookie sessions and any token.
+    /// - Token-bound grants match only when `api_token_id` equals the request token.
+    /// - Cookie requests (`api_token_id = None`) accept only `api_token_id IS NULL` grants.
     pub async fn has_active(
         user_id: i32,
+        api_token_id: Option<i32>,
         operation: &str,
         crate_name: Option<&str>,
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<bool> {
-        diesel::select(diesel::dsl::exists(
-            api_mfa_grants::table
-                .filter(api_mfa_grants::user_id.eq(user_id))
-                .filter(api_mfa_grants::expires_at.gt(now))
-                .filter(
-                    api_mfa_grants::operation
-                        .is_null()
-                        .or(api_mfa_grants::operation
-                            .eq(operation)
-                            .and(api_mfa_grants::crate_name.is_not_distinct_from(crate_name))),
-                ),
-        ))
-        .get_result(&mut conn)
-        .await
+        let op_or_wildcard = api_mfa_grants::operation
+            .is_null()
+            .or(api_mfa_grants::operation
+                .eq(operation)
+                .and(api_mfa_grants::crate_name.is_not_distinct_from(crate_name)));
+
+        match api_token_id {
+            Some(token_id) => {
+                diesel::select(diesel::dsl::exists(
+                    api_mfa_grants::table
+                        .filter(api_mfa_grants::user_id.eq(user_id))
+                        .filter(api_mfa_grants::expires_at.gt(now))
+                        .filter(op_or_wildcard)
+                        .filter(
+                            api_mfa_grants::api_token_id
+                                .is_null()
+                                .or(api_mfa_grants::api_token_id.eq(token_id)),
+                        ),
+                ))
+                .get_result(&mut conn)
+                .await
+            }
+            None => {
+                diesel::select(diesel::dsl::exists(
+                    api_mfa_grants::table
+                        .filter(api_mfa_grants::user_id.eq(user_id))
+                        .filter(api_mfa_grants::expires_at.gt(now))
+                        .filter(
+                            api_mfa_grants::operation
+                                .is_null()
+                                .or(api_mfa_grants::operation.eq(operation).and(
+                                    api_mfa_grants::crate_name.is_not_distinct_from(crate_name),
+                                )),
+                        )
+                        .filter(api_mfa_grants::api_token_id.is_null()),
+                ))
+                .get_result(&mut conn)
+                .await
+            }
+        }
     }
 
     /// Returns the latest non-expired grant for `user_id`, if any.
@@ -85,23 +117,28 @@ impl ApiMfaGrant {
 
 impl NewApiMfaGrant {
     /// Creates a wildcard grant (manual authorize) that covers any operation for 15 minutes.
+    ///
+    /// `api_token_id` is NULL so cookie sessions and any of the user's API tokens can ride it.
     pub fn for_user(user_id: i32) -> Self {
         Self {
             user_id,
+            api_token_id: None,
             operation: None,
             crate_name: None,
             expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_GRANT_DURATION_SECS),
         }
     }
 
-    /// Creates a grant scoped to a single dangerous operation and crate.
+    /// Creates a grant scoped to a single dangerous operation, crate, and API token.
     pub fn for_operation(
         user_id: i32,
+        api_token_id: i32,
         operation: impl Into<String>,
         crate_name: Option<String>,
     ) -> Self {
         Self {
             user_id,
+            api_token_id: Some(api_token_id),
             operation: Some(operation.into()),
             crate_name,
             expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_GRANT_DURATION_SECS),

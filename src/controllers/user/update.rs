@@ -4,6 +4,7 @@ use crate::controllers::api_mfa::email_codes::require_email_code;
 use crate::controllers::helpers::OkResponse;
 use crate::email::EmailMessage;
 use crate::models::{Email, NewEmail};
+use crate::rate_limiter::LimitedAction;
 use crate::schema::users;
 use crate::util::errors::{AppResult, bad_request, server_error};
 use axum::Json;
@@ -116,6 +117,11 @@ pub async fn update_user(
         user_email
             .parse::<Address>()
             .map_err(|_| bad_request("invalid email address"))?;
+
+        state
+            .rate_limiter
+            .check_rate_limit(user.id, LimitedAction::EmailUpdate, &mut conn)
+            .await?;
 
         let current_verified = user.verified_email(&conn).await?;
 

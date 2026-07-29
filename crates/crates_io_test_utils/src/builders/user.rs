@@ -59,6 +59,7 @@ impl<'a> UserBuilder<'a> {
             is_admin: false,
             publish_notifications: true,
             api_mfa_enabled: false,
+            session_generation: 0,
             username: self.username.into(),
             created_at: None,
         }

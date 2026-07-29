@@ -34,6 +34,7 @@
 
   const LABELS: Record<string, string> = {
     session_login: 'Signed in with GitHub',
+    session_logout_all: 'Signed out everywhere',
     cli_login_approved: 'Approved CLI login',
     token_created: 'Created API token',
     token_revoked: 'Revoked API token',

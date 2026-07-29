@@ -1,6 +1,7 @@
 use crate::controllers::api_mfa::webauthn_util::complete_passkey_authentication;
 use crate::email::EmailMessage;
 use crate::models::{ApiToken, NewUserSecurityEvent, SecurityEventType};
+use crate::rate_limiter::LimitedAction;
 use crate::schema::api_tokens;
 use crate::views::EncodableApiTokenWithToken;
 use anyhow::Context;
@@ -147,6 +148,10 @@ pub async fn create_api_token(
     }
 
     let user = auth.user();
+
+    app.rate_limiter
+        .check_rate_limit(user.id, LimitedAction::TokenCreate, &mut conn)
+        .await?;
 
     // Check if token creation is disabled
     if let Some(disable_message) = &app.config.disable_token_creation {
@@ -321,13 +326,25 @@ pub async fn find_api_token(
     Ok((no_store(), Json(ApiTokenGetResponse { api_token })))
 }
 
+/// Request body for revoking an API token by id.
+#[derive(Deserialize, Default, utoipa::ToSchema)]
+pub struct RevokeApiTokenRequest {
+    /// Passkey assertion required when API MFA is enabled (after `authorize/start`).
+    #[serde(default)]
+    credential: Option<serde_json::Value>,
+}
+
 /// Revoke API token.
+///
+/// When API MFA is enabled, a passkey assertion is required (same as token create).
+/// Self-revoke of the current token via `DELETE /api/v1/tokens/current` stays free.
 #[utoipa::path(
     delete,
     path = "/api/v1/me/tokens/{id}",
     params(
         ("id" = i32, Path, description = "ID of the API token"),
     ),
+    request_body = inline(RevokeApiTokenRequest),
     security(
         ("api_token" = []),
         ("cookie" = []),
@@ -339,10 +356,28 @@ pub async fn revoke_api_token(
     app: AppState,
     Path(id): Path<i32>,
     req: Parts,
+    body: Option<Json<RevokeApiTokenRequest>>,
 ) -> AppResult<ErasedJson> {
     let mut conn = app.db_write().await?;
     let auth = AuthCheck::default().check(&req, &mut conn).await?;
     let user = auth.user();
+
+    app.rate_limiter
+        .check_rate_limit(user.id, LimitedAction::TokenRevoke, &mut conn)
+        .await?;
+
+    if user.api_mfa_enabled {
+        let credential = body.and_then(|Json(b)| b.credential);
+        let Some(credential) = credential.as_ref() else {
+            return Err(bad_request(
+                "passkey verification required to revoke an API token while API MFA is enabled; \
+                 complete authorize/start first and include the credential assertion",
+            ));
+        };
+        complete_passkey_authentication(user.id, credential, &app.config.webauthn, &mut conn)
+            .await?;
+    }
+
     let token = ApiToken::belonging_to(user)
         .find(id)
         .select(ApiToken::as_select())

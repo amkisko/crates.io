@@ -43,6 +43,7 @@ pg_enum! {
         ApiMfaAuthorized = 10,
         ApiMfaChallengeVerified = 11,
         EmailChanged = 12,
+        SessionLogoutAll = 13,
     }
 }
 
@@ -62,6 +63,7 @@ impl From<SecurityEventType> for &'static str {
             SecurityEventType::ApiMfaAuthorized => "api_mfa_authorized",
             SecurityEventType::ApiMfaChallengeVerified => "api_mfa_challenge_verified",
             SecurityEventType::EmailChanged => "email_changed",
+            SecurityEventType::SessionLogoutAll => "session_logout_all",
         }
     }
 }

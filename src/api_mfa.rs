@@ -5,12 +5,14 @@ use crate::config::WebauthnConfig;
 use crate::metrics::InstanceMetrics;
 use crate::middleware::log_request::RequestLogExt;
 use crate::models::{
-    ApiMfaChallenge, ApiMfaGrant, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge,
+    ApiMfaChallenge, ApiMfaGrant, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, OwnerKind,
     WebauthnCredential,
 };
 use crate::rate_limiter::{LimitedAction, RateLimiter};
+use crate::schema::{crate_owners, crates, users};
 use crate::util::errors::{ApiMfaRequired, AppResult, BoxedAppError, bad_request};
-use diesel_async::AsyncPgConnection;
+use diesel::prelude::*;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use http::request::Parts;
 use std::time::Instant;
 
@@ -36,6 +38,7 @@ pub const ALLOWED_CHALLENGE_OPERATIONS: &[&str] = &[
     "change-trustpub-only",
     "change-trusted-publishing",
     "delete-crate",
+    "accept-owner-invite",
     "manual",
 ];
 
@@ -113,6 +116,35 @@ impl ApiMfaOperation {
             crate_name: Some(crate_name.into()),
         }
     }
+
+    /// Accept a crate owner invitation (cookie session).
+    pub fn accept_owner_invite(crate_name: impl Into<String>) -> Self {
+        Self {
+            kind: "accept-owner-invite",
+            crate_name: Some(crate_name.into()),
+        }
+    }
+}
+
+/// Returns whether any individual owner of `crate_name` has API MFA enabled.
+///
+/// Unknown crate names return `false` (caller still enforces actor MFA / ownership later).
+pub async fn crate_requires_api_mfa(
+    crate_name: &str,
+    conn: &mut AsyncPgConnection,
+) -> AppResult<bool> {
+    let requires = diesel::select(diesel::dsl::exists(
+        crate_owners::table
+            .inner_join(crates::table)
+            .inner_join(users::table.on(crate_owners::owner_id.eq(users::id)))
+            .filter(crates::name.eq(crate_name))
+            .filter(crate_owners::owner_kind.eq(OwnerKind::User))
+            .filter(crate_owners::deleted.eq(false))
+            .filter(users::api_mfa_enabled.eq(true)),
+    ))
+    .get_result(conn)
+    .await?;
+    Ok(requires)
 }
 
 /// Shared dependencies for [`ensure_api_mfa`].
@@ -155,7 +187,24 @@ pub async fn ensure_api_mfa(
     operation: ApiMfaOperation,
 ) -> AppResult<()> {
     let user = auth.user();
-    if !deps.enforcement_enabled || !user.api_mfa_enabled {
+    if !deps.enforcement_enabled {
+        return Ok(());
+    }
+
+    let crate_requires = if let Some(crate_name) = operation.crate_name.as_deref() {
+        crate_requires_api_mfa(crate_name, conn).await?
+    } else {
+        false
+    };
+
+    if !user.api_mfa_enabled {
+        if crate_requires {
+            return Err(bad_request(
+                "This crate requires API MFA because an owner enabled it. \
+                 Sign in on the website, enable API MFA under Settings → API MFA, \
+                 register a passkey, then retry.",
+            ));
+        }
         return Ok(());
     }
 
@@ -211,6 +260,7 @@ async fn ensure_api_mfa_inner(
 
     if ApiMfaGrant::has_active(
         user.id,
+        token_id,
         operation.kind,
         operation.crate_name.as_deref(),
         conn,

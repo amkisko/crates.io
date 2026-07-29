@@ -4,6 +4,7 @@ use crate::controllers::helpers::OkResponse;
 use crate::email::EmailMessage;
 use crate::middleware::real_ip::RealIp;
 use crate::models::{Email, NewUserSecurityEvent, SecurityEventType};
+use crate::rate_limiter::LimitedAction;
 use crate::util::errors::AppResult;
 use crate::util::errors::{BoxedAppError, bad_request};
 use axum::extract::Path;
@@ -95,6 +96,11 @@ pub async fn resend_email_verification(
     if auth.user_id() != param_user_id {
         return Err(bad_request("current user does not match requested user"));
     }
+
+    state
+        .rate_limiter
+        .check_rate_limit(auth.user_id(), LimitedAction::EmailUpdate, &mut conn)
+        .await?;
 
     conn.transaction(async |conn| {
         let email: Email = diesel::update(Email::belonging_to(auth.user()))

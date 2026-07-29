@@ -105,6 +105,8 @@ diesel::table! {
 
     /// Time-bounded grants issued after passkey verification for API MFA
     api_mfa_grants (id) {
+        /// When set, grant covers only this API token; NULL is Authorize wildcard
+        api_token_id -> Nullable<Int4>,
         /// Date and time when the grant was created
         created_at -> Timestamptz,
         /// When set with operation, grant only covers this crate
@@ -1147,6 +1149,8 @@ diesel::table! {
         publish_notifications -> Bool,
         /// When true, API token actions (publish, yank, change-owners) require passkey step-up
         api_mfa_enabled -> Bool,
+        /// Bumped to invalidate all cargo_session cookies that still carry an older generation
+        session_generation -> Int4,
         /// Username associated with the user's crates.io account, independent of linked OAuth usernames.
         username -> Varchar,
     }
@@ -1494,6 +1498,7 @@ diesel::joinable!(versions_published_by -> versions (version_id));
 diesel::joinable!(api_mfa_challenges -> api_tokens (api_token_id));
 diesel::joinable!(api_mfa_challenges -> users (user_id));
 diesel::joinable!(api_mfa_email_otps -> users (user_id));
+diesel::joinable!(api_mfa_grants -> api_tokens (api_token_id));
 diesel::joinable!(api_mfa_grants -> users (user_id));
 diesel::joinable!(cli_login_sessions -> api_tokens (api_token_id));
 diesel::joinable!(cli_login_sessions -> users (user_id));

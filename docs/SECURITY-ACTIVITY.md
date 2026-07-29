@@ -7,6 +7,7 @@ Settings → Activity and `GET /api/v1/me/security_events` show recent account s
 These event types may appear:
 
 - `session_login` — GitHub OAuth session established
+- `session_logout_all` — Sign out everywhere (session generation bumped)
 - `cli_login_approved` — browser approved a CLI link-login
 - `token_created`, `token_revoked`, `token_revoked_github` — API token lifecycle
 - `token_used` — at most once per token per UTC day; no IP stored
