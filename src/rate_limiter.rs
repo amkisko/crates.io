@@ -49,6 +49,8 @@ pg_enum! {
         TokenCreate = 10,
         // Revoking an API token by id.
         TokenRevoke = 11,
+        // High-cap aggregate protection across unauthenticated MFA capability callers.
+        ApiMfaChallengeAggregate = 12,
     }
 }
 
@@ -72,6 +74,9 @@ impl LimitedAction {
             LimitedAction::EmailUpdate => 60,
             LimitedAction::TokenCreate => 60,
             LimitedAction::TokenRevoke => 60,
+            // Capability/IP buckets are the primary limiter; this only bounds
+            // distributed aggregate traffic for one challenge owner.
+            LimitedAction::ApiMfaChallengeAggregate => 1,
         }
     }
 
@@ -90,6 +95,7 @@ impl LimitedAction {
             LimitedAction::EmailUpdate => 5,
             LimitedAction::TokenCreate => 10,
             LimitedAction::TokenRevoke => 20,
+            LimitedAction::ApiMfaChallengeAggregate => 300,
         }
     }
 
@@ -107,6 +113,7 @@ impl LimitedAction {
             LimitedAction::EmailUpdate => "EMAIL_UPDATE",
             LimitedAction::TokenCreate => "TOKEN_CREATE",
             LimitedAction::TokenRevoke => "TOKEN_REVOKE",
+            LimitedAction::ApiMfaChallengeAggregate => "API_MFA_CHALLENGE_AGGREGATE",
         }
     }
 
@@ -147,6 +154,9 @@ impl LimitedAction {
             }
             LimitedAction::TokenRevoke => {
                 "You have revoked too many API tokens in a short period of time"
+            }
+            LimitedAction::ApiMfaChallengeAggregate => {
+                "This account has received too much API MFA challenge traffic in a short period of time"
             }
         }
     }

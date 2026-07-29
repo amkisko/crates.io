@@ -54,7 +54,7 @@ async fn publish_returns_operation_challenge_link() {
         error["detail"],
         format!(
             "API MFA required. Open this link to verify with your passkey:\n\n\
-             http://127.0.0.1:8888/mfa/verify/{operation_id}\n\n\
+             http://localhost:8888/mfa/verify/{operation_id}\n\n\
              After verification, retry the request."
         )
     );
@@ -147,7 +147,8 @@ async fn approval_is_bound_to_exact_publish_tarball() {
     insert_dummy_passkey(user.as_model().id, &mut conn).await;
 
     let approved_body = PublishBuilder::new("foo_api_mfa_exact", "1.0.0")
-        .add_file("approved.txt", "approved")
+        .readme("approved")
+        .add_file("foo_api_mfa_exact-1.0.0/approved.txt", "approved")
         .body();
     let initial = token
         .run::<Value>(
@@ -180,7 +181,29 @@ async fn approval_is_bound_to_exact_publish_tarball() {
     let substituted = token
         .publish_crate(
             PublishBuilder::new("foo_api_mfa_exact", "1.0.0")
-                .add_file("substituted.txt", "different bytes"),
+                .add_file("foo_api_mfa_exact-1.0.0/substituted.txt", "different bytes"),
+        )
+        .await;
+    assert_snapshot!(substituted.status(), @"403 Forbidden");
+    assert_ne!(
+        substituted.json()["errors"][0]["operation_id"],
+        operation_id
+    );
+
+    // Metadata is part of the mutation too, even when the tarball is byte-identical.
+    let mut substituted_metadata = approved_body.to_vec();
+    let metadata_len = u32::from_le_bytes(substituted_metadata[..4].try_into().unwrap()) as usize;
+    let metadata = &mut substituted_metadata[4..4 + metadata_len];
+    let approved_readme = metadata
+        .windows(b"approved".len())
+        .position(|window| window == b"approved")
+        .expect("readme value in publish metadata");
+    metadata[approved_readme..approved_readme + b"attacker".len()].copy_from_slice(b"attacker");
+    let substituted = token
+        .run::<Value>(
+            token
+                .request_builder(Method::PUT, "/api/v1/crates/new")
+                .with_body(substituted_metadata.into()),
         )
         .await;
     assert_snapshot!(substituted.status(), @"403 Forbidden");
@@ -197,6 +220,12 @@ async fn approval_is_bound_to_exact_publish_tarball() {
         )
         .await;
     token.app().run_pending_background_jobs().await;
+    assert_eq!(
+        approved.status(),
+        200,
+        "approved publish response: {}",
+        approved.text()
+    );
     assert_snapshot!(approved.status(), @"200 OK");
 }
 

@@ -15,12 +15,12 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 const TEST_ORIGIN: &str = "http://localhost:8888";
 
 #[tokio::test(flavor = "multi_thread")]
-async fn register_authorize_and_publish_with_soft_passkey() {
+async fn register_authorize_is_cookie_only_with_soft_passkey() {
     let (app, _, user, token) = TestApp::full().with_token().await;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
     assert!(
         app.emails()
             .await
@@ -50,6 +50,15 @@ async fn register_authorize_and_publish_with_soft_passkey() {
     let published = token
         .publish_crate(PublishBuilder::new("foo_soft_passkey", "1.0.0"))
         .await;
+    assert_eq!(
+        published.status(),
+        403,
+        "cookie wildcard grant must not authorize an API token"
+    );
+
+    let published = user
+        .publish_crate(PublishBuilder::new("foo_soft_passkey", "1.0.0"))
+        .await;
     assert_eq!(published.status(), 200);
 
     // Drop the in-memory app handle so background workers shut down cleanly.
@@ -62,7 +71,7 @@ async fn challenge_ack_with_soft_passkey_allows_scoped_retry() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    enable_api_mfa(&app, &user).await;
+    let _user = enable_api_mfa(&app, &user).await;
 
     let blocked = token
         .publish_crate(PublishBuilder::new("foo_soft_challenge", "1.0.0"))
@@ -126,7 +135,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    enable_api_mfa(&app, &user).await;
+    let _user = enable_api_mfa(&app, &user).await;
 
     let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
     let callback_secret = "0123456789abcdef0123456789abcdef";
@@ -261,7 +270,7 @@ async fn disable_api_mfa_requires_passkey_or_email_otp() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
 
     let denied = user
         .put::<Value>("/api/v1/me/mfa", json!({ "enabled": false }).to_string())
@@ -300,7 +309,7 @@ async fn disable_api_mfa_with_email_otp_after_last_passkey_removed() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
 
     let status = user.get::<Value>("/api/v1/me/mfa").await.good();
     let cred_id = status["credentials"][0]["id"].as_i64().unwrap();
@@ -345,7 +354,7 @@ async fn enable_api_mfa_requires_email_otp() {
             .contains("email verification code required")
     );
 
-    enable_api_mfa(&app, &user).await;
+    let _user = enable_api_mfa(&app, &user).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -378,7 +387,7 @@ async fn register_additional_passkey_requires_step_up_when_mfa_enabled() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "first", None).await;
-    enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
 
     let denied = user
         .post::<Value>("/api/v1/me/mfa/passkeys/start", "{}")
@@ -404,7 +413,7 @@ async fn recovery_register_passkey_with_email_otp_when_none_remain() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "first", None).await;
-    enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
 
     let status = user.get::<Value>("/api/v1/me/mfa").await.good();
     let cred_id = status["credentials"][0]["id"].as_i64().unwrap();
@@ -432,7 +441,7 @@ async fn delete_passkey_requires_step_up_when_mfa_enabled() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
 
     let status = user.get::<Value>("/api/v1/me/mfa").await.good();
     let cred_id = status["credentials"][0]["id"].as_i64().unwrap();
@@ -464,7 +473,7 @@ async fn delete_passkey_requires_step_up_when_mfa_enabled() {
     assert!(status["enabled"].as_bool().unwrap());
 }
 
-async fn enable_api_mfa(app: &TestApp, user: &MockCookieUser) {
+async fn enable_api_mfa(app: &TestApp, user: &MockCookieUser) -> MockCookieUser {
     let otp = request_email_code(app, user).await;
     let enabled = user
         .put::<Value>(
@@ -474,6 +483,14 @@ async fn enable_api_mfa(app: &TestApp, user: &MockCookieUser) {
         .await;
     assert_eq!(enabled.status(), 200, "enable API MFA: {}", enabled.text());
     assert_eq!(enabled.json()["enabled"], true);
+
+    // Enabling MFA intentionally invalidates every existing cookie session.
+    // Simulate the user signing in again before exercising post-enable flows.
+    let conn = app.db_conn().await;
+    let user = crates_io::models::User::find(&conn, user.as_model().id)
+        .await
+        .unwrap();
+    MockCookieUser::new(app, user)
 }
 
 async fn request_email_code(app: &TestApp, user: &MockCookieUser) -> String {

@@ -101,13 +101,18 @@ impl ApiMfaOperation {
         }
     }
 
-    /// Bind a publish approval to the exact crate version and tarball bytes.
-    pub fn publish(crate_name: &str, version: &str, tarball_sha256: &[u8]) -> Self {
+    /// Bind a publish approval to the exact metadata and tarball bytes.
+    pub fn publish(
+        crate_name: &str,
+        version: &str,
+        metadata_sha256: &[u8],
+        tarball_sha256: &[u8],
+    ) -> Self {
         Self::new(
             "publish",
             Some(crate_name.to_owned()),
             format!("Publish {crate_name} {version}"),
-            &[version.as_bytes(), tarball_sha256],
+            &[version.as_bytes(), metadata_sha256, tarball_sha256],
         )
     }
 

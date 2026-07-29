@@ -251,6 +251,13 @@ pub async fn get_api_mfa_challenge(
         app.rate_limiter
             .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengePoll, &mut conn)
             .await?;
+        app.rate_limiter
+            .check_rate_limit(
+                challenge.user_id,
+                LimitedAction::ApiMfaChallengeAggregate,
+                &mut conn,
+            )
+            .await?;
     }
 
     let acknowledged = challenge.is_acknowledged();
@@ -291,13 +298,20 @@ fn authorize_challenge_read(auth: &Authentication, challenge: &ApiMfaChallenge) 
 
 async fn rate_limit_challenge_ceremony(
     app: &AppState,
-    challenge_id: &str,
+    challenge: &ApiMfaChallenge,
     req: &Parts,
     conn: &mut diesel_async::AsyncPgConnection,
 ) -> AppResult<()> {
-    let bucket_key = challenge_rate_limit_key(challenge_id, req)?;
+    let bucket_key = challenge_rate_limit_key(&challenge.id, req)?;
     app.rate_limiter
         .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengeCreate, conn)
+        .await?;
+    app.rate_limiter
+        .check_rate_limit(
+            challenge.user_id,
+            LimitedAction::ApiMfaChallengeAggregate,
+            conn,
+        )
         .await?;
     Ok(())
 }
@@ -345,7 +359,7 @@ pub async fn start_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     }
 
-    rate_limit_challenge_ceremony(&app, &challenge.id, &req, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, &challenge, &req, &mut conn).await?;
 
     let credentials = WebauthnCredential::for_user(challenge.user_id, &conn).await?;
     if credentials.is_empty() {
@@ -417,7 +431,7 @@ pub async fn finish_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     }
 
-    rate_limit_challenge_ceremony(&app, &challenge.id, &req, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, &challenge, &req, &mut conn).await?;
 
     let Some(state_json) = challenge.auth_state_json.clone() else {
         return Err(bad_request("passkey authentication has not been started"));
@@ -551,7 +565,7 @@ pub async fn recover_api_mfa_challenge_callback(
         return Err(not_found());
     };
 
-    rate_limit_challenge_ceremony(&app, &challenge.id, &req, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, &challenge, &req, &mut conn).await?;
     let Some(secret) = mfa_callback_secret_from_headers(&req)? else {
         return Err(not_found());
     };

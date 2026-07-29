@@ -241,18 +241,6 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
         None
     };
 
-    if let Some(user_id) = auth.user_id() {
-        // Use a different rate limit whether this is a new or an existing crate.
-        let rate_limit_action = match existing_crate {
-            Some(_) => LimitedAction::PublishUpdate,
-            None => LimitedAction::PublishNew,
-        };
-
-        app.rate_limiter
-            .check_rate_limit(user_id, rate_limit_action, &mut conn)
-            .await?;
-    }
-
     let max_upload_size = existing_crate
         .as_ref()
         .and_then(|c| c.max_upload_size())
@@ -261,6 +249,12 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
     let tarball_bytes = read_tarball_bytes(&mut reader, max_upload_size).await?;
     let content_length = tarball_bytes.len() as u64;
     let tarball_sha256 = Sha256::digest(&tarball_bytes);
+    let metadata_json = serde_json::to_vec(&metadata).map_err(|error| {
+        internal(format!(
+            "failed to serialize validated publish metadata: {error}"
+        ))
+    })?;
+    let metadata_sha256 = Sha256::digest(metadata_json);
 
     if let AuthType::Regular(auth) = &auth {
         ensure_api_mfa(
@@ -273,9 +267,27 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
                 metrics: &app.instance_metrics,
                 enforcement_enabled: app.config.api_mfa_enforcement_enabled,
             },
-            ApiMfaOperation::publish(&metadata.name, &version_string, &tarball_sha256),
+            ApiMfaOperation::publish(
+                &metadata.name,
+                &version_string,
+                &metadata_sha256,
+                &tarball_sha256,
+            ),
         )
         .await?;
+    }
+
+    if let Some(user_id) = auth.user_id() {
+        // MFA handshakes and failed OTP attempts must not consume the mutation
+        // bucket; otherwise an attacker with a challenge ID can exhaust the
+        // legitimate publisher's allowance before verification completes.
+        let rate_limit_action = match existing_crate {
+            Some(_) => LimitedAction::PublishUpdate,
+            None => LimitedAction::PublishNew,
+        };
+        app.rate_limiter
+            .check_rate_limit(user_id, rate_limit_action, &mut conn)
+            .await?;
     }
 
     let pkg_name = format!("{}-{version_string}", &*metadata.name);
