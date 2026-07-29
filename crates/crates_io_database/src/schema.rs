@@ -55,6 +55,8 @@ diesel::table! {
         api_token_id -> Nullable<Int4>,
         /// Client IP that started the session
         client_ip -> Nullable<Varchar>,
+        /// SHA-256 of the CLI confirmation code (required on approve)
+        confirmation_code_hash -> Bytea,
         /// Date and time when the session was created
         created_at -> Timestamptz,
         /// Date and time when the session will expire

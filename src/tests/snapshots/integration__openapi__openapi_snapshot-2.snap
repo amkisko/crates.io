@@ -1622,6 +1622,10 @@ expression: response.json()
               "application/json": {
                 "schema": {
                   "properties": {
+                    "confirmation_code": {
+                      "description": "Short code printed by the CLI; must be typed on the approve page (not returned by meta).",
+                      "type": "string"
+                    },
                     "expires_at": {
                       "format": "date-time",
                       "type": "string"
@@ -1645,6 +1649,7 @@ expression: response.json()
                     "login_id",
                     "login_url",
                     "poll_url",
+                    "confirmation_code",
                     "expires_at",
                     "recommended_poll_interval_secs"
                   ],

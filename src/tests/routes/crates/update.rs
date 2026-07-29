@@ -296,3 +296,57 @@ mod auth {
         assert!(!app.emails().await.is_empty());
     }
 }
+
+/// Cookie session with API MFA enabled cannot toggle `trustpub_only` without a grant (#13367).
+#[tokio::test(flavor = "multi_thread")]
+async fn trustpub_only_change_requires_api_mfa_grant() {
+    use crates_io::models::{NewApiMfaGrant, NewWebauthnCredential};
+    use crates_io::schema::users;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use serde_json::json;
+
+    let (app, _, user) = TestApp::full().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    let owner_id = user.as_model().id;
+    CrateBuilder::new("foo_mfa_trustpub", owner_id)
+        .trustpub_only(true)
+        .expect_build(&mut conn)
+        .await;
+
+    diesel::update(users::table.find(owner_id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    NewWebauthnCredential {
+        user_id: owner_id,
+        credential_id: b"dummy-credential-id",
+        passkey_json: json!({ "dummy": true }),
+        name: "test-passkey",
+    }
+    .insert(&mut conn)
+    .await
+    .unwrap();
+
+    let url = "/api/v1/crates/foo_mfa_trustpub";
+    let body = serde_json::json!({ "crate": { "trustpub_only": false } });
+    let blocked = user.patch::<()>(url, body.to_string()).await;
+    assert_snapshot!(blocked.status(), @"400 Bad Request");
+    assert!(
+        blocked.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Authorize for 15 minutes")
+    );
+
+    NewApiMfaGrant::for_user(owner_id)
+        .insert(&conn)
+        .await
+        .unwrap();
+
+    let allowed = user.patch::<()>(url, body.to_string()).await;
+    assert_snapshot!(allowed.status(), @"200 OK");
+    assert_eq!(allowed.json()["crate"]["trustpub_only"], false);
+}

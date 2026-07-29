@@ -22,8 +22,24 @@ export default http.post('/api/v1/cli_login/:id/approve', async ({ params, reque
     endpoint_scopes?: string[] | null;
     crate_scopes?: string[] | null;
     expired_at?: string | null;
+    confirmation_code?: string;
     credential?: unknown;
   };
+
+  let normalized = (body.confirmation_code ?? '').replaceAll(/[^A-Za-z0-9]/g, '').toUpperCase();
+  let expected = session.confirmationCode.replaceAll(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (!normalized || normalized !== expected) {
+    return HttpResponse.json(
+      {
+        errors: [
+          {
+            detail: 'confirmation code does not match; enter the code shown in your terminal after cargo login',
+          },
+        ],
+      },
+      { status: 400 },
+    );
+  }
 
   if (user.apiMfaEnabled && !body.credential) {
     return HttpResponse.json(

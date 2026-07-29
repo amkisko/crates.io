@@ -71,6 +71,7 @@ When `users.api_mfa_enabled` is true (API token or cookie session):
 - `PUT /api/v1/crates/new` (publish)
 - `PUT` / `DELETE /api/v1/crates/{name}/owners`
 - yank / unyank version endpoints
+- `PATCH /api/v1/crates/{name}` when `trustpub_only` changes (enable or disable)
 
 Acceptance: an active `api_mfa_grants` row covering the operation/crate, or (token clients) a valid unused OTP bound to that same operation/crate, or (token clients without grant/OTP) the `403` challenge handshake.
 
@@ -81,6 +82,7 @@ Cookie sessions without a grant receive `400` asking the user to Authorize for 1
 "Authorize for 15 minutes" on the settings page issues a wildcard grant (any operation/crate). Use it for:
 
 - website publish / yank / owner changes while MFA is enabled
+- toggling `trustpub_only` on crate settings while MFA is enabled
 - stock `cargo` retries without OTP / challenge polling support
 
 Challenge acknowledgment remains scoped to the operation + crate that created the challenge.
@@ -129,7 +131,7 @@ Prefer browser-assisted `cargo login` with `cargo-credential-crates-io` so token
 ## Limitations
 
 - Opt-in only; popular-crate mandates are out of scope here ([#815](https://github.com/rust-lang/crates.io/issues/815)).
-- When API MFA is enabled, Settings → New Token and CLI link-login approve both require a passkey assertion (same step-up as disabling MFA). Registering an additional passkey while API MFA is enabled also requires a fresh passkey assertion. See also [#13367](https://github.com/rust-lang/crates.io/issues/13367) for locking `trustpub_only` toggles.
+- When API MFA is enabled, Settings → New Token, CLI link-login approve, and `trustpub_only` toggles all require passkey step-up (grant, OTP, or challenge handshake; same family as disabling MFA). Registering an additional passkey while API MFA is enabled also requires a fresh passkey assertion. Addresses the untick step in [discussion #13369](https://github.com/rust-lang/crates.io/discussions/13369) / [#13367](https://github.com/rust-lang/crates.io/issues/13367).
 - Disabling API MFA requires a passkey assertion (`PUT /api/v1/me/api_mfa` with `credential` after `authorize/start`).
 - Pending challenges are capped per user (currently 10) to limit write amplification from a stolen token.
 - WebAuthn ceremony state for register/authorize is stored server-side; challenge auth state lives on the challenge row.

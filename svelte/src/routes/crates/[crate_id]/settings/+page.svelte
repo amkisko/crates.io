@@ -157,18 +157,100 @@
     }
   }
 
+  function b64urlToBuffer(value: string): ArrayBuffer {
+    let padded = value.replaceAll('-', '+').replaceAll('_', '/');
+    while (padded.length % 4) padded += '=';
+    let binary = atob(padded);
+    let bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i)!;
+    return bytes.buffer;
+  }
+
+  function bufferToB64url(buffer: ArrayBuffer): string {
+    let bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let byte of bytes) binary += String.fromCodePoint(byte);
+    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll(/=+$/g, '');
+  }
+
+  function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
+    return {
+      ...(options as PublicKeyCredentialRequestOptions),
+      challenge: b64urlToBuffer(options.challenge as string),
+      allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
+        ...(cred as PublicKeyCredentialDescriptor),
+        id: b64urlToBuffer(cred.id as string),
+      })),
+    };
+  }
+
+  function serializeAssertion(credential: PublicKeyCredential) {
+    let assertion = credential.response as AuthenticatorAssertionResponse;
+    return {
+      id: credential.id,
+      rawId: bufferToB64url(credential.rawId),
+      type: credential.type,
+      response: {
+        clientDataJSON: bufferToB64url(assertion.clientDataJSON),
+        authenticatorData: bufferToB64url(assertion.authenticatorData),
+        signature: bufferToB64url(assertion.signature),
+        userHandle: assertion.userHandle ? bufferToB64url(assertion.userHandle) : null,
+      },
+    };
+  }
+
+  /** Issue a short-lived wildcard API MFA grant via passkey (cookie session). */
+  async function authorizeApiMfa(): Promise<void> {
+    if (!globalThis.PublicKeyCredential) {
+      throw new Error('This browser does not support passkeys.');
+    }
+    let start = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
+    if (!start.ok) {
+      let body = await start.json().catch(() => null);
+      throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
+    }
+    let { public_key } = await start.json();
+    let credential = (await navigator.credentials.get({
+      publicKey: revivePublicKeyRequest(public_key),
+    })) as PublicKeyCredential | null;
+    if (!credential) {
+      throw new Error('Passkey verification was cancelled');
+    }
+    let finish = await fetch('/api/v1/me/api_mfa/authorize/finish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: serializeAssertion(credential) }),
+    });
+    if (!finish.ok) {
+      let body = await finish.json().catch(() => null);
+      throw new Error(body?.errors?.[0]?.detail ?? 'Passkey verification failed');
+    }
+  }
+
+  async function patchTrustpubOnly(checked: boolean) {
+    return client.PATCH('/api/v1/crates/{name}', {
+      params: { path: { name: crateName } },
+      body: { crate: { trustpub_only: checked } },
+    });
+  }
+
   async function toggleTrustpubOnly(event: Event) {
     let { checked } = event.target as HTMLInputElement;
     trustpubOnlyLoading = true;
     try {
-      let result = await client.PATCH('/api/v1/crates/{name}', {
-        params: { path: { name: crateName } },
-        body: { crate: { trustpub_only: checked } },
-      });
+      let result = await patchTrustpubOnly(checked);
 
       if (!result.response.ok) {
-        let detail = (result.error as unknown as { errors?: { detail?: string }[] })?.errors?.[0]?.detail;
-        throw new Error(detail ?? '');
+        let detail = (result.error as unknown as { errors?: { detail?: string }[] })?.errors?.[0]?.detail ?? '';
+        let needsMfa = (session.currentUser?.api_mfa_enabled ?? false) && detail.includes('Authorize for 15 minutes');
+        if (needsMfa) {
+          await authorizeApiMfa();
+          result = await patchTrustpubOnly(checked);
+        }
+        if (!result.response.ok) {
+          let retryDetail = (result.error as unknown as { errors?: { detail?: string }[] })?.errors?.[0]?.detail;
+          throw new Error(retryDetail ?? detail);
+        }
       }
 
       trustpubOnlyOverride = checked;
@@ -177,6 +259,8 @@
         error instanceof Error && error.message ? error.message : 'Failed to update trusted publishing setting';
 
       notifications.error(message);
+      // Checkbox already flipped via the native change event; pin previous value.
+      trustpubOnlyOverride = !checked;
     } finally {
       trustpubOnlyLoading = false;
     }

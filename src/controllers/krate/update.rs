@@ -1,3 +1,4 @@
+use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::AuthCheck;
 use crate::controllers::krate::CratePath;
@@ -71,6 +72,24 @@ pub async fn update_crate(
         .await?;
 
     auth.reject_legacy_tokens()?;
+
+    // Changing trustpub_only reopens or closes the API-token publish path (#13367).
+    if let Some(trustpub_only) = body.krate.trustpub_only
+        && trustpub_only != krate.trustpub_only
+    {
+        ensure_api_mfa(
+            &auth,
+            &req,
+            &mut conn,
+            crate::api_mfa::ApiMfaEnsureDeps {
+                webauthn: &app.config.webauthn,
+                rate_limiter: &app.rate_limiter,
+                metrics: &app.instance_metrics,
+            },
+            ApiMfaOperation::change_trustpub_only(&krate.name),
+        )
+        .await?;
+    }
 
     // Update crate settings in a transaction
     conn.transaction(async |conn| {

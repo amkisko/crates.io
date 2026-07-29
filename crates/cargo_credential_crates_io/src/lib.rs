@@ -1,8 +1,8 @@
 //! Cargo credential provider that mints crates.io tokens via browser link-login.
 //!
 //! On `login` without a pasted token, starts `POST /api/v1/cli_login`, prints the
-//! `login_url` on stderr, polls until the token is delivered once, stores it in
-//! `$CARGO_HOME/credentials.toml`, and never prints the secret.
+//! `login_url` and confirmation code on stderr, polls until the token is delivered
+//! once, stores it in `$CARGO_HOME/credentials.toml`, and never prints the secret.
 
 use cargo_credential::{
     Action, CacheControl, Credential, CredentialResponse, RegistryInfo, Secret,
@@ -134,6 +134,7 @@ fn dirs_next_home() -> PathBuf {
 struct StartResponse {
     login_url: String,
     poll_url: String,
+    confirmation_code: String,
     recommended_poll_interval_secs: Option<u64>,
 }
 
@@ -157,12 +158,13 @@ pub fn run_link_login(
         .error_for_status()?
         .json()?;
 
-    // Never print the token; only the browser URL belongs on stderr.
+    // Never print the token; URL + confirmation code belong on stderr.
     let mut stderr = io::stderr().lock();
     writeln!(
         stderr,
-        "Please visit this URL to authorize cargo login on crates.io:\n  {}\n",
-        start.login_url
+        "Please visit this URL to authorize cargo login on crates.io:\n  {}\n\n\
+         Confirmation code (enter this on the website):\n  {}\n",
+        start.login_url, start.confirmation_code
     )?;
     stderr.flush()?;
 
@@ -309,6 +311,7 @@ mod tests {
                 "login_id": "login_test",
                 "login_url": format!("{}/settings/tokens/cli/login_test", server.base_url()),
                 "poll_url": format!("{}/api/v1/cli_login/login_test", server.base_url()),
+                "confirmation_code": "ABCD-EFGH",
                 "expires_at": "2099-01-01T00:00:00Z",
                 "recommended_poll_interval_secs": 0,
             }));
@@ -353,6 +356,7 @@ mod tests {
                 "login_id": "login_x",
                 "login_url": format!("{}/settings/tokens/cli/login_x", server.base_url()),
                 "poll_url": format!("{}/api/v1/cli_login/login_x", server.base_url()),
+                "confirmation_code": "WXYZ-2345",
                 "expires_at": "2099-01-01T00:00:00Z",
                 "recommended_poll_interval_secs": 0,
             }));

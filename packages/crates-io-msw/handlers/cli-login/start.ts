@@ -14,6 +14,7 @@ export default http.post('/api/v1/cli_login', async ({ request }) => {
     login_id: loginId,
     login_url: `http://localhost:4200/settings/tokens/cli/${loginId}`,
     poll_url: `http://localhost:4200/api/v1/cli_login/${loginId}`,
+    confirmation_code: session.confirmationCode,
     expires_at: session.expiresAt,
     recommended_poll_interval_secs: 2,
   });

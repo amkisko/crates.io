@@ -21,7 +21,7 @@ global-credential-providers = ["cargo-credential-crates-io", "cargo:token"]
 
 ## Use it
 
-Run `cargo login`. The provider starts a short-lived session, prints a login URL on stderr, and waits. Open that URL, sign in, choose name, scopes, and expiry, then approve. The provider polls until the token is ready, writes it to `~/.cargo/credentials.toml` under `[registry]`, and finishes without printing the secret. Later cargo commands load it through the provider’s get action.
+Run `cargo login`. The provider starts a short-lived session, prints a login URL and a confirmation code on stderr, and waits. Open that URL, sign in, enter the confirmation code from the terminal, choose name, scopes, and expiry, then approve. The code binds the browser step to the CLI that started the session (it is not shown on the page). The provider polls until the token is ready, writes it to `~/.cargo/credentials.toml` under `[registry]`, and finishes without printing the secret. Later cargo commands load it through the provider’s get action.
 
 If API MFA is enabled, approve also asks for a passkey (same step-up as disabling MFA). See [API-MFA.md](API-MFA.md).
 
@@ -36,11 +36,11 @@ You can also pass `--api-base=…` in the credential-provider entry in config.to
 
 ## How the API fits together
 
-Unauthenticated clients create a session with `POST /api/v1/cli_login` and receive a login URL, a poll URL, an expiry, and a recommended poll interval (currently 2 seconds; do not poll faster).
+Unauthenticated clients create a session with `POST /api/v1/cli_login` and receive a login URL, a poll URL, a one-time `confirmation_code`, an expiry, and a recommended poll interval (currently 2 seconds; do not poll faster). The confirmation code is stored hashed; `meta` never returns it.
 
 `GET /api/v1/cli_login/{id}` reports pending, ready (with the token once), consumed, or expired.
 
-Signed-in browsers load metadata from `GET /api/v1/cli_login/{id}/meta` (including the starter client IP) and finish with `POST /api/v1/cli_login/{id}/approve`. Approve mints the token but does not return the plaintext; the response may include `localhost_port` so the browser can ping a waiting CLI without the secret. The CLI picks the token up on the next successful poll. While waiting for redeem, the server stores an encrypted blob, not the raw token.
+Signed-in browsers load metadata from `GET /api/v1/cli_login/{id}/meta` (including the starter client IP) and finish with `POST /api/v1/cli_login/{id}/approve`, which requires `confirmation_code` matching the CLI start. Approve mints the token but does not return the plaintext; the response may include `localhost_port` so the browser can ping a waiting CLI without the secret. The CLI picks the token up on the next successful poll. While waiting for redeem, the server stores an encrypted blob, not the raw token.
 
 ## Ops
 

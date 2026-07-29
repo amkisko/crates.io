@@ -22,6 +22,7 @@ async fn approve_with_soft_passkey_when_mfa_enabled() {
 
     let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap().to_string();
+    let confirmation_code = start["confirmation_code"].as_str().unwrap();
 
     let assertion = authenticate(&user, &mut authenticator).await;
     let approve = user
@@ -30,6 +31,7 @@ async fn approve_with_soft_passkey_when_mfa_enabled() {
             json!({
                 "name": "mfa-cli-ok",
                 "endpoint_scopes": ["yank"],
+                "confirmation_code": confirmation_code,
                 "credential": assertion,
             })
             .to_string(),

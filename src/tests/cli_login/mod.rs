@@ -21,6 +21,7 @@ async fn start_approve_poll_delivers_token_once() {
         .await
         .good();
     let login_id = start["login_id"].as_str().unwrap().to_string();
+    let confirmation_code = start["confirmation_code"].as_str().unwrap().to_string();
     assert!(login_id.starts_with("login_"));
     assert!(
         start["login_url"]
@@ -29,6 +30,16 @@ async fn start_approve_poll_delivers_token_once() {
             .contains(&format!("/settings/tokens/cli/{login_id}"))
     );
     assert_eq!(start["recommended_poll_interval_secs"], 2);
+    assert!(
+        confirmation_code.len() >= 8,
+        "confirmation code should be human-typed length"
+    );
+    // Meta must not echo the confirmation code (phishing pages must not learn it).
+    let meta = user
+        .get::<Value>(&format!("/api/v1/cli_login/{login_id}/meta"))
+        .await
+        .good();
+    assert!(meta.get("confirmation_code").is_none());
 
     let pending = anon
         .get::<Value>(&format!("/api/v1/cli_login/{login_id}"))
@@ -37,10 +48,6 @@ async fn start_approve_poll_delivers_token_once() {
     assert_eq!(pending["status"], "pending");
     assert!(pending.get("token").is_none());
 
-    let meta = user
-        .get::<Value>(&format!("/api/v1/cli_login/{login_id}/meta"))
-        .await
-        .good();
     assert_eq!(meta["status"], "pending");
     assert_eq!(meta["api_mfa_required"], false);
 
@@ -55,6 +62,7 @@ async fn start_approve_poll_delivers_token_once() {
                 "endpoint_scopes": ["publish-update", "publish-new"],
                 "crate_scopes": ["foo*"],
                 "expired_at": null,
+                "confirmation_code": confirmation_code,
             })
             .to_string(),
         )
@@ -144,16 +152,44 @@ async fn start_approve_poll_delivers_token_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn wrong_confirmation_code_is_rejected() {
+    let (_, anon, user) = TestApp::full().with_user().await;
+    let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
+    let login_id = start["login_id"].as_str().unwrap();
+
+    let response = user
+        .post::<Value>(
+            &format!("/api/v1/cli_login/{login_id}/approve"),
+            json!({
+                "name": "wrong-code",
+                "endpoint_scopes": ["yank"],
+                "confirmation_code": "AAAA-BBBB",
+            })
+            .to_string(),
+        )
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert!(
+        response.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("confirmation code")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn concurrent_approve_only_mints_one_token() {
     let (app, anon, user_a) = TestApp::full().with_user().await;
     let user_b = app.db_new_user("other-approver").await;
 
     let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap().to_string();
+    let confirmation_code = start["confirmation_code"].as_str().unwrap();
 
     let body = json!({
         "name": "race-cli",
         "endpoint_scopes": ["yank"],
+        "confirmation_code": confirmation_code,
     })
     .to_string();
 
@@ -184,6 +220,7 @@ async fn approve_without_cookie_is_forbidden() {
     let (_, anon, _user) = TestApp::full().with_user().await;
     let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap();
+    let confirmation_code = start["confirmation_code"].as_str().unwrap();
 
     let response = anon
         .post::<Value>(
@@ -191,6 +228,7 @@ async fn approve_without_cookie_is_forbidden() {
             json!({
                 "name": "nope",
                 "endpoint_scopes": ["yank"],
+                "confirmation_code": confirmation_code,
             })
             .to_string(),
         )
@@ -211,6 +249,7 @@ async fn mfa_enabled_approve_requires_credential() {
 
     let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap();
+    let confirmation_code = start["confirmation_code"].as_str().unwrap();
 
     let meta = user
         .get::<Value>(&format!("/api/v1/cli_login/{login_id}/meta"))
@@ -224,6 +263,7 @@ async fn mfa_enabled_approve_requires_credential() {
             json!({
                 "name": "mfa-cli",
                 "endpoint_scopes": ["yank"],
+                "confirmation_code": confirmation_code,
             })
             .to_string(),
         )

@@ -2,7 +2,9 @@ use chrono::{DateTime, TimeDelta, Utc};
 use diesel::dsl::now;
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use rand::RngExt;
 use rand::distr::{Alphanumeric, SampleString};
+use sha2::{Digest, Sha256};
 
 use crate::schema::cli_login_sessions;
 
@@ -19,6 +21,9 @@ pub const STATUS_EXPIRED: &str = "expired";
 
 const SESSION_ID_PREFIX: &str = "login_";
 const SESSION_ID_LENGTH: usize = 32;
+/// Ambiguous-looking characters omitted (`0`/`O`, `1`/`I`/`L`).
+const CONFIRMATION_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const CONFIRMATION_CODE_LENGTH: usize = 8;
 
 /// Result of an atomic poll pace check (`UPDATE … RETURNING`).
 #[derive(Debug, Clone)]
@@ -40,6 +45,7 @@ pub enum TouchPollOutcome {
 pub struct CliLoginSession {
     pub api_token_id: Option<i32>,
     pub client_ip: Option<String>,
+    pub confirmation_code_hash: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub id: String,
@@ -57,17 +63,33 @@ pub struct NewCliLoginSession {
     pub id: String,
     pub localhost_port: Option<i32>,
     pub client_ip: Option<String>,
+    pub confirmation_code_hash: Vec<u8>,
     pub expires_at: DateTime<Utc>,
 }
 
+/// Plaintext confirmation code plus insertable session (code shown once to the CLI).
+pub struct NewCliLoginSessionWithCode {
+    pub session: NewCliLoginSession,
+    /// Display form (`XXXX-XXXX`); returned only from `POST /cli_login`.
+    pub confirmation_code: String,
+}
+
 impl NewCliLoginSession {
-    /// Builds a new pending session with a generated opaque id.
-    pub fn new(localhost_port: Option<i32>, client_ip: Option<String>) -> Self {
-        Self {
-            id: CliLoginSession::generate_id(),
-            localhost_port,
-            client_ip,
-            expires_at: Utc::now() + TimeDelta::seconds(DEFAULT_SESSION_DURATION_SECS),
+    /// Builds a new pending session with opaque id and confirmation code.
+    pub fn new(
+        localhost_port: Option<i32>,
+        client_ip: Option<String>,
+    ) -> NewCliLoginSessionWithCode {
+        let confirmation_code = CliLoginSession::generate_confirmation_code();
+        NewCliLoginSessionWithCode {
+            session: Self {
+                id: CliLoginSession::generate_id(),
+                localhost_port,
+                client_ip,
+                confirmation_code_hash: CliLoginSession::hash_confirmation_code(&confirmation_code),
+                expires_at: Utc::now() + TimeDelta::seconds(DEFAULT_SESSION_DURATION_SECS),
+            },
+            confirmation_code,
         }
     }
 
@@ -81,6 +103,14 @@ impl NewCliLoginSession {
     }
 }
 
+impl NewCliLoginSessionWithCode {
+    /// Inserts the session and returns the loaded row (plaintext code stays on `self`).
+    pub async fn insert(self, conn: &AsyncPgConnection) -> QueryResult<(CliLoginSession, String)> {
+        let session = self.session.insert(conn).await?;
+        Ok((session, self.confirmation_code))
+    }
+}
+
 impl CliLoginSession {
     /// Generates a new opaque login session identifier.
     pub fn generate_id() -> String {
@@ -88,6 +118,36 @@ impl CliLoginSession {
             "{SESSION_ID_PREFIX}{}",
             Alphanumeric.sample_string(&mut rand::rng(), SESSION_ID_LENGTH)
         )
+    }
+
+    /// Generates a human-typed confirmation code (`XXXX-XXXX`).
+    pub fn generate_confirmation_code() -> String {
+        let mut rng = rand::rng();
+        let chars: String = (0..CONFIRMATION_CODE_LENGTH)
+            .map(|_| {
+                let idx = rng.random_range(0..CONFIRMATION_ALPHABET.len());
+                CONFIRMATION_ALPHABET[idx] as char
+            })
+            .collect();
+        format!("{}-{}", &chars[..4], &chars[4..])
+    }
+
+    /// Strips separators and uppercases for comparison.
+    pub fn normalize_confirmation_code(code: &str) -> String {
+        code.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_uppercase()
+    }
+
+    /// Hashes a confirmation code for storage.
+    pub fn hash_confirmation_code(code: &str) -> Vec<u8> {
+        Sha256::digest(Self::normalize_confirmation_code(code).as_bytes()).to_vec()
+    }
+
+    /// Whether `code` matches this session's stored hash.
+    pub fn confirmation_code_matches(&self, code: &str) -> bool {
+        self.confirmation_code_hash == Self::hash_confirmation_code(code)
     }
 
     /// Loads a session by id (including expired rows, for poll status reporting).

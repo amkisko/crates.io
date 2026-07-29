@@ -11,6 +11,7 @@ test.describe('Acceptance | cli-login', { tag: '@acceptance' }, () => {
 
     let session = await msw.db.cliLoginSession.create({
       status: 'pending',
+      confirmationCode: 'ABCD-EFGH',
     });
 
     await page.goto(`/settings/tokens/cli/${session.id}`);
@@ -19,6 +20,7 @@ test.describe('Acceptance | cli-login', { tag: '@acceptance' }, () => {
 
     await a11y.audit();
 
+    await page.locator('[data-test-confirmation-code]').fill('ABCD-EFGH');
     await page.locator('[data-test-name]').fill('playwright-cli');
     await page.locator('[data-test-approve]').click();
 

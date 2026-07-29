@@ -1,4 +1,4 @@
-//! API MFA helpers: enforce passkey step-up for sensitive publish/yank/owner actions.
+//! API MFA helpers: enforce passkey step-up for sensitive publish/yank/owner/settings actions.
 
 use crate::auth::Authentication;
 use crate::config::WebauthnConfig;
@@ -62,6 +62,14 @@ impl ApiMfaOperation {
             crate_name: Some(crate_name.into()),
         }
     }
+
+    /// Toggle `trustpub_only` on crate settings (`PATCH /api/v1/crates/{name}`).
+    pub fn change_trustpub_only(crate_name: impl Into<String>) -> Self {
+        Self {
+            kind: "change-trustpub-only",
+            crate_name: Some(crate_name.into()),
+        }
+    }
 }
 
 /// Shared dependencies for [`ensure_api_mfa`].
@@ -83,8 +91,9 @@ enum EnsureOutcome {
 
 /// Ensures requests satisfy API MFA when the user has it enabled.
 ///
-/// Applies to both API tokens and website cookie sessions for publish, yank, and
-/// change-owners. Trusted Publishing tokens are not routed through this helper.
+/// Applies to both API tokens and website cookie sessions for publish, yank,
+/// change-owners, and `trustpub_only` toggles. Trusted Publishing tokens are not
+/// routed through this helper.
 ///
 /// Acceptance when MFA is enabled:
 /// 1. A non-expired [`ApiMfaGrant`] covering this operation/crate, or

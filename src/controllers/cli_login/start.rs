@@ -25,6 +25,8 @@ pub struct StartCliLoginResponse {
     pub login_id: String,
     pub login_url: String,
     pub poll_url: String,
+    /// Short code printed by the CLI; must be typed on the approve page (not returned by meta).
+    pub confirmation_code: String,
     pub expires_at: DateTime<Utc>,
     pub recommended_poll_interval_secs: u64,
 }
@@ -67,9 +69,10 @@ pub async fn start_cli_login(
         )));
     }
 
-    let session = NewCliLoginSession::new(body.localhost_port, Some(client_ip))
-        .insert(&conn)
-        .await?;
+    let (session, confirmation_code) =
+        NewCliLoginSession::new(body.localhost_port, Some(client_ip))
+            .insert(&conn)
+            .await?;
 
     let (login_url, poll_url) = public_cli_login_urls(&app.config.webauthn, &session.id);
 
@@ -79,6 +82,7 @@ pub async fn start_cli_login(
             login_id: session.id,
             login_url,
             poll_url,
+            confirmation_code,
             expires_at: session.expires_at,
             recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,
         }),

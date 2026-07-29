@@ -10,6 +10,8 @@ CREATE TABLE cli_login_sessions (
     localhost_port INTEGER,
     -- Client IP that started the session (pending-cap / forensics)
     client_ip VARCHAR,
+    -- SHA-256 of normalized confirmation code from POST /cli_login; required on approve
+    confirmation_code_hash BYTEA NOT NULL,
     -- Filled on approve; wiped on first successful poll
     plaintext_token VARCHAR,
     api_token_id INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
@@ -34,3 +36,6 @@ CREATE INDEX cli_login_sessions_ip_created_idx
 
 COMMENT ON TABLE cli_login_sessions IS
     'Short-lived cargo login ceremonies: URL → browser scopes → one-time poll delivery';
+
+COMMENT ON COLUMN cli_login_sessions.confirmation_code_hash IS
+    'SHA-256 of normalized confirmation code from POST /cli_login; required on approve';

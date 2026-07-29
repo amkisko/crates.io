@@ -74,6 +74,8 @@ pub struct ApproveCliLoginRequest {
     pub crate_scopes: Option<Vec<String>>,
     pub endpoint_scopes: Option<Vec<String>>,
     pub expired_at: Option<DateTime<Utc>>,
+    /// Confirmation code printed by the CLI after `POST /cli_login` (binds approve to that start).
+    pub confirmation_code: String,
     /// Required when API MFA is enabled: assertion from `authorize/start`.
     pub credential: Option<serde_json::Value>,
 }
@@ -130,6 +132,12 @@ pub async fn approve_cli_login(
     };
     if session.status != STATUS_PENDING {
         return Err(bad_request("this CLI login session is no longer pending"));
+    }
+
+    if !session.confirmation_code_matches(&body.confirmation_code) {
+        return Err(bad_request(
+            "confirmation code does not match; enter the code shown in your terminal after cargo login",
+        ));
     }
 
     if user.api_mfa_enabled {

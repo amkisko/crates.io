@@ -71,6 +71,8 @@
 
   let name = $state('cargo login');
   let nameInvalid = $state(false);
+  let confirmationCode = $state('');
+  let confirmationCodeInvalid = $state(false);
   let expirySelection = $state('90');
   let expiryDateInput = $state('');
   let expiryDateInvalid = $state(false);
@@ -128,6 +130,7 @@
 
   function validate(): boolean {
     nameInvalid = !name;
+    confirmationCodeInvalid = confirmationCode.replaceAll(/[^A-Za-z0-9]/g, '').length < 8;
     expiryDateInvalid = expirySelection === 'custom' && !expiryDateInput;
     scopesInvalid = scopes.length === 0;
     let crateScopesValid = crateScopes
@@ -138,7 +141,7 @@
       })
       .every(Boolean);
 
-    return !nameInvalid && !expiryDateInvalid && !scopesInvalid && crateScopesValid;
+    return !nameInvalid && !confirmationCodeInvalid && !expiryDateInvalid && !scopesInvalid && crateScopesValid;
   }
 
   async function loadMeta() {
@@ -204,6 +207,7 @@
           endpoint_scopes: scopes,
           crate_scopes: crateScopePatterns,
           expired_at: expiryDate?.toISOString() ?? null,
+          confirmation_code: confirmationCode,
           credential,
         }),
       });
@@ -329,6 +333,33 @@
     {/if}
 
     <form class="form" onsubmit={handleSubmit} data-test-cli-login-form>
+      <div class="form-group" data-test-confirmation-code-group>
+        <label for="{id}-confirmation-code" class="form-group-name">Confirmation code</label>
+        <p class="explainer">
+          Enter the code shown in your terminal after <code>cargo login</code>. It is not displayed on this page.
+        </p>
+
+        <input
+          id="{id}-confirmation-code"
+          type="text"
+          bind:value={confirmationCode}
+          disabled={isSaving}
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="characters"
+          aria-required="true"
+          aria-invalid={confirmationCodeInvalid}
+          class="name-input base-input"
+          data-test-confirmation-code
+          placeholder="XXXX-XXXX"
+          oninput={() => (confirmationCodeInvalid = false)}
+        />
+
+        {#if confirmationCodeInvalid}
+          <div class="form-group-error" data-test-error>Please enter the confirmation code from your terminal.</div>
+        {/if}
+      </div>
+
       <div class="form-group" data-test-name-group>
         <label for="{id}-name" class="form-group-name">Name</label>
 
