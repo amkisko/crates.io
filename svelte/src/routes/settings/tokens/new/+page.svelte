@@ -185,7 +185,7 @@
       throw new Error('This browser does not support passkeys.');
     }
 
-    let start = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
+    let start = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
     if (!start.ok) {
       let body = await start.json().catch(() => null);
       throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');

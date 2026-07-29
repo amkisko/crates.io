@@ -10,7 +10,7 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use http::Method;
 use insta::assert_snapshot;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn publish_returns_operation_challenge_link() {
@@ -32,7 +32,7 @@ async fn publish_returns_operation_challenge_link() {
 
     let body: Value = response.json();
     let error = &body["errors"][0];
-    assert_eq!(error["id"], "api_mfa_required");
+    assert_eq!(error["id"], "mfa_required");
     assert_eq!(error["operation"], "publish");
     assert_eq!(error["crate"], "foo_api_mfa");
 
@@ -42,13 +42,13 @@ async fn publish_returns_operation_challenge_link() {
         error["verification_url"]
             .as_str()
             .unwrap()
-            .contains(&format!("/webauthn-verify/{operation_id}"))
+            .contains(&format!("/mfa/verify/{operation_id}"))
     );
     assert!(
         error["poll_url"]
             .as_str()
             .unwrap()
-            .contains(&format!("/api/v1/me/api_mfa/challenges/{operation_id}"))
+            .contains(&format!("/api/v1/mfa/challenges/{operation_id}"))
     );
     assert!(
         error["detail"]
@@ -92,7 +92,7 @@ async fn cli_can_poll_until_acknowledged_then_publish() {
     let operation_id = body["errors"][0]["operation_id"].as_str().unwrap();
 
     let pending = token
-        .get::<Value>(&format!("/api/v1/me/api_mfa/challenges/{operation_id}"))
+        .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
         .await;
     assert_snapshot!(pending.status(), @"200 OK");
     let pending_body = pending.json();
@@ -118,7 +118,7 @@ async fn cli_can_poll_until_acknowledged_then_publish() {
     .unwrap();
 
     let ready = token
-        .get::<Value>(&format!("/api/v1/me/api_mfa/challenges/{operation_id}"))
+        .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
         .await
         .good();
     assert_eq!(ready["status"], "acknowledged");
@@ -151,7 +151,7 @@ async fn scoped_grant_does_not_cover_other_crate() {
         .publish_crate(PublishBuilder::new("foo_api_mfa_scope", "1.0.0"))
         .await;
     assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "api_mfa_required");
+    assert_eq!(response.json()["errors"][0]["id"], "mfa_required");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -248,7 +248,7 @@ async fn otp_for_other_crate_is_rejected() {
     let response = token.run::<Value>(request).await;
 
     assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "api_mfa_required");
+    assert_eq!(response.json()["errors"][0]["id"], "mfa_required");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -289,6 +289,33 @@ async fn pending_challenge_cap_is_enforced() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn challenge_create_rejects_unknown_operation() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let response = token
+        .post::<Value>(
+            "/api/v1/mfa/challenges",
+            json!({ "operation": "harmless-check", "crate_name": "foo" }).to_string(),
+        )
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert!(
+        response.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("invalid operation")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn challenge_create_is_rate_limited() {
     use crates_io::rate_limiter::LimitedAction;
     use std::time::Duration;
@@ -314,7 +341,7 @@ async fn challenge_create_is_rate_limited() {
         .publish_crate(PublishBuilder::new("foo_mfa_rl_a", "1.0.0"))
         .await;
     assert_eq!(first.status(), 403);
-    assert_eq!(first.json()["errors"][0]["id"], "api_mfa_required");
+    assert_eq!(first.json()["errors"][0]["id"], "mfa_required");
     assert_eq!(
         first.json()["errors"][0]["recommended_poll_interval_secs"],
         2

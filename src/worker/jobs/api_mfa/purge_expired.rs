@@ -1,4 +1,4 @@
-use crate::models::CliLoginSession;
+use crate::models::{ApiMfaEmailOtp, CliLoginSession};
 use crate::schema::{api_mfa_challenges, api_mfa_grants, webauthn_ceremony_states};
 use crate::worker::Environment;
 use chrono::{TimeDelta, Utc};
@@ -21,6 +21,7 @@ use tracing::info;
 /// - Challenges: kept for 24 hours after `expires_at` (forensics / late poll debugging)
 /// - Grants: deleted once expired
 /// - Ceremony states: deleted once expired
+/// - Email OTPs: deleted once expired or consumed
 /// - CLI login sessions: deleted once expired or consumed (ciphertext cleared first)
 ///
 /// Also clears `auth_state_json` on expired challenges immediately so JSONB TOAST
@@ -64,6 +65,8 @@ impl BackgroundJob for PurgeExpiredApiMfa {
         .execute(&mut conn)
         .await?;
 
+        let email_otps_deleted = ApiMfaEmailOtp::purge_expired(&conn).await?;
+
         let cli_login_deleted = CliLoginSession::purge_expired(&conn).await?;
 
         info!(
@@ -71,6 +74,7 @@ impl BackgroundJob for PurgeExpiredApiMfa {
             challenges_deleted,
             grants_deleted,
             ceremonies_deleted,
+            email_otps_deleted,
             cli_login_deleted,
             "Purged expired API MFA and CLI login rows"
         );

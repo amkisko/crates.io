@@ -5,6 +5,9 @@ use serde_json::Value as JsonValue;
 
 use crate::schema::webauthn_credentials;
 
+/// Maximum number of passkeys a user may register.
+pub const MAX_PASSKEYS_PER_USER: i64 = 10;
+
 /// A registered passkey used for API MFA step-up verification.
 #[derive(Clone, Debug, Queryable, Selectable, Identifiable, Associations)]
 #[diesel(
@@ -77,6 +80,19 @@ impl WebauthnCredential {
     pub async fn touch(&self, mut conn: &AsyncPgConnection) -> QueryResult<()> {
         diesel::update(webauthn_credentials::table.find(self.id))
             .set(webauthn_credentials::last_used_at.eq(Utc::now()))
+            .execute(&mut conn)
+            .await?;
+        Ok(())
+    }
+
+    /// Persists updated `Passkey` JSON (counter / backup flags) after authentication.
+    pub async fn update_passkey_json(
+        &self,
+        passkey_json: JsonValue,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<()> {
+        diesel::update(webauthn_credentials::table.find(self.id))
+            .set(webauthn_credentials::passkey_json.eq(passkey_json))
             .execute(&mut conn)
             .await?;
         Ok(())

@@ -27,6 +27,10 @@ pub struct StartCliLoginResponse {
     pub poll_url: String,
     /// Short code printed by the CLI; must be typed on the approve page (not returned by meta).
     pub confirmation_code: String,
+    /// Opaque secret returned only to the CLI; send as `Crates-Cli-Login-Secret` on poll.
+    ///
+    /// Not included in browser URLs or meta. Possession of `login_id` alone cannot redeem.
+    pub poll_secret: String,
     pub expires_at: DateTime<Utc>,
     pub recommended_poll_interval_secs: u64,
 }
@@ -59,7 +63,7 @@ pub async fn start_cli_login(
         .unwrap_or_else(|| "unknown".into());
 
     let mut conn = app.db_write().await?;
-    check_create_rate_limit(&client_ip, &mut conn).await?;
+    check_create_rate_limit(&app.rate_limiter, &client_ip, &mut conn).await?;
 
     let pending = crate::models::CliLoginSession::count_pending_for_ip(&client_ip, &conn).await?;
     if pending >= MAX_PENDING_CLI_LOGIN_PER_IP {
@@ -69,8 +73,8 @@ pub async fn start_cli_login(
         )));
     }
 
-    let (session, confirmation_code) =
-        NewCliLoginSession::new(body.localhost_port, Some(client_ip))
+    let (session, confirmation_code, poll_secret) =
+        NewCliLoginSession::pending_with_secrets(body.localhost_port, Some(client_ip))
             .insert(&conn)
             .await?;
 
@@ -83,6 +87,7 @@ pub async fn start_cli_login(
             login_url,
             poll_url,
             confirmation_code,
+            poll_secret,
             expires_at: session.expires_at,
             recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,
         }),

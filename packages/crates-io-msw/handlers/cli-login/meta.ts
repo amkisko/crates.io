@@ -14,12 +14,15 @@ export default http.get('/api/v1/cli_login/:id/meta', ({ params }) => {
     return HttpResponse.json({ errors: [{ detail: 'Not Found' }] }, { status: 404 });
   }
 
+  let mfaRequired = Boolean(user.apiMfaEnabled);
   return HttpResponse.json({
     login_id: session.id,
     status: session.status,
     expires_at: session.expiresAt,
     localhost_port: session.localhostPort,
     client_ip: session.clientIp ?? undefined,
-    api_mfa_required: Boolean(user.apiMfaEnabled),
+    mfa_required: mfaRequired,
+    // MSW has no passkey store; recovery path is unused in e2e unless set explicitly.
+    mfa_email_otp_allowed: false,
   });
 });

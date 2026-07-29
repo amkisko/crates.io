@@ -1,0 +1,19 @@
+{% extends "base.txt.j2" %}
+
+{% block content %}
+Hello {{ user_name }}!
+
+{% if action == "enabled" %}
+API MFA was enabled on your {{ domain }} account.
+{% elif action == "disabled" %}
+API MFA was disabled on your {{ domain }} account.
+{% elif action == "passkey_registered" %}
+A passkey{% if detail %} named "{{ detail }}"{% endif %} was registered for API MFA on your {{ domain }} account.
+{% elif action == "passkey_deleted" %}
+A passkey{% if detail %} named "{{ detail }}"{% endif %} was removed from API MFA on your {{ domain }} account.
+{% else %}
+Your API MFA settings changed on {{ domain }}.
+{% endif %}
+
+If you did not make this change, visit https://{{ domain }}/settings/mfa and review your passkeys. You can also revoke API tokens at https://{{ domain }}/settings/tokens.
+{% endblock %}

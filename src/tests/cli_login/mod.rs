@@ -2,15 +2,27 @@
 
 mod webauthn;
 
-use crate::util::{RequestHelper, TestApp};
+use crate::util::{MockRequestExt, RequestHelper, TestApp};
 use crates_io::models::ApiToken;
 use crates_io::models::token::{CrateScope, EndpointScope};
 use crates_io::schema::{api_tokens, cli_login_sessions};
 use crates_io::util::token::HashedToken;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
+use http::Method;
 use insta::assert_snapshot;
 use serde_json::{Value, json};
+
+/// Polls with the starter `poll_secret` header (required for redeem).
+async fn poll_with_secret(
+    client: &impl RequestHelper,
+    login_id: &str,
+    poll_secret: &str,
+) -> crate::util::Response<Value> {
+    let mut request = client.request_builder(Method::GET, &format!("/api/v1/cli_login/{login_id}"));
+    request.header("Crates-Cli-Login-Secret", poll_secret);
+    client.run(request).await
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn start_approve_poll_delivers_token_once() {
@@ -22,6 +34,7 @@ async fn start_approve_poll_delivers_token_once() {
         .good();
     let login_id = start["login_id"].as_str().unwrap().to_string();
     let confirmation_code = start["confirmation_code"].as_str().unwrap().to_string();
+    let poll_secret = start["poll_secret"].as_str().unwrap().to_string();
     assert!(login_id.starts_with("login_"));
     assert!(
         start["login_url"]
@@ -34,22 +47,26 @@ async fn start_approve_poll_delivers_token_once() {
         confirmation_code.len() >= 8,
         "confirmation code should be human-typed length"
     );
-    // Meta must not echo the confirmation code (phishing pages must not learn it).
+    assert!(
+        poll_secret.len() >= 32,
+        "poll secret should be high-entropy for the CLI starter"
+    );
+    // Meta must not echo the confirmation code or poll secret.
     let meta = user
         .get::<Value>(&format!("/api/v1/cli_login/{login_id}/meta"))
         .await
         .good();
     assert!(meta.get("confirmation_code").is_none());
+    assert!(meta.get("poll_secret").is_none());
 
-    let pending = anon
-        .get::<Value>(&format!("/api/v1/cli_login/{login_id}"))
+    let pending = poll_with_secret(&anon, &login_id, &poll_secret)
         .await
         .good();
     assert_eq!(pending["status"], "pending");
     assert!(pending.get("token").is_none());
 
     assert_eq!(meta["status"], "pending");
-    assert_eq!(meta["api_mfa_required"], false);
+    assert_eq!(meta["mfa_required"], false);
 
     // Wait out the per-session poll pacing before approve+redeem.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -79,7 +96,7 @@ async fn start_approve_poll_delivers_token_once() {
         let mut conn = app.db_conn().await;
         let sealed: Option<String> = cli_login_sessions::table
             .find(&login_id)
-            .select(cli_login_sessions::plaintext_token)
+            .select(cli_login_sessions::sealed_token)
             .first(&mut conn)
             .await
             .unwrap();
@@ -87,8 +104,7 @@ async fn start_approve_poll_delivers_token_once() {
         assert!(!sealed.starts_with("cio"));
     }
 
-    let ready = anon
-        .get::<Value>(&format!("/api/v1/cli_login/{login_id}"))
+    let ready = poll_with_secret(&anon, &login_id, &poll_secret)
         .await
         .good();
     assert_eq!(ready["status"], "ready");
@@ -97,8 +113,7 @@ async fn start_approve_poll_delivers_token_once() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let second = anon
-        .get::<Value>(&format!("/api/v1/cli_login/{login_id}"))
+    let second = poll_with_secret(&anon, &login_id, &poll_secret)
         .await
         .good();
     assert_eq!(second["status"], "consumed");
@@ -134,7 +149,7 @@ async fn start_approve_poll_delivers_token_once() {
 
     let plaintext: Option<String> = cli_login_sessions::table
         .find(&login_id)
-        .select(cli_login_sessions::plaintext_token)
+        .select(cli_login_sessions::sealed_token)
         .first(&mut conn)
         .await
         .unwrap();
@@ -149,6 +164,40 @@ async fn start_approve_poll_delivers_token_once() {
         approve["api_token_id"].as_i64().unwrap() as i32
     );
     assert_eq!(looked_up.user_id, user.as_model().id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn poll_without_secret_is_rejected() {
+    let (_, anon, _) = TestApp::full().with_user().await;
+    let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
+    let login_id = start["login_id"].as_str().unwrap();
+
+    let response = anon
+        .get::<Value>(&format!("/api/v1/cli_login/{login_id}"))
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert!(
+        response.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Crates-Cli-Login-Secret")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn poll_with_wrong_secret_is_forbidden() {
+    let (_, anon, _) = TestApp::full().with_user().await;
+    let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
+    let login_id = start["login_id"].as_str().unwrap();
+
+    let response = poll_with_secret(&anon, login_id, "definitely-not-the-secret").await;
+    assert_snapshot!(response.status(), @"403 Forbidden");
+    assert!(
+        response.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("invalid CLI login poll secret")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -238,15 +287,19 @@ async fn approve_without_cookie_is_forbidden() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mfa_enabled_approve_requires_credential() {
+    use crates_io::models::NewWebauthnCredential;
+
     let (app, anon, user) = TestApp::full().with_user().await;
     let mut conn = app.db_conn().await;
+    let user_id = user.as_model().id;
 
-    diesel::update(crates_io::schema::users::table.find(user.as_model().id))
+    diesel::update(crates_io::schema::users::table.find(user_id))
         .set(crates_io::schema::users::api_mfa_enabled.eq(true))
         .execute(&mut conn)
         .await
         .unwrap();
 
+    // Zero passkeys: recovery path requires email OTP (not a dead-end).
     let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap();
     let confirmation_code = start["confirmation_code"].as_str().unwrap();
@@ -255,7 +308,8 @@ async fn mfa_enabled_approve_requires_credential() {
         .get::<Value>(&format!("/api/v1/cli_login/{login_id}/meta"))
         .await
         .good();
-    assert_eq!(meta["api_mfa_required"], true);
+    assert_eq!(meta["mfa_required"], true);
+    assert_eq!(meta["mfa_email_otp_allowed"], true);
 
     let response = user
         .post::<Value>(
@@ -269,9 +323,49 @@ async fn mfa_enabled_approve_requires_credential() {
         )
         .await;
     assert_snapshot!(response.status(), @"400 Bad Request");
-    let body = response.json();
     assert!(
-        body["errors"][0]["detail"]
+        response.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("email verification code required")
+    );
+
+    // With a passkey registered, approve requires a passkey assertion.
+    NewWebauthnCredential {
+        user_id,
+        credential_id: b"dummy-cli-login-passkey",
+        passkey_json: json!({ "dummy": true }),
+        name: "test-passkey",
+    }
+    .insert(&conn)
+    .await
+    .unwrap();
+
+    let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
+    let login_id = start["login_id"].as_str().unwrap();
+    let confirmation_code = start["confirmation_code"].as_str().unwrap();
+
+    let meta = user
+        .get::<Value>(&format!("/api/v1/cli_login/{login_id}/meta"))
+        .await
+        .good();
+    assert_eq!(meta["mfa_required"], true);
+    assert_eq!(meta["mfa_email_otp_allowed"], false);
+
+    let response = user
+        .post::<Value>(
+            &format!("/api/v1/cli_login/{login_id}/approve"),
+            json!({
+                "name": "mfa-cli-passkey",
+                "endpoint_scopes": ["yank"],
+                "confirmation_code": confirmation_code,
+            })
+            .to_string(),
+        )
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert!(
+        response.json()["errors"][0]["detail"]
             .as_str()
             .unwrap()
             .contains("passkey verification required")

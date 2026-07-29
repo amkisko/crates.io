@@ -15,8 +15,8 @@ pub fn build_webauthn(config: &WebauthnConfig) -> AppResult<Webauthn> {
 
 /// Completes a passkey authentication ceremony started via authorize/start (or equivalent).
 ///
-/// Takes server-side [`KIND_AUTHENTICATION`] state, verifies the assertion, and touches the
-/// matching credential's `last_used_at`.
+/// Takes server-side [`KIND_AUTHENTICATION`] state, verifies the assertion, and records
+/// `last_used_at` plus any counter / backup-flag updates on the matching credential.
 pub async fn complete_passkey_authentication(
     user_id: i32,
     credential_body: &serde_json::Value,
@@ -36,15 +36,48 @@ pub async fn complete_passkey_authentication(
         .finish_passkey_authentication(&auth_response, &auth_state)
         .map_err(|err| bad_request(format!("passkey authentication failed: {err}")))?;
 
-    let credentials = WebauthnCredential::for_user(user_id, conn).await?;
-    for credential in &credentials {
-        if credential.credential_id.as_slice() == auth_result.cred_id().as_slice() {
-            credential.touch(conn).await?;
-            break;
-        }
-    }
+    record_passkey_authentication(user_id, &auth_result, conn).await?;
 
     Ok(auth_result)
+}
+
+/// Touches `last_used_at` and persists `Passkey` counter / backup updates when needed.
+pub async fn record_passkey_authentication(
+    user_id: i32,
+    auth_result: &AuthenticationResult,
+    conn: &mut AsyncPgConnection,
+) -> AppResult<()> {
+    let credentials = WebauthnCredential::for_user(user_id, conn).await?;
+    for credential in &credentials {
+        if credential.credential_id.as_slice() != auth_result.cred_id().as_slice() {
+            continue;
+        }
+
+        credential.touch(conn).await?;
+
+        if auth_result.needs_update() {
+            let mut passkey: Passkey = serde_json::from_value(credential.passkey_json.clone())
+                .map_err(|err| {
+                    server_error(format!(
+                        "corrupt passkey credential {}: {err}",
+                        credential.id
+                    ))
+                })?;
+            if passkey.update_credential(auth_result) == Some(true) {
+                let passkey_json = serde_json::to_value(&passkey).map_err(|err| {
+                    server_error(format!(
+                        "failed to serialize updated passkey {}: {err}",
+                        credential.id
+                    ))
+                })?;
+                credential.update_passkey_json(passkey_json, conn).await?;
+            }
+        }
+
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 /// Deserializes stored passkeys for a user.

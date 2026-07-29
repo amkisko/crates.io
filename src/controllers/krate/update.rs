@@ -85,6 +85,7 @@ pub async fn update_crate(
                 webauthn: &app.config.webauthn,
                 rate_limiter: &app.rate_limiter,
                 metrics: &app.instance_metrics,
+                enforcement_enabled: app.config.api_mfa_enforcement_enabled,
             },
             ApiMfaOperation::change_trustpub_only(&krate.name),
         )

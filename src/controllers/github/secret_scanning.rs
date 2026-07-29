@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::email::EmailMessage;
-use crate::models::{ApiToken, User};
+use crate::models::{ApiToken, NewUserSecurityEvent, SecurityEventType, User};
 use crate::schema::{api_tokens, crate_owners, crates, emails};
 use crate::util::errors::{AppResult, BoxedAppError, bad_request};
 use crate::util::token::HashedToken;
@@ -200,6 +200,16 @@ async fn alert_revoke_token(
         .set(api_tokens::revoked.eq(true))
         .execute(conn)
         .await?;
+
+    NewUserSecurityEvent::new(
+        token.user_id,
+        SecurityEventType::TokenRevokedGithub,
+        Some(token.id),
+        None,
+        serde_json::json!({ "token_name": token.name }),
+    )
+    .record(conn)
+    .await;
 
     warn!(
         token_id = %token.id, user_id = %token.user_id,

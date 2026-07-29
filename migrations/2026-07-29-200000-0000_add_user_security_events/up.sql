@@ -1,0 +1,26 @@
+-- Durable security activity for account holders (owner-only feed).
+-- Retention: 90 days via security_events::purge_expired.
+-- Erasure: CASCADE on user delete. Metadata is allowlisted in application code.
+CREATE TABLE user_security_events (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    api_token_id INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
+    event_type INTEGER NOT NULL,
+    -- Truncated at write time (/24 IPv4, /56 IPv6). Never logged to app/Sentry.
+    ip VARCHAR,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Set only for `token_used` (event_type = 5); enables the daily unique index.
+    event_day DATE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX user_security_events_user_id_id_idx
+    ON user_security_events (user_id, id DESC);
+
+CREATE INDEX user_security_events_created_at_idx
+    ON user_security_events (created_at);
+
+-- At most one `token_used` event per API token per UTC day.
+-- Other events leave `event_day` null; PostgreSQL treats nulls as distinct in unique indexes.
+CREATE UNIQUE INDEX user_security_events_token_used_daily_uidx
+    ON user_security_events (api_token_id, event_day);

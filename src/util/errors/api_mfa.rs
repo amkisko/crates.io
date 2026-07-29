@@ -36,7 +36,7 @@ impl AppError for ApiMfaRequired {
         let json = json!({
             "errors": [{
                 "detail": &self.detail,
-                "id": "api_mfa_required",
+                "id": "mfa_required",
                 "operation_id": &self.operation_id,
                 "operation": &self.operation,
                 "crate": &self.crate_name,

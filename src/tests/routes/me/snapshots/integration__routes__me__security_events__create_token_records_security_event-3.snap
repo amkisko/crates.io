@@ -1,0 +1,21 @@
+---
+source: src/tests/routes/me/security_events.rs
+expression: response.json()
+---
+{
+  "meta": {
+    "total": 1
+  },
+  "security_events": [
+    {
+      "api_token_id": "[id]",
+      "created_at": "[datetime]",
+      "event_type": "token_created",
+      "id": "[id]",
+      "ip": null,
+      "metadata": {
+        "token_name": "audit-me"
+      }
+    }
+  ]
+}

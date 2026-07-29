@@ -229,6 +229,7 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
                 webauthn: &app.config.webauthn,
                 rate_limiter: &app.rate_limiter,
                 metrics: &app.instance_metrics,
+                enforcement_enabled: app.config.api_mfa_enforcement_enabled,
             },
             ApiMfaOperation::publish(&*metadata.name),
         )

@@ -27,6 +27,33 @@ pub const CRATES_MFA_OPERATION_ID_HEADER: &str = "crates-mfa-operation-id";
 /// Recommended CLI poll interval for challenge acknowledgment (seconds).
 pub const RECOMMENDED_POLL_INTERVAL_SECS: u64 = 2;
 
+/// Allowed `operation` values for preflight `POST /api/v1/mfa/challenges`.
+pub const ALLOWED_CHALLENGE_OPERATIONS: &[&str] = &[
+    "publish",
+    "yank",
+    "unyank",
+    "change-owners",
+    "change-trustpub-only",
+    "change-trusted-publishing",
+    "delete-crate",
+    "manual",
+];
+
+/// Normalizes and validates a preflight challenge operation label.
+pub fn normalize_challenge_operation(raw: Option<&str>) -> AppResult<String> {
+    let op = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("manual");
+    if ALLOWED_CHALLENGE_OPERATIONS.contains(&op) {
+        return Ok(op.to_owned());
+    }
+    Err(bad_request(format!(
+        "invalid operation `{op}`; allowed values: {}",
+        ALLOWED_CHALLENGE_OPERATIONS.join(", ")
+    )))
+}
+
 /// Dangerous API operation that requires passkey acknowledgment when API MFA is enabled.
 #[derive(Debug, Clone)]
 pub struct ApiMfaOperation {
@@ -70,6 +97,22 @@ impl ApiMfaOperation {
             crate_name: Some(crate_name.into()),
         }
     }
+
+    /// Create or delete Trusted Publishing configs for a crate.
+    pub fn change_trusted_publishing(crate_name: impl Into<String>) -> Self {
+        Self {
+            kind: "change-trusted-publishing",
+            crate_name: Some(crate_name.into()),
+        }
+    }
+
+    /// Delete a crate (`DELETE /api/v1/crates/{name}`).
+    pub fn delete_crate(crate_name: impl Into<String>) -> Self {
+        Self {
+            kind: "delete-crate",
+            crate_name: Some(crate_name.into()),
+        }
+    }
 }
 
 /// Shared dependencies for [`ensure_api_mfa`].
@@ -77,12 +120,14 @@ pub struct ApiMfaEnsureDeps<'a> {
     pub webauthn: &'a WebauthnConfig,
     pub rate_limiter: &'a RateLimiter,
     pub metrics: &'a InstanceMetrics,
+    /// When false (`API_MFA_ENFORCEMENT_ENABLED=false`), skip enforcement entirely.
+    pub enforcement_enabled: bool,
 }
 
 enum EnsureOutcome {
     Grant,
     Otp,
-    /// Token client: CLI handshake challenge (`403` `api_mfa_required`).
+    /// Token client: CLI handshake challenge (`403` `mfa_required`).
     Challenge(BoxedAppError),
     /// Cookie session: must authorize on the settings page first (`400`).
     CookieAuthorize(BoxedAppError),
@@ -92,8 +137,9 @@ enum EnsureOutcome {
 /// Ensures requests satisfy API MFA when the user has it enabled.
 ///
 /// Applies to both API tokens and website cookie sessions for publish, yank,
-/// change-owners, and `trustpub_only` toggles. Trusted Publishing tokens are not
-/// routed through this helper.
+/// change-owners, crate delete, Trusted Publishing config changes, and
+/// `trustpub_only` toggles. Trusted Publishing OIDC tokens are not routed
+/// through this helper.
 ///
 /// Acceptance when MFA is enabled:
 /// 1. A non-expired [`ApiMfaGrant`] covering this operation/crate, or
@@ -109,7 +155,7 @@ pub async fn ensure_api_mfa(
     operation: ApiMfaOperation,
 ) -> AppResult<()> {
     let user = auth.user();
-    if !user.api_mfa_enabled {
+    if !deps.enforcement_enabled || !user.api_mfa_enabled {
         return Ok(());
     }
 
@@ -190,7 +236,9 @@ async fn ensure_api_mfa_inner(
     let credentials = WebauthnCredential::for_user(user.id, conn).await?;
     if credentials.is_empty() {
         return Err(bad_request(
-            "API MFA is enabled but no passkeys are registered. Sign in on the website and add a passkey under Settings → API MFA.",
+            "API MFA is enabled but no passkeys are registered. Sign in on the website, \
+             request an email code under Settings → API MFA, and register a passkey \
+             (or disable API MFA with an email code).",
         ));
     }
 
@@ -227,12 +275,12 @@ async fn ensure_api_mfa_inner(
 /// Builds absolute verification and poll URLs from the `WebAuthn` RP origin.
 ///
 /// The verify page is a top-level capability URL (no crates.io cookie), modeled
-/// after RubyGems `/webauthn_verification/…`.
+/// after the `RubyGems` `/webauthn_verification/…` pattern.
 pub fn public_mfa_urls(webauthn: &WebauthnConfig, operation_id: &str) -> (String, String) {
     let base = webauthn.rp_origin.as_str().trim_end_matches('/');
     (
-        format!("{base}/webauthn-verify/{operation_id}"),
-        format!("{base}/api/v1/me/api_mfa/challenges/{operation_id}"),
+        format!("{base}/mfa/verify/{operation_id}"),
+        format!("{base}/api/v1/mfa/challenges/{operation_id}"),
     )
 }
 
@@ -291,18 +339,65 @@ async fn resolve_or_create_challenge(
         )));
     }
 
-    let challenge = NewApiMfaChallenge::new(
+    let (challenge, created) = insert_challenge_or_reuse_pending(
         user_id,
-        Some(api_token_id),
+        api_token_id,
         operation.kind,
         operation.crate_name.clone(),
         localhost_port,
+        conn,
     )
-    .insert(conn)
     .await?;
 
-    deps.metrics.api_mfa_challenges_created_total.inc();
+    if created {
+        deps.metrics.api_mfa_challenges_created_total.inc();
+    }
     Ok(challenge)
+}
+
+/// Inserts a challenge, or reuses the pending row when a concurrent insert hit the unique index.
+///
+/// Returns `(challenge, created)` where `created` is false on unique-violation reuse.
+pub async fn insert_challenge_or_reuse_pending(
+    user_id: i32,
+    api_token_id: i32,
+    operation: &str,
+    crate_name: Option<String>,
+    localhost_port: Option<i32>,
+    conn: &mut AsyncPgConnection,
+) -> AppResult<(ApiMfaChallenge, bool)> {
+    use diesel::result::{DatabaseErrorKind, Error as DieselError};
+
+    let crate_name_for_lookup = crate_name.clone();
+    match NewApiMfaChallenge::new(
+        user_id,
+        Some(api_token_id),
+        operation,
+        crate_name,
+        localhost_port,
+    )
+    .insert(conn)
+    .await
+    {
+        Ok(challenge) => Ok((challenge, true)),
+        Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+            let existing = ApiMfaChallenge::find_pending_for_operation(
+                user_id,
+                api_token_id,
+                operation,
+                crate_name_for_lookup.as_deref(),
+                conn,
+            )
+            .await?
+            .ok_or_else(|| {
+                crate::util::errors::server_error(
+                    "API MFA challenge unique conflict but no pending row found",
+                )
+            })?;
+            Ok((existing, false))
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn api_mfa_required_error(

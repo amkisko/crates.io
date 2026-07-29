@@ -1,6 +1,7 @@
 //! `SoftPasskey` coverage for MFA-gated CLI login approve.
 
-use crate::util::{RequestHelper, TestApp};
+use crate::util::{MockCookieUser, MockRequestExt, RequestHelper, TestApp};
+use regex::regex;
 use serde_json::{Value, json};
 use url::Url;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
@@ -11,12 +12,16 @@ const TEST_ORIGIN: &str = "http://localhost:8888";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn approve_with_soft_passkey_when_mfa_enabled() {
-    let (_, anon, user) = TestApp::full().with_user().await;
+    let (app, anon, user) = TestApp::full().with_user().await;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
-    register_passkey(&user, &mut authenticator, "cli-login-passkey").await;
+    register_passkey(&app, &user, &mut authenticator, "cli-login-passkey").await;
+    let otp = request_email_code(&app, &user).await;
     let enabled = user
-        .put::<Value>("/api/v1/me/api_mfa", json!({ "enabled": true }).to_string())
+        .put::<Value>(
+            "/api/v1/me/mfa",
+            json!({ "enabled": true, "email_code": otp }).to_string(),
+        )
         .await;
     assert_eq!(enabled.status(), 200);
 
@@ -42,23 +47,44 @@ async fn approve_with_soft_passkey_when_mfa_enabled() {
     assert!(approve.json().get("token").is_none());
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let ready = anon
-        .get::<Value>(&format!("/api/v1/cli_login/{login_id}"))
-        .await
-        .good();
+    let poll_secret = start["poll_secret"].as_str().unwrap();
+    let mut request =
+        anon.request_builder(http::Method::GET, &format!("/api/v1/cli_login/{login_id}"));
+    request.header("Crates-Cli-Login-Secret", poll_secret);
+    let ready = anon.run::<Value>(request).await.good();
     assert_eq!(ready["status"], "ready");
     assert!(ready["token"].as_str().unwrap().starts_with("cio"));
 }
 
+async fn request_email_code(app: &TestApp, user: &MockCookieUser) -> String {
+    let before = app.emails().await.len();
+    user.post::<Value>("/api/v1/me/mfa/email_codes", "")
+        .await
+        .good();
+    let emails = app.emails().await;
+    assert!(emails.len() > before);
+    let latest = emails.last().unwrap();
+    let decoded = quoted_printable::decode(latest, quoted_printable::ParseMode::Robust).unwrap();
+    let body = String::from_utf8_lossy(&decoded);
+    regex!(r"<strong>([A-Za-z0-9]{8})</strong>")
+        .captures(&body)
+        .or_else(|| regex!(r"(?m)^([A-Za-z0-9]{8})\r?$").captures(&body))
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_owned())
+        .unwrap_or_else(|| panic!("email OTP not found in: {body}"))
+}
+
 async fn register_passkey(
-    user: &crate::util::MockCookieUser,
+    app: &TestApp,
+    user: &MockCookieUser,
     authenticator: &mut WebauthnAuthenticator<SoftPasskey>,
     name: &str,
 ) {
+    let otp = request_email_code(app, user).await;
     let start = user
         .post::<Value>(
-            "/api/v1/me/api_mfa/credentials/start",
-            json!({}).to_string(),
+            "/api/v1/me/mfa/passkeys/start",
+            json!({ "email_code": otp }).to_string(),
         )
         .await
         .good();
@@ -70,7 +96,7 @@ async fn register_passkey(
         .expect("soft passkey registration");
     let finish = user
         .post::<Value>(
-            "/api/v1/me/api_mfa/credentials/finish",
+            "/api/v1/me/mfa/passkeys/finish",
             json!({
                 "name": name,
                 "credential": attestation,
@@ -82,11 +108,11 @@ async fn register_passkey(
 }
 
 async fn authenticate(
-    user: &crate::util::MockCookieUser,
+    user: &MockCookieUser,
     authenticator: &mut WebauthnAuthenticator<SoftPasskey>,
 ) -> Value {
     let start = user
-        .post::<Value>("/api/v1/me/api_mfa/authorize/start", "")
+        .post::<Value>("/api/v1/me/mfa/authorize/start", "")
         .await
         .good();
     let rcr = RequestChallengeResponse {

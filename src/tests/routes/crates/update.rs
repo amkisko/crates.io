@@ -326,7 +326,7 @@ async fn trustpub_only_change_requires_api_mfa_grant() {
         passkey_json: json!({ "dummy": true }),
         name: "test-passkey",
     }
-    .insert(&mut conn)
+    .insert(&conn)
     .await
     .unwrap();
 

@@ -130,11 +130,15 @@ fn dirs_next_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Header binding poll redeem to the CLI that called `POST /cli_login`.
+pub const POLL_SECRET_HEADER: &str = "Crates-Cli-Login-Secret";
+
 #[derive(Debug, Deserialize)]
 struct StartResponse {
     login_url: String,
     poll_url: String,
     confirmation_code: String,
+    poll_secret: String,
     recommended_poll_interval_secs: Option<u64>,
 }
 
@@ -158,7 +162,7 @@ pub fn run_link_login(
         .error_for_status()?
         .json()?;
 
-    // Never print the token; URL + confirmation code belong on stderr.
+    // Never print the token or poll_secret; URL + confirmation code belong on stderr.
     let mut stderr = io::stderr().lock();
     writeln!(
         stderr,
@@ -178,6 +182,7 @@ pub fn run_link_login(
         thread::sleep(interval);
         let poll: PollResponse = http
             .get(&start.poll_url)
+            .header(POLL_SECRET_HEADER, &start.poll_secret)
             .send()?
             .error_for_status()?
             .json()?;
@@ -312,6 +317,7 @@ mod tests {
                 "login_url": format!("{}/settings/tokens/cli/login_test", server.base_url()),
                 "poll_url": format!("{}/api/v1/cli_login/login_test", server.base_url()),
                 "confirmation_code": "ABCD-EFGH",
+                "poll_secret": "pollsecret_test_abcdefghijklmnopqrstuv",
                 "expires_at": "2099-01-01T00:00:00Z",
                 "recommended_poll_interval_secs": 0,
             }));
@@ -320,7 +326,9 @@ mod tests {
         let polls = Arc::new(AtomicUsize::new(0));
         let polls_for_mock = polls.clone();
         let poll_mock = server.mock(|when, then| {
-            when.method(GET).path("/api/v1/cli_login/login_test");
+            when.method(GET)
+                .path("/api/v1/cli_login/login_test")
+                .header(POLL_SECRET_HEADER, "pollsecret_test_abcdefghijklmnopqrstuv");
             then.respond_with(move |_req| {
                 let n = polls_for_mock.fetch_add(1, Ordering::SeqCst);
                 let body = if n == 0 {
@@ -357,12 +365,16 @@ mod tests {
                 "login_url": format!("{}/settings/tokens/cli/login_x", server.base_url()),
                 "poll_url": format!("{}/api/v1/cli_login/login_x", server.base_url()),
                 "confirmation_code": "WXYZ-2345",
+                "poll_secret": "pollsecret_login_x_abcdefghijklmnopqrst",
                 "expires_at": "2099-01-01T00:00:00Z",
                 "recommended_poll_interval_secs": 0,
             }));
         });
         server.mock(|when, then| {
-            when.method(GET).path("/api/v1/cli_login/login_x");
+            when.method(GET).path("/api/v1/cli_login/login_x").header(
+                POLL_SECRET_HEADER,
+                "pollsecret_login_x_abcdefghijklmnopqrst",
+            );
             then.status(200).json_body(serde_json::json!({
                 "status": "ready",
                 "token": "cio_secret_never_echo",

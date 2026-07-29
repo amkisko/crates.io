@@ -67,12 +67,35 @@ diesel::table! {
         last_polled_at -> Nullable<Timestamptz>,
         /// Optional localhost port for posting the token back to the CLI
         localhost_port -> Nullable<Int4>,
-        /// Plaintext token stashed for one poll redeem; wiped after consume
-        plaintext_token -> Nullable<Varchar>,
+        /// SHA-256 of poll secret returned only to the CLI starter; required on GET poll
+        poll_secret_hash -> Bytea,
+        /// Encrypted redeem blob stashed for one poll redeem; wiped after consume
+        sealed_token -> Nullable<Varchar>,
         /// `pending` | `ready` | `consumed`
         status -> Varchar,
         /// User that approved the session
         user_id -> Nullable<Int4>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use diesel_full_text_search::Tsvector;
+
+    /// Short-lived email OTPs for API MFA enable/disable and passkey enrollment recovery
+    api_mfa_email_otps (id) {
+        /// Date and time when the OTP was consumed
+        consumed_at -> Nullable<Timestamptz>,
+        /// Date and time when the OTP was created
+        created_at -> Timestamptz,
+        /// Date and time when the OTP will expire
+        expires_at -> Timestamptz,
+        /// SHA-256 of the plaintext OTP
+        hashed_otp -> Bytea,
+        /// Unique identifier of the `api_mfa_email_otps` row
+        id -> Int8,
+        /// User that requested the OTP
+        user_id -> Int4,
     }
 }
 
@@ -1131,6 +1154,31 @@ diesel::table! {
     use diesel::sql_types::*;
     use diesel_full_text_search::Tsvector;
 
+    /// Durable security activity events for account auditing (logins, tokens, API MFA)
+    user_security_events (id) {
+        /// API token related to the event, if any
+        api_token_id -> Nullable<Int4>,
+        /// Date and time when the event was recorded
+        created_at -> Timestamptz,
+        /// UTC calendar day for `token_used` throttle uniqueness; null for other events
+        event_day -> Nullable<Date>,
+        /// Event kind (see `SecurityEventType`)
+        event_type -> Int4,
+        /// Unique identifier of the `user_security_events` row
+        id -> Int8,
+        /// Client IP when available
+        ip -> Nullable<Varchar>,
+        /// Extra structured context (token name, crate, operation, …)
+        metadata -> Jsonb,
+        /// User the event belongs to
+        user_id -> Int4,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use diesel_full_text_search::Tsvector;
+
     /// In-progress WebAuthn ceremony state for API MFA register/authorize flows
     webauthn_ceremony_states (id) {
         /// Date and time when the ceremony was started
@@ -1443,14 +1491,18 @@ diesel::joinable!(versions_published_by -> versions (version_id));
 
 diesel::joinable!(api_mfa_challenges -> api_tokens (api_token_id));
 diesel::joinable!(api_mfa_challenges -> users (user_id));
+diesel::joinable!(api_mfa_email_otps -> users (user_id));
 diesel::joinable!(api_mfa_grants -> users (user_id));
 diesel::joinable!(cli_login_sessions -> api_tokens (api_token_id));
 diesel::joinable!(cli_login_sessions -> users (user_id));
+diesel::joinable!(user_security_events -> api_tokens (api_token_id));
+diesel::joinable!(user_security_events -> users (user_id));
 diesel::joinable!(webauthn_ceremony_states -> users (user_id));
 diesel::joinable!(webauthn_credentials -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     api_mfa_challenges,
+    api_mfa_email_otps,
     api_mfa_grants,
     api_tokens,
     cli_login_sessions,
@@ -1485,6 +1537,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     trustpub_tokens,
     trustpub_used_jtis,
     users,
+    user_security_events,
     version_downloads,
     version_owner_actions,
     versions,

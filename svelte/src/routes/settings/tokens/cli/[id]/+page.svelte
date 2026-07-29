@@ -19,7 +19,8 @@
     expires_at: string;
     localhost_port: number | null;
     client_ip?: string | null;
-    api_mfa_required: boolean;
+    mfa_required: boolean;
+    mfa_email_otp_allowed: boolean;
   }
 
   let session = getSession();
@@ -73,6 +74,8 @@
   let nameInvalid = $state(false);
   let confirmationCode = $state('');
   let confirmationCodeInvalid = $state(false);
+  let emailOtp = $state('');
+  let emailOtpHint = $state<string | null>(null);
   let expirySelection = $state('90');
   let expiryDateInput = $state('');
   let expiryDateInvalid = $state(false);
@@ -163,14 +166,25 @@
     }
   }
 
+  async function sendEmailOtp() {
+    let response = await fetch('/api/v1/me/mfa/email_codes', { method: 'POST' });
+    if (!response.ok) {
+      let body = await response.json().catch(() => null);
+      throw new Error(body?.errors?.[0]?.detail ?? 'Failed to send email code');
+    }
+    let body = await response.json();
+    emailOtpHint = body.sent_to_hint;
+    notifications.success(`Verification code sent to ${body.sent_to_hint}.`);
+  }
+
   async function assertPasskeyIfNeeded(): Promise<unknown | undefined> {
-    if (!meta?.api_mfa_required) return undefined;
+    if (!meta?.mfa_required || meta.mfa_email_otp_allowed) return undefined;
 
     if (!globalThis.PublicKeyCredential) {
       throw new Error('This browser does not support passkeys.');
     }
 
-    let start = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
+    let start = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
     if (!start.ok) {
       let body = await start.json().catch(() => null);
       throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
@@ -198,6 +212,10 @@
       }
 
       let credential = await assertPasskeyIfNeeded();
+      let email_code = meta?.mfa_required && meta.mfa_email_otp_allowed ? emailOtp.trim() || undefined : undefined;
+      if (meta?.mfa_required && meta.mfa_email_otp_allowed && !email_code) {
+        throw new Error('Request an email verification code, then enter it to approve this login.');
+      }
 
       let response = await fetch(`/api/v1/cli_login/${loginId}/approve`, {
         method: 'POST',
@@ -209,6 +227,7 @@
           expired_at: expiryDate?.toISOString() ?? null,
           confirmation_code: confirmationCode,
           credential,
+          email_code,
         }),
       });
 
@@ -326,13 +345,52 @@
       </p>
     {/if}
 
-    {#if meta.api_mfa_required}
+    {#if meta.mfa_required && meta.mfa_email_otp_allowed}
+      <p class="explainer" data-test-cli-login-mfa-note>
+        API MFA is enabled and no passkeys are registered. Approving this login requires an email verification code
+        (same recovery path as Settings → API MFA).
+      </p>
+    {:else if meta.mfa_required}
       <p class="explainer" data-test-cli-login-mfa-note>
         API MFA is enabled on your account. Approving this login will ask for a passkey confirmation.
       </p>
     {/if}
 
     <form class="form" onsubmit={handleSubmit} data-test-cli-login-form>
+      {#if meta.mfa_required && meta.mfa_email_otp_allowed}
+        <div class="form-group" data-test-cli-login-email-otp-group>
+          <label for="{id}-email-otp" class="form-group-name">Email verification code</label>
+          <p class="explainer">
+            Request a code to your verified email, then enter it here.
+            {#if emailOtpHint}
+              Sent to <code>{emailOtpHint}</code>.
+            {/if}
+          </p>
+          <div class="email-otp-row">
+            <input
+              id="{id}-email-otp"
+              type="text"
+              bind:value={emailOtp}
+              disabled={isSaving}
+              autocomplete="one-time-code"
+              spellcheck="false"
+              class="name-input base-input"
+              data-test-cli-login-email-otp
+              placeholder="Email code"
+            />
+            <button
+              type="button"
+              class="button button--small"
+              data-test-cli-login-send-email-otp
+              disabled={isSaving}
+              onclick={() => sendEmailOtp().catch(error => notifications.error(error.message))}
+            >
+              Send code
+            </button>
+          </div>
+        </div>
+      {/if}
+
       <div class="form-group" data-test-confirmation-code-group>
         <label for="{id}-confirmation-code" class="form-group-name">Confirmation code</label>
         <p class="explainer">
@@ -548,6 +606,13 @@
   .buttons {
     position: relative;
     margin: var(--space-m) 0;
+  }
+
+  .email-otp-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+    align-items: center;
   }
 
   .select-group {

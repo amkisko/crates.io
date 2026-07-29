@@ -2,6 +2,8 @@
 
 pub mod authorize;
 pub mod challenges;
-pub mod credentials;
+pub mod email_codes;
+pub(crate) mod notify;
+pub mod passkeys;
 pub mod status;
 pub(crate) mod webauthn_util;

@@ -6,6 +6,7 @@ mod git;
 mod normalize_index;
 mod readmes;
 mod rss;
+mod security_events;
 mod send_publish_notifications;
 mod squash_index;
 mod sync_admins;

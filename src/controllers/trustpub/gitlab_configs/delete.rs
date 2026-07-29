@@ -1,3 +1,4 @@
+use crate::api_mfa::{ApiMfaEnsureDeps, ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::AuthCheck;
 use crate::controllers::trustpub::emails::{ConfigDeletedEmail, ConfigType};
@@ -48,6 +49,20 @@ pub async fn delete_trustpub_gitlab_config(
         .check(&parts, &mut conn)
         .await?;
     let auth_user = auth.user();
+
+    ensure_api_mfa(
+        &auth,
+        &parts,
+        &mut conn,
+        ApiMfaEnsureDeps {
+            webauthn: &state.config.webauthn,
+            rate_limiter: &state.rate_limiter,
+            metrics: &state.instance_metrics,
+            enforcement_enabled: state.config.api_mfa_enforcement_enabled,
+        },
+        ApiMfaOperation::change_trusted_publishing(&krate.name),
+    )
+    .await?;
 
     // Load all crate owners for the given crate ID
     let user_owners = crate_owners::table

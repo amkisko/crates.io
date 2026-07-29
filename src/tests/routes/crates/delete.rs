@@ -377,6 +377,52 @@ async fn adjust_downloads(
     Ok(())
 }
 
+/// Cookie session with API MFA enabled cannot delete a crate without a grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_requires_api_mfa_grant() -> anyhow::Result<()> {
+    use crates_io::models::{NewApiMfaGrant, NewWebauthnCredential};
+    use crates_io::schema::users;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use serde_json::json;
+
+    let (app, _, user) = TestApp::full().with_git_index().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    publish_crate(&user, "foo_mfa_delete").await;
+    adjust_creation_date(&mut conn, "foo_mfa_delete", 71).await?;
+
+    let owner_id = user.as_model().id;
+    diesel::update(users::table.find(owner_id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await?;
+    NewWebauthnCredential {
+        user_id: owner_id,
+        credential_id: b"dummy-credential-id-delete",
+        passkey_json: json!({ "dummy": true }),
+        name: "test-passkey",
+    }
+    .insert(&conn)
+    .await?;
+
+    let blocked = delete_crate(&user, "foo_mfa_delete").await;
+    assert_snapshot!(blocked.status(), @"400 Bad Request");
+    assert!(
+        blocked.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Authorize for 15 minutes")
+    );
+
+    NewApiMfaGrant::for_user(owner_id).insert(&conn).await?;
+
+    let allowed = delete_crate(&user, "foo_mfa_delete").await;
+    assert_snapshot!(allowed.status(), @"204 No Content");
+
+    Ok(())
+}
+
 // Performs the `DELETE` request to delete the crate, and runs any pending
 // background jobs, then returns the response.
 async fn delete_crate(user: &impl RequestHelper, name: &str) -> Response<()> {

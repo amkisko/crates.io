@@ -1,5 +1,5 @@
 -- Browser-assisted cargo login: CLI creates a session, user picks scopes in the
--- browser, plaintext token is delivered once via poll (never shown in the UI).
+-- browser, token is delivered once via poll (never shown in the UI).
 CREATE TABLE cli_login_sessions (
     id VARCHAR PRIMARY KEY,
     -- Set when the browser claims/approves the session
@@ -12,8 +12,10 @@ CREATE TABLE cli_login_sessions (
     client_ip VARCHAR,
     -- SHA-256 of normalized confirmation code from POST /cli_login; required on approve
     confirmation_code_hash BYTEA NOT NULL,
-    -- Filled on approve; wiped on first successful poll
-    plaintext_token VARCHAR,
+    -- SHA-256 of poll secret returned only to the CLI starter; required on GET poll
+    poll_secret_hash BYTEA NOT NULL,
+    -- Encrypted redeem blob filled on approve; wiped on first successful poll
+    sealed_token VARCHAR,
     api_token_id INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
     -- Updated on each poll; used for IP-agnostic per-session poll pacing
     last_polled_at TIMESTAMPTZ,
@@ -39,3 +41,9 @@ COMMENT ON TABLE cli_login_sessions IS
 
 COMMENT ON COLUMN cli_login_sessions.confirmation_code_hash IS
     'SHA-256 of normalized confirmation code from POST /cli_login; required on approve';
+
+COMMENT ON COLUMN cli_login_sessions.poll_secret_hash IS
+    'SHA-256 of poll secret returned only to the CLI starter; required on GET poll';
+
+COMMENT ON COLUMN cli_login_sessions.sealed_token IS
+    'Sealed (encrypted) redeem blob between approve and first successful poll; never raw API token plaintext';

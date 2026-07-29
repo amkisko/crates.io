@@ -77,7 +77,9 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
         .values((
             cli_login_sessions::id.eq("login_expired"),
             cli_login_sessions::status.eq("ready"),
-            cli_login_sessions::plaintext_token.eq(Some("cio_should_be_purged")),
+            cli_login_sessions::confirmation_code_hash.eq(vec![0u8; 32]),
+            cli_login_sessions::poll_secret_hash.eq(vec![1u8; 32]),
+            cli_login_sessions::sealed_token.eq(Some("cio_should_be_purged")),
             cli_login_sessions::expires_at.eq(Utc::now() - TimeDelta::minutes(1)),
         ))
         .execute(&mut conn)
@@ -87,6 +89,8 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
         .values((
             cli_login_sessions::id.eq("login_keep"),
             cli_login_sessions::status.eq("pending"),
+            cli_login_sessions::confirmation_code_hash.eq(vec![0u8; 32]),
+            cli_login_sessions::poll_secret_hash.eq(vec![1u8; 32]),
             cli_login_sessions::expires_at.eq(Utc::now() + TimeDelta::minutes(5)),
         ))
         .execute(&mut conn)

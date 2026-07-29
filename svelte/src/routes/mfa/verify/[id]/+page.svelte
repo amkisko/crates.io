@@ -32,7 +32,7 @@
     loading = true;
     loadError = null;
     try {
-      let response = await fetch(`/api/v1/me/api_mfa/challenges/${challengeId}`);
+      let response = await fetch(`/api/v1/mfa/challenges/${challengeId}`);
       if (!response.ok) {
         let body = await response.json().catch(() => null);
         throw new Error(body?.errors?.[0]?.detail ?? 'Challenge not found or expired');
@@ -57,7 +57,7 @@
 
     busy = true;
     try {
-      let start = await fetch(`/api/v1/me/api_mfa/challenges/${challengeId}/start`, {
+      let start = await fetch(`/api/v1/mfa/challenges/${challengeId}/start`, {
         method: 'POST',
       });
       if (!start.ok) {
@@ -72,7 +72,7 @@
         throw new Error('Passkey verification was cancelled');
       }
 
-      let finish = await fetch(`/api/v1/me/api_mfa/challenges/${challengeId}/finish`, {
+      let finish = await fetch(`/api/v1/mfa/challenges/${challengeId}/finish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential: serializeAssertion(credential) }),
@@ -163,7 +163,7 @@
 <PageTitle title="Authenticate with security device" />
 <PageHeader title="Authenticate with security device" />
 
-<main class="verify" data-test-api-mfa-verify>
+<main class="verify" data-test-mfa-verify>
   {#if loading}
     <LoadingSpinner />
   {:else if loadError}

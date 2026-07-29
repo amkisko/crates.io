@@ -15,6 +15,7 @@ mod invalidate_cdns;
 mod process_cloudfront_invalidation_queue;
 mod readmes;
 pub mod rss;
+pub mod security_events;
 mod send_publish_notifications;
 mod sync_admins;
 pub mod trustpub;

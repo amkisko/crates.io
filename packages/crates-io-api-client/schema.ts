@@ -138,6 +138,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cli_login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a browser-assisted cargo login ceremony (unauthenticated). */
+        post: operations["start_cli_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cli_login/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Poll a CLI login session until a token is available (unauthenticated).
+         * @description Requires `Crates-Cli-Login-Secret` matching the secret from session start so
+         *     observers of `login_id` / `login_url` alone cannot redeem the token.
+         *
+         *     Returns the plaintext token at most once (`ready` → `consumed`).
+         */
+        get: operations["poll_cli_login"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cli_login/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a CLI login session: choose scopes and mint a token (cookie only).
+         * @description The plaintext token is **not** returned here; the CLI retrieves it via poll.
+         */
+        post: operations["approve_cli_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cli_login/{id}/meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Metadata for the browser approve page (cookie session required). */
+        get: operations["get_cli_login_meta"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/confirm/{email_token}": {
         parameters: {
             query?: never;
@@ -615,199 +692,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/me/api_mfa": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get API MFA status for the authenticated user. */
-        get: operations["get_api_mfa_status"];
-        /**
-         * Enable or disable API MFA for the authenticated user.
-         * @description Enabling requires at least one registered passkey.
-         *     Disabling requires a fresh passkey assertion (`credential`) so a stolen session
-         *     cookie alone cannot turn off enforcement.
-         */
-        put: operations["update_api_mfa_status"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/authorize/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Finish passkey authentication and issue a 15-minute wildcard API MFA grant. */
-        post: operations["finish_api_mfa_authorize"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/authorize/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Start passkey authentication to create a short-lived API MFA grant.
-         * @description Also used as the step-up ceremony before disabling API MFA (see `PUT /api/v1/me/api_mfa`).
-         */
-        post: operations["start_api_mfa_authorize"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/challenges": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create an API MFA challenge for a CLI client (token auth).
-         * @description Prefer letting dangerous endpoints auto-create challenges; this endpoint is for
-         *     explicit preflight handshakes.
-         */
-        post: operations["create_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/challenges/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Poll an API MFA challenge until the browser acknowledges it.
-         * @description Accepts API token (CLI wait loop) or cookie (verification page metadata).
-         */
-        get: operations["get_api_mfa_challenge"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/challenges/{id}/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Finish challenge verification, issue OTP + grant (cookie, same user). */
-        post: operations["finish_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/challenges/{id}/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Start passkey authentication for a pending challenge (cookie, same user). */
-        post: operations["start_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/credentials/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Finish passkey registration and store the credential. */
-        post: operations["finish_webauthn_registration"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/credentials/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Start passkey registration for the authenticated user.
-         * @description When API MFA is enabled, the request must include a fresh passkey assertion
-         *     (`credential`) after `POST /api/v1/me/api_mfa/authorize/start`.
-         */
-        post: operations["start_webauthn_registration"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/api_mfa/credentials/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete a registered passkey.
-         * @description Refuses deletion of the last passkey while API MFA is enabled.
-         */
-        delete: operations["delete_webauthn_credential"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/me/crate_owner_invitations": {
         parameters: {
             query?: never;
@@ -881,6 +765,153 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API MFA status for the authenticated user. */
+        get: operations["get_api_mfa_status"];
+        /**
+         * Enable or disable API MFA for the authenticated user.
+         * @description Enabling requires at least one registered passkey and a fresh email OTP so a
+         *     stolen session cookie alone cannot turn on enforcement after planting a passkey.
+         *
+         *     Disabling requires a fresh passkey assertion **or** email OTP. Enforcement may
+         *     remain enabled with zero passkeys (dangerous actions stay blocked until a
+         *     passkey is registered via email OTP recovery).
+         */
+        put: operations["update_api_mfa_status"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/mfa/authorize/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finish passkey authentication and issue a 15-minute wildcard API MFA grant. */
+        post: operations["finish_api_mfa_authorize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/mfa/authorize/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start passkey authentication to create a short-lived API MFA grant.
+         * @description Also used as the passkey step-up ceremony before disabling API MFA or registering
+         *     an additional passkey while MFA is enabled (see `PUT /api/v1/me/mfa` and
+         *     `POST /api/v1/me/mfa/passkeys/start`). Disabling may use email OTP instead.
+         */
+        post: operations["start_api_mfa_authorize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/mfa/email_codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email a one-time code for API MFA enable/disable or passkey enrollment.
+         * @description Requires a verified email address. The code is never returned in the response.
+         */
+        post: operations["send_api_mfa_email_code"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/mfa/passkeys/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finish passkey registration and store the credential. */
+        post: operations["finish_webauthn_registration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/mfa/passkeys/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start passkey registration for the authenticated user.
+         * @description Step-up:
+         *     - API MFA on with existing passkeys: fresh passkey assertion (`credential`)
+         *     - otherwise (first enroll, recovery with zero passkeys, or MFA off): email OTP
+         */
+        post: operations["start_webauthn_registration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/mfa/passkeys/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete a registered passkey.
+         * @description When API MFA is enabled, requires a passkey assertion or email OTP so a stolen
+         *     session cookie alone cannot strip backup keys. The last passkey may be deleted
+         *     while enforcement stays on; dangerous actions remain blocked until a passkey is
+         *     registered again (email OTP recovery) or MFA is disabled.
+         */
+        delete: operations["delete_webauthn_credential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/tokens": {
         parameters: {
             query?: never;
@@ -928,6 +959,93 @@ export interface paths {
         get: operations["get_authenticated_user_updates"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mfa/challenges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create an API MFA challenge for a CLI client (token auth).
+         * @description Prefer letting dangerous endpoints auto-create challenges; this endpoint is for
+         *     explicit preflight handshakes.
+         */
+        post: operations["create_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mfa/challenges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Poll an API MFA challenge until the browser acknowledges it.
+         * @description The opaque `operation_id` is a capability URL: the verify page can load
+         *     metadata without a crates.io cookie. API token clients (CLI poll loops) are
+         *     rate-limited per user; unauthenticated browsers are rate-limited per IP.
+         *     Aside from rate-limit bucket updates this handler is read-only.
+         */
+        get: operations["get_api_mfa_challenge"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mfa/challenges/{id}/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish challenge verification, issue OTP + grant.
+         * @description Unauthenticated: passkey assertion for the challenge owner's credentials is
+         *     the only factor (no crates.io cookie). `cargo login` must already have
+         *     minted the API token that created this challenge.
+         */
+        post: operations["finish_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mfa/challenges/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start passkey authentication for a pending challenge.
+         * @description Unauthenticated: possession of the opaque operation id is the capability.
+         *     Passkeys are loaded for the challenge owner (no crates.io cookie session).
+         */
+        post: operations["start_api_mfa_challenge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2315,6 +2433,160 @@ export interface operations {
             };
         };
     };
+    start_cli_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int32
+                     * @description Optional localhost port the browser may ping (token-free) after approve.
+                     */
+                    localhost_port?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Short code printed by the CLI; must be typed on the approve page (not returned by meta). */
+                        confirmation_code: string;
+                        /** Format: date-time */
+                        expires_at: string;
+                        login_id: string;
+                        login_url: string;
+                        /**
+                         * @description Opaque secret returned only to the CLI; send as `Crates-Cli-Login-Secret` on poll.
+                         *
+                         *     Not included in browser URLs or meta. Possession of `login_id` alone cannot redeem.
+                         */
+                        poll_secret: string;
+                        poll_url: string;
+                        /** Format: int64 */
+                        recommended_poll_interval_secs: number;
+                    };
+                };
+            };
+        };
+    };
+    poll_cli_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description CLI login session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status: string;
+                        /** @description Present exactly once when status transitions through `ready` on this poll. */
+                        token?: string | null;
+                    };
+                };
+            };
+        };
+    };
+    approve_cli_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description CLI login session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Confirmation code printed by the CLI after `POST /cli_login` (binds approve to that start). */
+                    confirmation_code: string;
+                    crate_scopes?: string[] | null;
+                    /** @description Required when API MFA is enabled: assertion from `authorize/start`. */
+                    credential?: unknown;
+                    endpoint_scopes?: string[] | null;
+                    /** Format: date-time */
+                    expired_at?: string | null;
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: int32 */
+                        api_token_id: number;
+                        /**
+                         * Format: int32
+                         * @description Optional port the browser may ping (token-free) so a waiting CLI can wake.
+                         */
+                        localhost_port?: number | null;
+                        status: string;
+                        token_name: string;
+                    };
+                };
+            };
+        };
+    };
+    get_cli_login_meta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description CLI login session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Client IP that started the ceremony (shown so users can spot phishing). */
+                        client_ip?: string | null;
+                        /** Format: date-time */
+                        expires_at: string;
+                        /** Format: int32 */
+                        localhost_port?: number | null;
+                        login_id: string;
+                        /** @description When true, approve must include a passkey assertion from `authorize/start`. */
+                        mfa_required: boolean;
+                        status: string;
+                    };
+                };
+            };
+        };
+    };
     confirm_user_email: {
         parameters: {
             query?: never;
@@ -3533,391 +3805,6 @@ export interface operations {
             };
         };
     };
-    get_api_mfa_status: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description Registered passkeys. */
-                        credentials: {
-                            /** Format: date-time */
-                            created_at: string;
-                            /** Format: int64 */
-                            id: number;
-                            /** Format: date-time */
-                            last_used_at?: string | null;
-                            name: string;
-                        }[];
-                        /** @description Whether API MFA is currently enforced for token-authenticated actions. */
-                        enabled: boolean;
-                        /**
-                         * Format: date-time
-                         * @description Active grant expiry, if any.
-                         */
-                        grant_expires_at?: string | null;
-                    };
-                };
-            };
-        };
-    };
-    update_api_mfa_status: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /**
-                     * @description Passkey assertion required when disabling API MFA.
-                     *
-                     *     Obtain options from `POST /api/v1/me/api_mfa/authorize/start` first.
-                     */
-                    credential?: Record<string, never> | null;
-                    /** @description Whether to enable API MFA enforcement. */
-                    enabled: boolean;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        enabled: boolean;
-                    };
-                };
-            };
-        };
-    };
-    finish_api_mfa_authorize: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description Credential assertion response from the browser. */
-                    credential: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /**
-                         * Format: date-time
-                         * @description When the newly issued grant expires.
-                         */
-                        grant_expires_at: string;
-                    };
-                };
-            };
-        };
-    };
-    start_api_mfa_authorize: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description `PublicKeyCredentialRequestOptions` for `navigator.credentials.get()`. */
-                        public_key: unknown;
-                    };
-                };
-            };
-        };
-    };
-    create_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description Optional crate name associated with the operation. */
-                    crate_name?: string | null;
-                    /** @description Dangerous operation label (e.g. `publish`). Defaults to `manual`. */
-                    operation?: string | null;
-                    /**
-                     * Format: int32
-                     * @description Optional localhost port (1024–65535) for RubyGems-style OTP delivery to the CLI.
-                     */
-                    port?: number | null;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** Format: date-time */
-                        expires_at: string;
-                        /** @description Opaque operation / transaction identifier. */
-                        operation_id: string;
-                        /** @description URL the CLI should poll until `acknowledged` is true. */
-                        poll_url: string;
-                        /**
-                         * Format: int64
-                         * @description Suggested seconds between CLI polls of `poll_url`.
-                         */
-                        recommended_poll_interval_secs: number;
-                        /** @description Browser URL where the user must complete passkey verification. */
-                        verification_url: string;
-                    };
-                };
-            };
-        };
-    };
-    get_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description True once the browser passkey ceremony has acknowledged the operation. */
-                        acknowledged: boolean;
-                        crate_name?: string | null;
-                        /** Format: date-time */
-                        expires_at: string;
-                        /** Format: int32 */
-                        localhost_port?: number | null;
-                        operation: string;
-                        /** @description Opaque operation / transaction identifier. */
-                        operation_id: string;
-                        /**
-                         * Format: int64
-                         * @description Suggested seconds between CLI polls while status is `pending`.
-                         */
-                        recommended_poll_interval_secs: number;
-                        /** @description `pending` until passkey succeeds, then `acknowledged`. */
-                        status: string;
-                        /** @description Alias of `acknowledged` for older clients. */
-                        verified: boolean;
-                    };
-                };
-            };
-        };
-    };
-    finish_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    credential: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /**
-                         * Format: date-time
-                         * @description Present when a scoped grant was issued (stock cargo retry without OTP).
-                         *
-                         *     Omitted when `localhost_port` was set — the CLI is expected to use the OTP callback.
-                         */
-                        grant_expires_at?: string | null;
-                        /** @description Optional URL the browser can hit to deliver the OTP to a local CLI listener. */
-                        localhost_callback_url?: string | null;
-                        operation_id: string;
-                        /** @description One-time password for the CLI to send as `Crates-OTP`. */
-                        otp: string;
-                    };
-                };
-            };
-        };
-    };
-    start_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        public_key: unknown;
-                    };
-                };
-            };
-        };
-    };
-    finish_webauthn_registration: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description Credential creation response from the browser. */
-                    credential: unknown;
-                    /** @description Label for the new passkey. */
-                    name: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        credential: {
-                            /** Format: date-time */
-                            created_at: string;
-                            /** Format: int64 */
-                            id: number;
-                            /** Format: date-time */
-                            last_used_at?: string | null;
-                            name: string;
-                        };
-                    };
-                };
-            };
-        };
-    };
-    start_webauthn_registration: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /**
-                     * @description Required when API MFA is enabled: assertion from `authorize/start` so a stolen
-                     *     session cookie alone cannot register an attacker-controlled passkey.
-                     */
-                    credential?: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description `PublicKeyCredentialCreationOptions` for `navigator.credentials.create()`. */
-                        public_key: unknown;
-                    };
-                };
-            };
-        };
-    };
-    delete_webauthn_credential: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Credential ID */
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @example true */
-                        ok: boolean;
-                    };
-                };
-            };
-        };
-    };
     list_crate_owner_invitations_for_user: {
         parameters: {
             query?: never;
@@ -4058,6 +3945,286 @@ export interface operations {
             };
         };
     };
+    get_api_mfa_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Registered passkeys. */
+                        credentials: {
+                            /** Format: date-time */
+                            created_at: string;
+                            /** Format: int64 */
+                            id: number;
+                            /** Format: date-time */
+                            last_used_at?: string | null;
+                            name: string;
+                        }[];
+                        /** @description Whether API MFA is currently enforced for token-authenticated actions. */
+                        enabled: boolean;
+                        /**
+                         * Format: date-time
+                         * @description Active grant expiry, if any.
+                         */
+                        grant_expires_at?: string | null;
+                        /** @description Whether the user has a verified email (required to send email OTPs). */
+                        has_verified_email: boolean;
+                    };
+                };
+            };
+        };
+    };
+    update_api_mfa_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Passkey assertion: required when disabling if no `email_code` is provided.
+                     *
+                     *     Obtain options from `POST /api/v1/me/mfa/authorize/start` first.
+                     */
+                    credential?: Record<string, never> | null;
+                    /**
+                     * @description Email OTP from `POST /api/v1/me/mfa/email_codes`.
+                     *
+                     *     Required when enabling. When disabling, accepted as an alternative to `credential`
+                     *     (e.g. recovery when all passkeys were removed).
+                     */
+                    email_code?: string | null;
+                    /** @description Whether to enable API MFA enforcement. */
+                    enabled: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        enabled: boolean;
+                    };
+                };
+            };
+        };
+    };
+    finish_api_mfa_authorize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Credential assertion response from the browser. */
+                    credential: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: date-time
+                         * @description When the newly issued grant expires.
+                         */
+                        grant_expires_at: string;
+                    };
+                };
+            };
+        };
+    };
+    start_api_mfa_authorize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description `PublicKeyCredentialRequestOptions` for `navigator.credentials.get()`. */
+                        public_key: unknown;
+                    };
+                };
+            };
+        };
+    };
+    send_api_mfa_email_code: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: date-time
+                         * @description When the emailed code expires.
+                         */
+                        expires_at: string;
+                        /** @description Masked destination address (e.g. `a***@example.com`). */
+                        sent_to_hint: string;
+                    };
+                };
+            };
+        };
+    };
+    finish_webauthn_registration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Credential creation response from the browser. */
+                    credential: unknown;
+                    /** @description Label for the new passkey. */
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        credential: {
+                            /** Format: date-time */
+                            created_at: string;
+                            /** Format: int64 */
+                            id: number;
+                            /** Format: date-time */
+                            last_used_at?: string | null;
+                            name: string;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    start_webauthn_registration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Required when API MFA is enabled and at least one passkey exists: assertion from
+                     *     `authorize/start` so a stolen session cookie alone cannot register another passkey.
+                     */
+                    credential?: unknown;
+                    /**
+                     * @description Email OTP from `POST /api/v1/me/mfa/email_codes`.
+                     *
+                     *     Required when the user has no passkeys (first enroll or recovery) or when API MFA
+                     *     is off (prevents a hijacked session from planting a passkey before enable).
+                     */
+                    email_code?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description `PublicKeyCredentialCreationOptions` for `navigator.credentials.create()`. */
+                        public_key: unknown;
+                    };
+                };
+            };
+        };
+    };
+    delete_webauthn_credential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Credential ID */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Passkey assertion from `authorize/start` (preferred when a passkey remains). */
+                    credential?: unknown;
+                    /** @description Email OTP alternative when API MFA is enabled (e.g. deleting the last passkey). */
+                    email_code?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example true */
+                        ok: boolean;
+                    };
+                };
+            };
+        };
+    };
     list_api_tokens: {
         parameters: {
             query?: {
@@ -4105,6 +4272,8 @@ export interface operations {
                         expired_at?: string | null;
                         name: string;
                     };
+                    /** @description Passkey assertion required when API MFA is enabled (after `authorize/start`). */
+                    credential?: unknown;
                 };
             };
         };
@@ -4192,6 +4361,168 @@ export interface operations {
                         };
                         /** @description The list of recent versions of crates that the authenticated user follows. */
                         versions: components["schemas"]["Version"][];
+                    };
+                };
+            };
+        };
+    };
+    create_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Optional crate name associated with the operation. */
+                    crate_name?: string | null;
+                    /**
+                     * @description Dangerous operation label. Defaults to `manual`.
+                     *
+                     *     Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`, `manual`.
+                     */
+                    operation?: string | null;
+                    /**
+                     * Format: int32
+                     * @description Optional localhost port (1024–65535) for RubyGems-style OTP delivery to the CLI.
+                     */
+                    port?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: date-time */
+                        expires_at: string;
+                        /** @description Opaque operation / transaction identifier. */
+                        operation_id: string;
+                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        poll_url: string;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls of `poll_url`.
+                         */
+                        recommended_poll_interval_secs: number;
+                        /** @description Browser URL where the user must complete passkey verification. */
+                        verification_url: string;
+                    };
+                };
+            };
+        };
+    };
+    get_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description True once the browser passkey ceremony has acknowledged the operation. */
+                        acknowledged: boolean;
+                        crate_name?: string | null;
+                        /** Format: date-time */
+                        expires_at: string;
+                        /** Format: int32 */
+                        localhost_port?: number | null;
+                        operation: string;
+                        /** @description Opaque operation / transaction identifier. */
+                        operation_id: string;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls while status is `pending`.
+                         */
+                        recommended_poll_interval_secs: number;
+                        /** @description `pending` until passkey succeeds, then `acknowledged`. */
+                        status: string;
+                        /** @description Alias of `acknowledged` for older clients. */
+                        verified: boolean;
+                    };
+                };
+            };
+        };
+    };
+    finish_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    credential: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: date-time
+                         * @description Present when a scoped grant was issued (stock cargo retry without OTP).
+                         *
+                         *     Omitted when `localhost_port` was set — the CLI is expected to use the OTP callback.
+                         */
+                        grant_expires_at?: string | null;
+                        /** @description Optional URL the browser can hit to deliver the OTP to a local CLI listener. */
+                        localhost_callback_url?: string | null;
+                        operation_id: string;
+                        /** @description One-time password for the CLI to send as `Crates-OTP`. */
+                        otp: string;
+                    };
+                };
+            };
+        };
+    };
+    start_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        public_key: unknown;
                     };
                 };
             };

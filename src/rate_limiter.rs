@@ -39,6 +39,8 @@ pg_enum! {
         CliLoginCreate = 5,
         // Polling a CLI link-login session for the one-time token.
         CliLoginPoll = 6,
+        // Sending an email OTP for API MFA enable/disable / passkey enrollment.
+        ApiMfaEmailOtpSend = 7,
     }
 }
 
@@ -56,6 +58,8 @@ impl LimitedAction {
             LimitedAction::CliLoginCreate => 30,
             // Minimum seconds between polls of the same CLI login session.
             LimitedAction::CliLoginPoll => 2,
+            // One email OTP send per minute sustains; burst allows a couple of resends.
+            LimitedAction::ApiMfaEmailOtpSend => 60,
         }
     }
 
@@ -69,6 +73,7 @@ impl LimitedAction {
             LimitedAction::CliLoginCreate => 10,
             // Unused for CliLoginPoll (per-session min interval); kept for config symmetry.
             LimitedAction::CliLoginPoll => 1,
+            LimitedAction::ApiMfaEmailOtpSend => 3,
         }
     }
 
@@ -81,6 +86,7 @@ impl LimitedAction {
             LimitedAction::ApiMfaChallengePoll => "API_MFA_CHALLENGE_POLL",
             LimitedAction::CliLoginCreate => "CLI_LOGIN_CREATE",
             LimitedAction::CliLoginPoll => "CLI_LOGIN_POLL",
+            LimitedAction::ApiMfaEmailOtpSend => "API_MFA_EMAIL_OTP_SEND",
         }
     }
 
@@ -106,6 +112,9 @@ impl LimitedAction {
             }
             LimitedAction::CliLoginPoll => {
                 "You have polled CLI login sessions too frequently; wait a few seconds between polls"
+            }
+            LimitedAction::ApiMfaEmailOtpSend => {
+                "You have requested too many API MFA email codes in a short period of time"
             }
         }
     }
@@ -212,7 +221,10 @@ impl RateLimiter {
             .await
     }
 
-    fn config_for_action(&self, action: LimitedAction) -> Cow<'_, RateLimiterConfig> {
+    /// Returns the configured (or default) rate/burst for `action`.
+    ///
+    /// Used by table-backed limiters (CLI login) that cannot use `check_rate_limit`.
+    pub fn config_for_action(&self, action: LimitedAction) -> Cow<'_, RateLimiterConfig> {
         // The wrapper returns the default config for the action when not configured.
         match self.config.get(&action) {
             Some(config) => Cow::Borrowed(config),

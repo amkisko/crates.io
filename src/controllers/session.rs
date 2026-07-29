@@ -3,7 +3,10 @@ use crate::controllers::helpers::OkResponse;
 use crate::email::EmailMessage;
 use crate::email::Emails;
 use crate::middleware::log_request::RequestLogExt;
-use crate::models::{NewEmail, NewOauthGithub, NewUser, OauthGithub};
+use crate::middleware::real_ip::RealIp;
+use crate::models::{
+    NewEmail, NewOauthGithub, NewUser, NewUserSecurityEvent, OauthGithub, SecurityEventType,
+};
 use crate::schema::{oauth_github, users};
 use crate::util::diesel::is_read_only_error;
 use crate::util::errors::{AppResult, bad_request, server_error};
@@ -134,6 +137,17 @@ pub async fn authorize_session(
 
     // Log in by setting a cookie and the middleware authentication
     session.insert("user_id".to_string(), user_id.to_string());
+
+    let ip = req.extensions.get::<RealIp>().map(|ip| ip.to_string());
+    NewUserSecurityEvent::new(
+        user_id,
+        SecurityEventType::SessionLogin,
+        None,
+        ip,
+        serde_json::json!({}),
+    )
+    .record(&mut conn)
+    .await;
 
     super::user::me::authenticated_user(&mut conn, user_id).await
 }

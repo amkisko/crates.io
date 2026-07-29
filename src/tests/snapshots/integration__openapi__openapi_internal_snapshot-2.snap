@@ -608,6 +608,56 @@ expression: response.json()
         ],
         "type": "object"
       },
+      "EncodableSecurityEvent": {
+        "description": "A single security activity event returned to the Settings UI.",
+        "properties": {
+          "api_token_id": {
+            "description": "Related API token id, if any.",
+            "example": 7,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "When the event was recorded.",
+            "example": "2026-07-29T12:00:00Z",
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_type": {
+            "description": "Event kind in `snake_case` (e.g. `token_created`, `session_login`).",
+            "example": "token_created",
+            "type": "string"
+          },
+          "id": {
+            "description": "Opaque event id (seek cursor).",
+            "example": 42,
+            "format": "int64",
+            "type": "integer"
+          },
+          "ip": {
+            "description": "Truncated client IP when recorded (`/24` IPv4 or `/56` IPv6); never set for `token_used`.",
+            "example": "203.0.113.0/24",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/Value",
+            "description": "Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`."
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "metadata",
+          "created_at"
+        ],
+        "type": "object"
+      },
       "EndpointScope": {
         "enum": [
           "publish-new",
@@ -805,6 +855,26 @@ expression: response.json()
           "crate_id",
           "created_at",
           "expires_at"
+        ],
+        "type": "object"
+      },
+      "ListSecurityEventsMeta": {
+        "properties": {
+          "next_page": {
+            "description": "Query string for the next page, when more results exist.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "description": "Total number of retained events for this user.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total"
         ],
         "type": "object"
       },
@@ -1083,6 +1153,7 @@ expression: response.json()
         ],
         "type": "object"
       },
+      "Value": {},
       "Version": {
         "properties": {
           "audit_actions": {
@@ -1906,6 +1977,10 @@ expression: response.json()
                     "login_url": {
                       "type": "string"
                     },
+                    "poll_secret": {
+                      "description": "Opaque secret returned only to the CLI; send as `Crates-Cli-Login-Secret` on poll.\n\nNot included in browser URLs or meta. Possession of `login_id` alone cannot redeem.",
+                      "type": "string"
+                    },
                     "poll_url": {
                       "type": "string"
                     },
@@ -1920,6 +1995,7 @@ expression: response.json()
                     "login_url",
                     "poll_url",
                     "confirmation_code",
+                    "poll_secret",
                     "expires_at",
                     "recommended_poll_interval_secs"
                   ],
@@ -1938,7 +2014,7 @@ expression: response.json()
     },
     "/api/v1/cli_login/{id}": {
       "get": {
-        "description": "Returns the plaintext token at most once (`ready` → `consumed`).",
+        "description": "Requires `Crates-Cli-Login-Secret` matching the secret from session start so\nobservers of `login_id` / `login_url` alone cannot redeem the token.\n\nReturns the plaintext token at most once (`ready` → `consumed`).",
         "operationId": "poll_cli_login",
         "parameters": [
           {
@@ -2018,7 +2094,14 @@ expression: response.json()
                     ]
                   },
                   "credential": {
-                    "description": "Required when API MFA is enabled: assertion from `authorize/start`."
+                    "description": "Required when API MFA is enabled and at least one passkey exists: assertion from `authorize/start`."
+                  },
+                  "email_code": {
+                    "description": "Email OTP from `POST /api/v1/me/mfa/email_codes`.\n\nAccepted when API MFA is enabled and the account has zero passkeys (recovery).",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "endpoint_scopes": {
                     "items": {
@@ -2118,10 +2201,6 @@ expression: response.json()
               "application/json": {
                 "schema": {
                   "properties": {
-                    "api_mfa_required": {
-                      "description": "When true, approve must include a passkey assertion from `authorize/start`.",
-                      "type": "boolean"
-                    },
                     "client_ip": {
                       "description": "Client IP that started the ceremony (shown so users can spot phishing).",
                       "type": [
@@ -2143,6 +2222,14 @@ expression: response.json()
                     "login_id": {
                       "type": "string"
                     },
+                    "mfa_email_otp_allowed": {
+                      "description": "When true (API MFA on with zero passkeys), approve accepts `email_code`\ninstead of a passkey assertion so recovery is not a dead-end.",
+                      "type": "boolean"
+                    },
+                    "mfa_required": {
+                      "description": "When true, approve must include a passkey assertion from `authorize/start`\n(or an email OTP when [`Self::mfa_email_otp_allowed`] is true).",
+                      "type": "boolean"
+                    },
                     "status": {
                       "type": "string"
                     }
@@ -2151,7 +2238,8 @@ expression: response.json()
                     "login_id",
                     "status",
                     "expires_at",
-                    "api_mfa_required"
+                    "mfa_required",
+                    "mfa_email_otp_allowed"
                   ],
                   "type": "object"
                 }
@@ -4252,709 +4340,6 @@ expression: response.json()
         ]
       }
     },
-    "/api/v1/me/api_mfa": {
-      "get": {
-        "operationId": "get_api_mfa_status",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "credentials": {
-                      "description": "Registered passkeys.",
-                      "items": {
-                        "properties": {
-                          "created_at": {
-                            "format": "date-time",
-                            "type": "string"
-                          },
-                          "id": {
-                            "format": "int64",
-                            "type": "integer"
-                          },
-                          "last_used_at": {
-                            "format": "date-time",
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "name": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "name",
-                          "created_at"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "enabled": {
-                      "description": "Whether API MFA is currently enforced for token-authenticated actions.",
-                      "type": "boolean"
-                    },
-                    "grant_expires_at": {
-                      "description": "Active grant expiry, if any.",
-                      "format": "date-time",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "enabled",
-                    "credentials"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Get API MFA status for the authenticated user.",
-        "tags": [
-          "users"
-        ]
-      },
-      "put": {
-        "description": "Enabling requires at least one registered passkey.\nDisabling requires a fresh passkey assertion (`credential`) so a stolen session\ncookie alone cannot turn off enforcement.",
-        "operationId": "update_api_mfa_status",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "credential": {
-                    "description": "Passkey assertion required when disabling API MFA.\n\nObtain options from `POST /api/v1/me/api_mfa/authorize/start` first.",
-                    "type": [
-                      "object",
-                      "null"
-                    ]
-                  },
-                  "enabled": {
-                    "description": "Whether to enable API MFA enforcement.",
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "enabled"
-                ],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "enabled"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Enable or disable API MFA for the authenticated user.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/authorize/finish": {
-      "post": {
-        "operationId": "finish_api_mfa_authorize",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "credential": {
-                    "description": "Credential assertion response from the browser."
-                  }
-                },
-                "required": [
-                  "credential"
-                ],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "grant_expires_at": {
-                      "description": "When the newly issued grant expires.",
-                      "format": "date-time",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "grant_expires_at"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Finish passkey authentication and issue a 15-minute wildcard API MFA grant.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/authorize/start": {
-      "post": {
-        "description": "Also used as the step-up ceremony before disabling API MFA (see `PUT /api/v1/me/api_mfa`).",
-        "operationId": "start_api_mfa_authorize",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "public_key": {
-                      "description": "`PublicKeyCredentialRequestOptions` for `navigator.credentials.get()`."
-                    }
-                  },
-                  "required": [
-                    "public_key"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Start passkey authentication to create a short-lived API MFA grant.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/challenges": {
-      "post": {
-        "description": "Prefer letting dangerous endpoints auto-create challenges; this endpoint is for\nexplicit preflight handshakes.",
-        "operationId": "create_api_mfa_challenge",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "crate_name": {
-                    "description": "Optional crate name associated with the operation.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "operation": {
-                    "description": "Dangerous operation label (e.g. `publish`). Defaults to `manual`.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "port": {
-                    "description": "Optional localhost port (1024–65535) for RubyGems-style OTP delivery to the CLI.",
-                    "format": "int32",
-                    "type": [
-                      "integer",
-                      "null"
-                    ]
-                  }
-                },
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "expires_at": {
-                      "format": "date-time",
-                      "type": "string"
-                    },
-                    "operation_id": {
-                      "description": "Opaque operation / transaction identifier.",
-                      "type": "string"
-                    },
-                    "poll_url": {
-                      "description": "URL the CLI should poll until `acknowledged` is true.",
-                      "type": "string"
-                    },
-                    "recommended_poll_interval_secs": {
-                      "description": "Suggested seconds between CLI polls of `poll_url`.",
-                      "format": "int64",
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "verification_url": {
-                      "description": "Browser URL where the user must complete passkey verification.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "operation_id",
-                    "verification_url",
-                    "poll_url",
-                    "expires_at",
-                    "recommended_poll_interval_secs"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "api_token": []
-          }
-        ],
-        "summary": "Create an API MFA challenge for a CLI client (token auth).",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/challenges/{id}": {
-      "get": {
-        "description": "The opaque `operation_id` is a capability URL: the verify page can load\nmetadata without a crates.io cookie. API token clients (CLI poll loops) are\nstill rate-limited and must match the challenge's token.",
-        "operationId": "get_api_mfa_challenge",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "acknowledged": {
-                      "description": "True once the browser passkey ceremony has acknowledged the operation.",
-                      "type": "boolean"
-                    },
-                    "crate_name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "expires_at": {
-                      "format": "date-time",
-                      "type": "string"
-                    },
-                    "localhost_port": {
-                      "format": "int32",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "operation": {
-                      "type": "string"
-                    },
-                    "operation_id": {
-                      "description": "Opaque operation / transaction identifier.",
-                      "type": "string"
-                    },
-                    "recommended_poll_interval_secs": {
-                      "description": "Suggested seconds between CLI polls while status is `pending`.",
-                      "format": "int64",
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "status": {
-                      "description": "`pending` until passkey succeeds, then `acknowledged`.",
-                      "type": "string"
-                    },
-                    "verified": {
-                      "description": "Alias of `acknowledged` for older clients.",
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "operation_id",
-                    "status",
-                    "acknowledged",
-                    "verified",
-                    "operation",
-                    "expires_at",
-                    "recommended_poll_interval_secs"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "api_token": []
-          }
-        ],
-        "summary": "Poll an API MFA challenge until the browser acknowledges it.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/challenges/{id}/finish": {
-      "post": {
-        "description": "Unauthenticated: passkey assertion for the challenge owner's credentials is\nthe only factor (no crates.io cookie). `cargo login` must already have\nminted the API token that created this challenge.",
-        "operationId": "finish_api_mfa_challenge",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "credential": {}
-                },
-                "required": [
-                  "credential"
-                ],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "grant_expires_at": {
-                      "description": "Present when a scoped grant was issued (stock cargo retry without OTP).\n\nOmitted when `localhost_port` was set — the CLI is expected to use the OTP callback.",
-                      "format": "date-time",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "localhost_callback_url": {
-                      "description": "Optional URL the browser can hit to deliver the OTP to a local CLI listener.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "operation_id": {
-                      "type": "string"
-                    },
-                    "otp": {
-                      "description": "One-time password for the CLI to send as `Crates-OTP`.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "otp",
-                    "operation_id"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Finish challenge verification, issue OTP + grant.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/challenges/{id}/start": {
-      "post": {
-        "description": "Unauthenticated: possession of the opaque operation id is the capability.\nPasskeys are loaded for the challenge owner (no crates.io cookie session).",
-        "operationId": "start_api_mfa_challenge",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "public_key": {}
-                  },
-                  "required": [
-                    "public_key"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Start passkey authentication for a pending challenge.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/credentials/finish": {
-      "post": {
-        "operationId": "finish_webauthn_registration",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "credential": {
-                    "description": "Credential creation response from the browser."
-                  },
-                  "name": {
-                    "description": "Label for the new passkey.",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "name",
-                  "credential"
-                ],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "credential": {
-                      "properties": {
-                        "created_at": {
-                          "format": "date-time",
-                          "type": "string"
-                        },
-                        "id": {
-                          "format": "int64",
-                          "type": "integer"
-                        },
-                        "last_used_at": {
-                          "format": "date-time",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "name": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "name",
-                        "created_at"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "credential"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Finish passkey registration and store the credential.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/credentials/start": {
-      "post": {
-        "description": "When API MFA is enabled, the request must include a fresh passkey assertion\n(`credential`) after `POST /api/v1/me/api_mfa/authorize/start`.",
-        "operationId": "start_webauthn_registration",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "credential": {
-                    "description": "Required when API MFA is enabled: assertion from `authorize/start` so a stolen\nsession cookie alone cannot register an attacker-controlled passkey."
-                  }
-                },
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "public_key": {
-                      "description": "`PublicKeyCredentialCreationOptions` for `navigator.credentials.create()`."
-                    }
-                  },
-                  "required": [
-                    "public_key"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Start passkey registration for the authenticated user.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/me/api_mfa/credentials/{id}": {
-      "delete": {
-        "description": "Refuses deletion of the last passkey while API MFA is enabled.",
-        "operationId": "delete_webauthn_credential",
-        "parameters": [
-          {
-            "description": "Credential ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "format": "int64",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "ok": {
-                      "example": true,
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "ok"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Delete a registered passkey.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
     "/api/v1/me/crate_owner_invitations": {
       "get": {
         "operationId": "list_crate_owner_invitations_for_user",
@@ -5199,6 +4584,568 @@ expression: response.json()
         ]
       }
     },
+    "/api/v1/me/mfa": {
+      "get": {
+        "operationId": "get_api_mfa_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "credentials": {
+                      "description": "Registered passkeys.",
+                      "items": {
+                        "properties": {
+                          "created_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "int64",
+                            "type": "integer"
+                          },
+                          "last_used_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "created_at"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "enabled": {
+                      "description": "Whether API MFA is currently enforced for token-authenticated actions.",
+                      "type": "boolean"
+                    },
+                    "grant_expires_at": {
+                      "description": "Active grant expiry, if any.",
+                      "format": "date-time",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "has_verified_email": {
+                      "description": "Whether the user has a verified email (required to send email OTPs).",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "credentials",
+                    "has_verified_email"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get API MFA status for the authenticated user.",
+        "tags": [
+          "users"
+        ]
+      },
+      "put": {
+        "description": "Enabling requires at least one registered passkey and a fresh email OTP so a\nstolen session cookie alone cannot turn on enforcement after planting a passkey.\n\nDisabling requires a fresh passkey assertion **or** email OTP. Enforcement may\nremain enabled with zero passkeys (dangerous actions stay blocked until a\npasskey is registered via email OTP recovery).",
+        "operationId": "update_api_mfa_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {
+                    "description": "Passkey assertion: required when disabling if no `email_code` is provided.\n\nObtain options from `POST /api/v1/me/mfa/authorize/start` first.",
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "email_code": {
+                    "description": "Email OTP from `POST /api/v1/me/mfa/email_codes`.\n\nRequired when enabling. When disabling, accepted as an alternative to `credential`\n(e.g. recovery when all passkeys were removed).",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "enabled": {
+                    "description": "Whether to enable API MFA enforcement.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Enable or disable API MFA for the authenticated user.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/mfa/authorize/finish": {
+      "post": {
+        "operationId": "finish_api_mfa_authorize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {
+                    "description": "Credential assertion response from the browser."
+                  }
+                },
+                "required": [
+                  "credential"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "grant_expires_at": {
+                      "description": "When the newly issued grant expires.",
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "grant_expires_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Finish passkey authentication and issue a 15-minute wildcard API MFA grant.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/mfa/authorize/start": {
+      "post": {
+        "description": "Also used as the passkey step-up ceremony before disabling API MFA or registering\nan additional passkey while MFA is enabled (see `PUT /api/v1/me/mfa` and\n`POST /api/v1/me/mfa/passkeys/start`). Disabling may use email OTP instead.",
+        "operationId": "start_api_mfa_authorize",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "public_key": {
+                      "description": "`PublicKeyCredentialRequestOptions` for `navigator.credentials.get()`."
+                    }
+                  },
+                  "required": [
+                    "public_key"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Start passkey authentication to create a short-lived API MFA grant.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/mfa/email_codes": {
+      "post": {
+        "description": "Requires a verified email address. The code is never returned in the response.",
+        "operationId": "send_api_mfa_email_code",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "expires_at": {
+                      "description": "When the emailed code expires.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "sent_to_hint": {
+                      "description": "Masked destination address (e.g. `a***@example.com`).",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "expires_at",
+                    "sent_to_hint"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Email a one-time code for API MFA enable/disable or passkey enrollment.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/mfa/passkeys/finish": {
+      "post": {
+        "operationId": "finish_webauthn_registration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {
+                    "description": "Credential creation response from the browser."
+                  },
+                  "name": {
+                    "description": "Label for the new passkey.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "credential"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "credential": {
+                      "properties": {
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "id": {
+                          "format": "int64",
+                          "type": "integer"
+                        },
+                        "last_used_at": {
+                          "format": "date-time",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "created_at"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "credential"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Finish passkey registration and store the credential.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/mfa/passkeys/start": {
+      "post": {
+        "description": "Step-up:\n- API MFA on with existing passkeys: fresh passkey assertion (`credential`)\n- otherwise (first enroll, recovery with zero passkeys, or MFA off): email OTP",
+        "operationId": "start_webauthn_registration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {
+                    "description": "Required when API MFA is enabled and at least one passkey exists: assertion from\n`authorize/start` so a stolen session cookie alone cannot register another passkey."
+                  },
+                  "email_code": {
+                    "description": "Email OTP from `POST /api/v1/me/mfa/email_codes`.\n\nRequired when the user has no passkeys (first enroll or recovery) or when API MFA\nis off (prevents a hijacked session from planting a passkey before enable).",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "public_key": {
+                      "description": "`PublicKeyCredentialCreationOptions` for `navigator.credentials.create()`."
+                    }
+                  },
+                  "required": [
+                    "public_key"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Start passkey registration for the authenticated user.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/mfa/passkeys/{id}": {
+      "delete": {
+        "description": "When API MFA is enabled, requires a passkey assertion or email OTP so a stolen\nsession cookie alone cannot strip backup keys. The last passkey may be deleted\nwhile enforcement stays on; dangerous actions remain blocked until a passkey is\nregistered again (email OTP recovery) or MFA is disabled.",
+        "operationId": "delete_webauthn_credential",
+        "parameters": [
+          {
+            "description": "Credential ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {
+                    "description": "Passkey assertion from `authorize/start` (preferred when a passkey remains)."
+                  },
+                  "email_code": {
+                    "description": "Email OTP alternative when API MFA is enabled (e.g. deleting the last passkey).",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "ok": {
+                      "example": true,
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a registered passkey.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/me/security_events": {
+      "get": {
+        "description": "Events are retained for 90 days. Cookie authentication only.",
+        "operationId": "list_security_events",
+        "parameters": [
+          {
+            "description": "The page number to request.\n\nThis parameter is mutually exclusive with `seek` and not supported for\nall requests.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The number of items to request per page.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The seek key to request.\n\nThis parameter is mutually exclusive with `page` and not supported for\nall requests.\n\nThe seek key can usually be found in the `meta.next_page` field of\npaginated responses.",
+            "in": "query",
+            "name": "seek",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "meta": {
+                      "$ref": "#/components/schemas/ListSecurityEventsMeta"
+                    },
+                    "security_events": {
+                      "items": {
+                        "$ref": "#/components/schemas/EncodableSecurityEvent"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "security_events",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List recent security activity for the authenticated user.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
     "/api/v1/me/tokens": {
       "get": {
         "operationId": "list_api_tokens",
@@ -5292,6 +5239,9 @@ expression: response.json()
                       "name"
                     ],
                     "type": "object"
+                  },
+                  "credential": {
+                    "description": "Passkey assertion required when API MFA is enabled (after `authorize/start`)."
                   }
                 },
                 "required": [
@@ -5471,6 +5421,300 @@ expression: response.json()
         "summary": "List versions of crates that the authenticated user follows.",
         "tags": [
           "versions"
+        ]
+      }
+    },
+    "/api/v1/mfa/challenges": {
+      "post": {
+        "description": "Prefer letting dangerous endpoints auto-create challenges; this endpoint is for\nexplicit preflight handshakes.",
+        "operationId": "create_api_mfa_challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "crate_name": {
+                    "description": "Optional crate name associated with the operation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "operation": {
+                    "description": "Dangerous operation label. Defaults to `manual`.\n\nAllowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,\n`change-trusted-publishing`, `delete-crate`, `manual`.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "description": "Optional localhost port (1024–65535) for RubyGems-style OTP delivery to the CLI.",
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "operation_id": {
+                      "description": "Opaque operation / transaction identifier.",
+                      "type": "string"
+                    },
+                    "poll_url": {
+                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "type": "string"
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls of `poll_url`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "verification_url": {
+                      "description": "Browser URL where the user must complete passkey verification.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "verification_url",
+                    "poll_url",
+                    "expires_at",
+                    "recommended_poll_interval_secs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ],
+        "summary": "Create an API MFA challenge for a CLI client (token auth).",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/mfa/challenges/{id}": {
+      "get": {
+        "description": "The opaque `operation_id` is a capability URL: the verify page can load\nmetadata without a crates.io cookie. API token clients (CLI poll loops) are\nrate-limited per user; unauthenticated browsers are rate-limited per IP.\nAside from rate-limit bucket updates this handler is read-only.",
+        "operationId": "get_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Operation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "acknowledged": {
+                      "description": "True once the browser passkey ceremony has acknowledged the operation.",
+                      "type": "boolean"
+                    },
+                    "crate_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "localhost_port": {
+                      "format": "int32",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "operation_id": {
+                      "description": "Opaque operation / transaction identifier.",
+                      "type": "string"
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls while status is `pending`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "description": "`pending` until passkey succeeds, then `acknowledged`.",
+                      "type": "string"
+                    },
+                    "verified": {
+                      "description": "Alias of `acknowledged` for older clients.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "status",
+                    "acknowledged",
+                    "verified",
+                    "operation",
+                    "expires_at",
+                    "recommended_poll_interval_secs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Poll an API MFA challenge until the browser acknowledges it.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/mfa/challenges/{id}/finish": {
+      "post": {
+        "description": "Unauthenticated: passkey assertion for the challenge owner's credentials is\nthe only factor (no crates.io cookie). `cargo login` must already have\nminted the API token that created this challenge.",
+        "operationId": "finish_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Operation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {}
+                },
+                "required": [
+                  "credential"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "grant_expires_at": {
+                      "description": "Present when a scoped grant was issued (stock cargo retry without OTP).\n\nOmitted when `localhost_port` was set — the CLI is expected to use the OTP callback.",
+                      "format": "date-time",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "localhost_callback_url": {
+                      "description": "Optional URL the browser can hit to deliver the OTP to a local CLI listener.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_id": {
+                      "type": "string"
+                    },
+                    "otp": {
+                      "description": "One-time password for the CLI to send as `Crates-OTP`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "otp",
+                    "operation_id"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Finish challenge verification, issue OTP + grant.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/mfa/challenges/{id}/start": {
+      "post": {
+        "description": "Unauthenticated: possession of the opaque operation id is the capability.\nPasskeys are loaded for the challenge owner (no crates.io cookie session).",
+        "operationId": "start_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Operation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "public_key": {}
+                  },
+                  "required": [
+                    "public_key"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Start passkey authentication for a pending challenge.",
+        "tags": [
+          "users"
         ]
       }
     },

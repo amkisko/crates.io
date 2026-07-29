@@ -1,0 +1,19 @@
+{% extends "base.html.j2" %}
+
+{% block content %}
+<p>Hello {{ user_name }}!</p>
+
+{% if action == "enabled" %}
+<p>API MFA was <strong>enabled</strong> on your {{ domain }} account.</p>
+{% elif action == "disabled" %}
+<p>API MFA was <strong>disabled</strong> on your {{ domain }} account.</p>
+{% elif action == "passkey_registered" %}
+<p>A passkey{% if detail %} named "<strong>{{ detail }}</strong>"{% endif %} was <strong>registered</strong> for API MFA on your {{ domain }} account.</p>
+{% elif action == "passkey_deleted" %}
+<p>A passkey{% if detail %} named "<strong>{{ detail }}</strong>"{% endif %} was <strong>removed</strong> from API MFA on your {{ domain }} account.</p>
+{% else %}
+<p>Your API MFA settings changed on {{ domain }}.</p>
+{% endif %}
+
+<p>If you did not make this change, visit <a href="https://{{ domain }}/settings/mfa">https://{{ domain }}/settings/mfa</a> and review your passkeys. You can also revoke API tokens at <a href="https://{{ domain }}/settings/tokens">https://{{ domain }}/settings/tokens</a>.</p>
+{% endblock %}

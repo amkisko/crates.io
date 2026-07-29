@@ -8,7 +8,7 @@ use diesel::sql_types::Timestamptz;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 pub use self::scopes::{CrateScope, EndpointScope};
-use crate::models::User;
+use crate::models::{NewUserSecurityEvent, User};
 use crate::schema::api_tokens;
 use crate::utils::token::{HashedToken, PlainToken};
 
@@ -101,10 +101,20 @@ impl ApiToken {
                     .await
             })
             .await;
-        let Ok(_) = token else {
+        let Ok(token) = token else {
             return tokens.select(ApiToken::as_select()).first(conn).await;
         };
-        token
+
+        // At most one `token_used` security event per token per UTC day.
+        NewUserSecurityEvent::token_used(
+            token.user_id,
+            token.id,
+            serde_json::json!({ "token_name": token.name }),
+        )
+        .record(conn)
+        .await;
+
+        Ok(token)
     }
 }
 

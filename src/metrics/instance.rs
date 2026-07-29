@@ -46,7 +46,7 @@ metrics! {
         /// Number of responses per status code
         pub responses_by_status_code_total: IntCounterVec["status"],
 
-        /// Outcomes of `ensure_api_mfa` (`skipped`, `grant`, `otp`, `required`)
+        /// Outcomes of `ensure_api_mfa` when MFA is on (`grant`, `otp`, `required`, `cookie_authorize`, `error`)
         pub api_mfa_ensure_total: IntCounterVec["result"],
         /// Wall-clock duration of `ensure_api_mfa` when MFA is enabled for the user
         pub api_mfa_ensure_duration_seconds: HistogramVec["result"],

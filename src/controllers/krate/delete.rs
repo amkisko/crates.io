@@ -1,3 +1,4 @@
+use crate::api_mfa::{ApiMfaEnsureDeps, ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::AuthCheck;
 use crate::controllers::helpers::authorization::Rights;
@@ -83,6 +84,20 @@ pub async fn delete_crate(
             return Err(custom(StatusCode::FORBIDDEN, msg));
         }
     }
+
+    ensure_api_mfa(
+        &auth,
+        &parts,
+        &mut conn,
+        ApiMfaEnsureDeps {
+            webauthn: &app.config.webauthn,
+            rate_limiter: &app.rate_limiter,
+            metrics: &app.instance_metrics,
+            enforcement_enabled: app.config.api_mfa_enforcement_enabled,
+        },
+        ApiMfaOperation::delete_crate(&krate.name),
+    )
+    .await?;
 
     let created_at = krate.created_at;
 

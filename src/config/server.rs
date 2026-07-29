@@ -69,6 +69,13 @@ pub struct Server {
     /// or emergency-disable the ceremony without undeploying.
     pub cli_login_enabled: bool,
 
+    /// When false, API MFA enforcement and settings step-up gates are skipped.
+    ///
+    /// Controlled by `API_MFA_ENFORCEMENT_ENABLED` (default `true`). Use `false`
+    /// for emergency bypass (e.g. WebAuthn/RP outage) without mass-updating users.
+    /// Status GET still reports each user's `enabled` flag.
+    pub api_mfa_enforcement_enabled: bool,
+
     /// Banner message to display on all pages (e.g., for security incidents).
     pub banner_message: Option<String>,
 
@@ -114,6 +121,9 @@ impl Server {
     ///   and uses the value as the error message returned to users.
     /// - `CLI_LOGIN_ENABLED`: When `false`, disables CLI link-login session create/poll.
     ///   Defaults to `true`.
+    /// - `API_MFA_ENFORCEMENT_ENABLED`: When `false`, skips API MFA enforcement and settings
+    ///   step-up (publish/yank/owners, New Token, CLI approve, enable/disable/passkey gates).
+    ///   Defaults to `true`.
     /// - `GIT_ARCHIVE_REPO_URL`: HTTPS URL (e.g. `https://github.com/<org>/<repo>.git`) of a git
     ///   repository to mirror the crate index's snapshot branches to. Must be HTTPS because the
     ///   `ArchiveIndexBranch` job authenticates via a GitHub App installation token; SSH remotes
@@ -141,6 +151,8 @@ impl Server {
         let trustpub_audience = var("TRUSTPUB_AUDIENCE")?.unwrap_or_else(|| domain_name.clone());
         let disable_token_creation = var("DISABLE_TOKEN_CREATION")?.filter(|s| !s.is_empty());
         let cli_login_enabled = var_parsed("CLI_LOGIN_ENABLED")?.unwrap_or(true);
+        let api_mfa_enforcement_enabled =
+            var_parsed("API_MFA_ENFORCEMENT_ENABLED")?.unwrap_or(true);
         let banner_message = var("BANNER_MESSAGE")?.filter(|s| !s.is_empty());
         let webauthn = WebauthnConfig::from_env(&domain_name)?;
 
@@ -173,6 +185,7 @@ impl Server {
             trustpub_audience,
             disable_token_creation,
             cli_login_enabled,
+            api_mfa_enforcement_enabled,
             banner_message,
             features,
             fastly: FastlyConfig::from_env()?,

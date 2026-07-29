@@ -41,9 +41,15 @@ export default http.post('/api/v1/cli_login/:id/approve', async ({ params, reque
     );
   }
 
-  if (user.apiMfaEnabled && !body.credential) {
+  if (user.apiMfaEnabled && !body.credential && !body.email_code) {
     return HttpResponse.json(
-      { errors: [{ detail: 'passkey verification required to approve CLI login while API MFA is enabled' }] },
+      {
+        errors: [
+          {
+            detail: 'passkey verification or email code required to approve CLI login while API MFA is enabled',
+          },
+        ],
+      },
       { status: 400 },
     );
   }

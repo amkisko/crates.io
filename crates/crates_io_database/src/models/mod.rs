@@ -1,8 +1,9 @@
 pub use self::action::{NewVersionOwnerAction, VersionAction, VersionOwnerAction};
 pub use self::api_mfa::{
-    ApiMfaChallenge, ApiMfaGrant, KIND_AUTHENTICATION, KIND_REGISTRATION,
-    MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, NewApiMfaGrant, NewWebauthnCredential,
-    WebauthnCeremonyState, WebauthnCredential,
+    ApiMfaChallenge, ApiMfaEmailOtp, ApiMfaGrant, DEFAULT_EMAIL_OTP_DURATION_SECS,
+    KIND_AUTHENTICATION, KIND_REGISTRATION, MAX_PASSKEYS_PER_USER, MAX_PENDING_CHALLENGES_PER_USER,
+    NewApiMfaChallenge, NewApiMfaGrant, NewWebauthnCredential, WebauthnCeremonyState,
+    WebauthnCredential,
 };
 pub use self::category::{Category, CrateCategory, NewCategory};
 pub use self::cli_login::{
@@ -24,6 +25,7 @@ pub use self::follow::Follow;
 pub use self::keyword::{CrateKeyword, Keyword};
 pub use self::krate::{Crate, CrateName, NewCrate};
 pub use self::owner::{CrateOwner, Owner, OwnerKind};
+pub use self::security_event::{NewUserSecurityEvent, SecurityEventType, UserSecurityEvent};
 pub use self::team::{NewTeam, Team};
 pub use self::token::ApiToken;
 pub use self::trustpub::TrustpubData;
@@ -47,6 +49,7 @@ mod follow;
 mod keyword;
 pub mod krate;
 mod owner;
+pub mod security_event;
 pub mod team;
 pub mod token;
 pub mod trustpub;

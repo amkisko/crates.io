@@ -4,14 +4,18 @@ use crate::models::{
     CliLoginSession, STATUS_CONSUMED, STATUS_EXPIRED, STATUS_PENDING, STATUS_READY,
     TouchPollOutcome,
 };
-use crate::util::errors::{AppResult, bad_request, not_found};
+use crate::util::errors::{AppResult, bad_request, forbidden, not_found};
 use crate::util::no_store;
 use axum::Json;
 use axum::extract::Path;
 use axum_extra::TypedHeader;
 use axum_extra::headers::CacheControl;
 use chrono::Utc;
+use http::request::Parts;
 use serde::Serialize;
+
+/// Header carrying the poll secret from `POST /api/v1/cli_login` (CLI starter only).
+pub const CRATES_CLI_LOGIN_SECRET_HEADER: &str = "crates-cli-login-secret";
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PollCliLoginResponse {
@@ -22,6 +26,9 @@ pub struct PollCliLoginResponse {
 }
 
 /// Poll a CLI login session until a token is available (unauthenticated).
+///
+/// Requires `Crates-Cli-Login-Secret` matching the secret from session start so
+/// observers of `login_id` / `login_url` alone cannot redeem the token.
 ///
 /// Returns the plaintext token at most once (`ready` → `consumed`).
 #[utoipa::path(
@@ -34,11 +41,33 @@ pub struct PollCliLoginResponse {
 pub async fn poll_cli_login(
     app: AppState,
     Path(id): Path<String>,
+    parts: Parts,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<PollCliLoginResponse>)> {
     ensure_cli_login_enabled(&app)?;
 
+    let poll_secret = parts
+        .headers
+        .get(CRATES_CLI_LOGIN_SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            bad_request(
+                "Crates-Cli-Login-Secret header required; use the poll_secret from POST /api/v1/cli_login",
+            )
+        })?;
+
     let mut conn = app.db_write().await?;
-    let outcome = touch_poll_or_rate_limit(&id, &mut conn).await?;
+
+    // Verify the starter secret before touch_poll so strangers cannot pace-lock the CLI.
+    let Some(session) = CliLoginSession::find(&id, &conn).await? else {
+        return Err(not_found());
+    };
+    if !session.poll_secret_matches(poll_secret) {
+        return Err(forbidden("invalid CLI login poll secret"));
+    }
+
+    let outcome = touch_poll_or_rate_limit(&app.rate_limiter, &id, &mut conn).await?;
 
     let TouchPollOutcome::Proceed { status, expires_at } = outcome else {
         return Err(not_found());

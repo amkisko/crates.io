@@ -1,6 +1,6 @@
 use crate::controllers::api_mfa::webauthn_util::complete_passkey_authentication;
 use crate::email::EmailMessage;
-use crate::models::ApiToken;
+use crate::models::{ApiToken, NewUserSecurityEvent, SecurityEventType};
 use crate::schema::api_tokens;
 use crate::views::EncodableApiTokenWithToken;
 use anyhow::Context;
@@ -12,6 +12,9 @@ use crate::models::token::{CrateScope, EndpointScope};
 use crate::util::errors::{AppResult, bad_request, custom};
 use crate::util::no_store;
 use crate::util::token::PlainToken;
+
+/// Maximum number of non-revoked, non-expired API tokens per user.
+pub const MAX_ACTIVE_TOKENS_PER_USER: i64 = 50;
 use axum::Json;
 use axum::extract::{Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -165,7 +168,7 @@ pub async fn create_api_token(
         return Err(custom(StatusCode::SERVICE_UNAVAILABLE, message));
     }
 
-    if user.api_mfa_enabled {
+    if app.config.api_mfa_enforcement_enabled && user.api_mfa_enabled {
         let Some(credential) = new.credential.as_ref() else {
             return Err(bad_request(
                 "passkey verification required to create an API token while API MFA is enabled; \
@@ -200,14 +203,19 @@ pub async fn mint_api_token_for_user(
     expired_at: Option<DateTime<Utc>>,
     conn: &mut diesel_async::AsyncPgConnection,
 ) -> AppResult<EncodableApiTokenWithToken> {
-    let max_token_per_user = 500;
     let count: i64 = ApiToken::belonging_to(user)
+        .filter(api_tokens::revoked.eq(false))
+        .filter(
+            api_tokens::expired_at
+                .is_null()
+                .or(api_tokens::expired_at.gt(now)),
+        )
         .count()
         .get_result(conn)
         .await?;
-    if count >= max_token_per_user {
+    if count >= MAX_ACTIVE_TOKENS_PER_USER {
         return Err(bad_request(format!(
-            "maximum tokens per user is: {max_token_per_user}"
+            "maximum active tokens per user is: {MAX_ACTIVE_TOKENS_PER_USER}"
         )));
     }
 
@@ -257,8 +265,20 @@ pub async fn mint_api_token_for_user(
         }
     }
 
+    let token = new_token.insert(conn).await?;
+
+    NewUserSecurityEvent::new(
+        user.id,
+        SecurityEventType::TokenCreated,
+        Some(token.id),
+        None,
+        serde_json::json!({ "token_name": name }),
+    )
+    .record(conn)
+    .await;
+
     Ok(EncodableApiTokenWithToken {
-        token: new_token.insert(conn).await?,
+        token,
         plaintext: plaintext.expose_secret().to_string(),
     })
 }
@@ -322,10 +342,30 @@ pub async fn revoke_api_token(
     let mut conn = app.db_write().await?;
     let auth = AuthCheck::default().check(&req, &mut conn).await?;
     let user = auth.user();
+    let token = ApiToken::belonging_to(user)
+        .find(id)
+        .select(ApiToken::as_select())
+        .first(&mut conn)
+        .await
+        .optional()?;
+
     diesel::update(ApiToken::belonging_to(user).find(id))
         .set(api_tokens::revoked.eq(true))
         .execute(&mut conn)
         .await?;
+
+    if let Some(token) = token {
+        let ip = req.extensions.get::<RealIp>().map(|ip| ip.to_string());
+        NewUserSecurityEvent::new(
+            user.id,
+            SecurityEventType::TokenRevoked,
+            Some(token.id),
+            ip,
+            serde_json::json!({ "token_name": token.name }),
+        )
+        .record(&mut conn)
+        .await;
+    }
 
     Ok(json!({}))
 }
@@ -347,11 +387,29 @@ pub async fn revoke_current_api_token(app: AppState, req: Parts) -> AppResult<Re
     let api_token_id = auth
         .api_token_id()
         .ok_or_else(|| bad_request("token not provided"))?;
+    let user = auth.user();
+
+    let token_name = api_tokens::table
+        .find(api_token_id)
+        .select(api_tokens::name)
+        .first::<String>(&mut conn)
+        .await
+        .optional()?;
 
     diesel::update(api_tokens::table.filter(api_tokens::id.eq(api_token_id)))
         .set(api_tokens::revoked.eq(true))
         .execute(&mut conn)
         .await?;
+
+    NewUserSecurityEvent::new(
+        user.id,
+        SecurityEventType::TokenRevoked,
+        Some(api_token_id),
+        req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
+        serde_json::json!({ "token_name": token_name }),
+    )
+    .record(&mut conn)
+    .await;
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }

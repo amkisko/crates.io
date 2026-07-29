@@ -51,6 +51,7 @@ impl RunnerExt for Runner<Arc<Environment>> {
             .register_job_type::<jobs::rss::SyncCratesFeed>()
             .register_job_type::<jobs::rss::SyncUpdatesFeed>()
             .register_job_type::<jobs::api_mfa::PurgeExpiredApiMfa>()
+            .register_job_type::<jobs::security_events::PurgeExpiredSecurityEvents>()
             .register_job_type::<jobs::trustpub::DeleteExpiredJtis>()
             .register_job_type::<jobs::trustpub::DeleteExpiredTokens>()
     }

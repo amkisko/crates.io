@@ -23,10 +23,12 @@ pub struct StartAuthorizeResponse {
 
 /// Start passkey authentication to create a short-lived API MFA grant.
 ///
-/// Also used as the step-up ceremony before disabling API MFA (see `PUT /api/v1/me/api_mfa`).
+/// Also used as the passkey step-up ceremony before disabling API MFA or registering
+/// an additional passkey while MFA is enabled (see `PUT /api/v1/me/mfa` and
+/// `POST /api/v1/me/mfa/passkeys/start`). Disabling may use email OTP instead.
 #[utoipa::path(
     post,
-    path = "/api/v1/me/api_mfa/authorize/start",
+    path = "/api/v1/me/mfa/authorize/start",
     security(("cookie" = [])),
     tag = "users",
     extensions(("x-internal" = json!(true))),
@@ -78,7 +80,7 @@ pub struct FinishAuthorizeResponse {
 /// Finish passkey authentication and issue a 15-minute wildcard API MFA grant.
 #[utoipa::path(
     post,
-    path = "/api/v1/me/api_mfa/authorize/finish",
+    path = "/api/v1/me/mfa/authorize/finish",
     request_body = inline(FinishAuthorizeRequest),
     security(("cookie" = [])),
     tag = "users",
@@ -99,6 +101,18 @@ pub async fn finish_api_mfa_authorize(
 
     // Wildcard grant for stock cargo after an explicit settings-page authorize.
     let grant = NewApiMfaGrant::for_user(user.id).insert(&conn).await?;
+
+    use crate::middleware::real_ip::RealIp;
+    use crate::models::{NewUserSecurityEvent, SecurityEventType};
+    NewUserSecurityEvent::new(
+        user.id,
+        SecurityEventType::ApiMfaAuthorized,
+        None,
+        req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
+        serde_json::json!({}),
+    )
+    .record(&mut conn)
+    .await;
 
     Ok((
         no_store(),

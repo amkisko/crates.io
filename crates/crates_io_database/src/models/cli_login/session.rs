@@ -21,6 +21,8 @@ pub const STATUS_EXPIRED: &str = "expired";
 
 const SESSION_ID_PREFIX: &str = "login_";
 const SESSION_ID_LENGTH: usize = 32;
+/// Opaque redeem binder returned only to the CLI starter (not in browser URLs).
+const POLL_SECRET_LENGTH: usize = 32;
 /// Ambiguous-looking characters omitted (`0`/`O`, `1`/`I`/`L`).
 const CONFIRMATION_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CONFIRMATION_CODE_LENGTH: usize = 8;
@@ -51,7 +53,8 @@ pub struct CliLoginSession {
     pub id: String,
     pub last_polled_at: Option<DateTime<Utc>>,
     pub localhost_port: Option<i32>,
-    pub plaintext_token: Option<String>,
+    pub poll_secret_hash: Vec<u8>,
+    pub sealed_token: Option<String>,
     pub status: String,
     pub user_id: Option<i32>,
 }
@@ -64,32 +67,38 @@ pub struct NewCliLoginSession {
     pub localhost_port: Option<i32>,
     pub client_ip: Option<String>,
     pub confirmation_code_hash: Vec<u8>,
+    pub poll_secret_hash: Vec<u8>,
     pub expires_at: DateTime<Utc>,
 }
 
-/// Plaintext confirmation code plus insertable session (code shown once to the CLI).
-pub struct NewCliLoginSessionWithCode {
+/// Plaintext secrets plus insertable session (returned only from `POST /cli_login`).
+pub struct NewCliLoginSessionWithSecrets {
     pub session: NewCliLoginSession,
-    /// Display form (`XXXX-XXXX`); returned only from `POST /cli_login`.
+    /// Display form (`XXXX-XXXX`); typed on the approve page.
     pub confirmation_code: String,
+    /// Opaque binder required on poll; never shown in the browser.
+    pub poll_secret: String,
 }
 
 impl NewCliLoginSession {
-    /// Builds a new pending session with opaque id and confirmation code.
-    pub fn new(
+    /// Builds a new pending session with opaque id, confirmation code, and poll secret.
+    pub fn pending_with_secrets(
         localhost_port: Option<i32>,
         client_ip: Option<String>,
-    ) -> NewCliLoginSessionWithCode {
+    ) -> NewCliLoginSessionWithSecrets {
         let confirmation_code = CliLoginSession::generate_confirmation_code();
-        NewCliLoginSessionWithCode {
+        let poll_secret = CliLoginSession::generate_poll_secret();
+        NewCliLoginSessionWithSecrets {
             session: Self {
                 id: CliLoginSession::generate_id(),
                 localhost_port,
                 client_ip,
                 confirmation_code_hash: CliLoginSession::hash_confirmation_code(&confirmation_code),
+                poll_secret_hash: CliLoginSession::hash_poll_secret(&poll_secret),
                 expires_at: Utc::now() + TimeDelta::seconds(DEFAULT_SESSION_DURATION_SECS),
             },
             confirmation_code,
+            poll_secret,
         }
     }
 
@@ -103,11 +112,14 @@ impl NewCliLoginSession {
     }
 }
 
-impl NewCliLoginSessionWithCode {
-    /// Inserts the session and returns the loaded row (plaintext code stays on `self`).
-    pub async fn insert(self, conn: &AsyncPgConnection) -> QueryResult<(CliLoginSession, String)> {
+impl NewCliLoginSessionWithSecrets {
+    /// Inserts the session and returns the loaded row plus plaintext secrets.
+    pub async fn insert(
+        self,
+        conn: &AsyncPgConnection,
+    ) -> QueryResult<(CliLoginSession, String, String)> {
         let session = self.session.insert(conn).await?;
-        Ok((session, self.confirmation_code))
+        Ok((session, self.confirmation_code, self.poll_secret))
     }
 }
 
@@ -118,6 +130,21 @@ impl CliLoginSession {
             "{SESSION_ID_PREFIX}{}",
             Alphanumeric.sample_string(&mut rand::rng(), SESSION_ID_LENGTH)
         )
+    }
+
+    /// Generates an opaque poll secret for the CLI starter.
+    pub fn generate_poll_secret() -> String {
+        Alphanumeric.sample_string(&mut rand::rng(), POLL_SECRET_LENGTH)
+    }
+
+    /// Hashes a poll secret for storage / comparison.
+    pub fn hash_poll_secret(secret: &str) -> Vec<u8> {
+        Sha256::digest(secret.as_bytes()).to_vec()
+    }
+
+    /// Whether `secret` matches this session's stored poll secret hash.
+    pub fn poll_secret_matches(&self, secret: &str) -> bool {
+        self.poll_secret_hash == Self::hash_poll_secret(secret)
     }
 
     /// Generates a human-typed confirmation code (`XXXX-XXXX`).
@@ -235,7 +262,7 @@ impl CliLoginSession {
         &self,
         user_id: i32,
         api_token_id: i32,
-        plaintext_token: &str,
+        sealed_token: &str,
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<bool> {
         let updated = diesel::update(cli_login_sessions::table.find(&self.id))
@@ -244,7 +271,7 @@ impl CliLoginSession {
             .filter(cli_login_sessions::user_id.eq(user_id))
             .set((
                 cli_login_sessions::api_token_id.eq(api_token_id),
-                cli_login_sessions::plaintext_token.eq(plaintext_token),
+                cli_login_sessions::sealed_token.eq(sealed_token),
                 cli_login_sessions::status.eq(STATUS_READY),
             ))
             .execute(&mut conn)
@@ -306,7 +333,7 @@ impl CliLoginSession {
                 .find(id)
                 .filter(cli_login_sessions::status.eq(STATUS_READY))
                 .filter(cli_login_sessions::expires_at.gt(now))
-                .select(cli_login_sessions::plaintext_token)
+                .select(cli_login_sessions::sealed_token)
                 .for_update()
                 .first::<Option<String>>(conn)
                 .await
@@ -317,7 +344,7 @@ impl CliLoginSession {
                 diesel::update(cli_login_sessions::table.find(id))
                     .set((
                         cli_login_sessions::status.eq(STATUS_CONSUMED),
-                        cli_login_sessions::plaintext_token.eq(None::<String>),
+                        cli_login_sessions::sealed_token.eq(None::<String>),
                     ))
                     .execute(conn)
                     .await?;
@@ -328,7 +355,7 @@ impl CliLoginSession {
         .await
     }
 
-    /// Deletes expired and consumed sessions; clears leftover plaintext first.
+    /// Deletes expired and consumed sessions; clears leftover ciphertext first.
     pub async fn purge_expired(mut conn: &AsyncPgConnection) -> QueryResult<usize> {
         diesel::update(
             cli_login_sessions::table
@@ -337,9 +364,9 @@ impl CliLoginSession {
                         .lt(now)
                         .or(cli_login_sessions::status.eq(STATUS_CONSUMED)),
                 )
-                .filter(cli_login_sessions::plaintext_token.is_not_null()),
+                .filter(cli_login_sessions::sealed_token.is_not_null()),
         )
-        .set(cli_login_sessions::plaintext_token.eq(None::<String>))
+        .set(cli_login_sessions::sealed_token.eq(None::<String>))
         .execute(&mut conn)
         .await?;
 

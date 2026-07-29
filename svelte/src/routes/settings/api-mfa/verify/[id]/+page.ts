@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 
-/** Legacy settings path → top-level capability URL. */
+/** Legacy settings verify path → `/mfa/verify/{id}`. */
 export function load({ params }) {
-  redirect(308, `/webauthn-verify/${params.id}`);
+  redirect(308, `/mfa/verify/${params.id}`);
 }

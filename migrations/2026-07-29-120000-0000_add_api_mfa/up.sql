@@ -108,3 +108,25 @@ CREATE INDEX webauthn_ceremony_states_expires_at_idx
     ON webauthn_ceremony_states (expires_at);
 COMMENT ON TABLE webauthn_ceremony_states IS
     'In-progress WebAuthn ceremony state for API MFA register/authorize flows';
+
+-- Email OTP for API MFA bootstrap / recovery (enable, disable, first/recovery passkey enroll).
+-- Not used as a factor for publish/yank/owner challenges (those remain passkey-only).
+CREATE TABLE api_mfa_email_otps (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- SHA-256 of the plaintext OTP
+    hashed_otp BYTEA NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- At most one unused non-expired OTP per user (resend replaces).
+CREATE UNIQUE INDEX api_mfa_email_otps_active_user_idx
+    ON api_mfa_email_otps (user_id)
+    WHERE consumed_at IS NULL;
+CREATE INDEX api_mfa_email_otps_expires_at_idx
+    ON api_mfa_email_otps (expires_at);
+
+COMMENT ON TABLE api_mfa_email_otps IS
+    'Short-lived email OTPs for API MFA enable/disable and passkey enrollment recovery';

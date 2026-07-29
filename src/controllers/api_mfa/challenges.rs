@@ -1,13 +1,16 @@
-use super::webauthn_util::{build_webauthn, parse_auth_response, passkeys_from_credentials};
-use crate::api_mfa::{RECOMMENDED_POLL_INTERVAL_SECS, public_mfa_urls};
+use super::webauthn_util::{
+    build_webauthn, parse_auth_response, passkeys_from_credentials, record_passkey_authentication,
+};
+use crate::api_mfa::{
+    RECOMMENDED_POLL_INTERVAL_SECS, insert_challenge_or_reuse_pending,
+    normalize_challenge_operation, public_mfa_urls,
+};
 use crate::app::AppState;
 use crate::auth::{AuthCheck, AuthHeader, Authentication};
-use crate::middleware::real_ip::RealIp;
 use crate::models::{
-    ApiMfaChallenge, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, NewApiMfaGrant,
-    WebauthnCredential,
+    ApiMfaChallenge, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaGrant, WebauthnCredential,
 };
-use crate::rate_limiter::{LimitedAction, rate_limit_id_for_ip};
+use crate::rate_limiter::LimitedAction;
 use crate::util::errors::{AppResult, bad_request, forbidden, not_found, server_error};
 use crate::util::no_store;
 use axum::Json;
@@ -15,13 +18,17 @@ use axum::extract::Path;
 use axum_extra::TypedHeader;
 use axum_extra::headers::CacheControl;
 use chrono::{DateTime, Utc};
+use diesel_async::AsyncConnection;
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::*;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateChallengeRequest {
-    /// Dangerous operation label (e.g. `publish`). Defaults to `manual`.
+    /// Dangerous operation label. Defaults to `manual`.
+    ///
+    /// Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,
+    /// `change-trusted-publishing`, `delete-crate`, `manual`.
     pub operation: Option<String>,
     /// Optional crate name associated with the operation.
     pub crate_name: Option<String>,
@@ -48,7 +55,7 @@ pub struct CreateChallengeResponse {
 /// explicit preflight handshakes.
 #[utoipa::path(
     post,
-    path = "/api/v1/me/api_mfa/challenges",
+    path = "/api/v1/mfa/challenges",
     request_body = inline(CreateChallengeRequest),
     security(("api_token" = [])),
     tag = "users",
@@ -85,17 +92,12 @@ pub async fn create_api_mfa_challenge(
         return Err(bad_request("port must be between 1024 and 65535"));
     }
 
-    let operation = body
-        .operation
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("manual");
+    let operation = normalize_challenge_operation(body.operation.as_deref())?;
 
     if let Some(existing) = ApiMfaChallenge::find_pending_for_operation(
         user.id,
         token.id,
-        operation,
+        &operation,
         body.crate_name.as_deref(),
         &conn,
     )
@@ -113,7 +115,7 @@ pub async fn create_api_mfa_challenge(
 
     ApiMfaChallenge::delete_expired_pending_for_operation(
         token.id,
-        operation,
+        &operation,
         body.crate_name.as_deref(),
         &conn,
     )
@@ -127,17 +129,19 @@ pub async fn create_api_mfa_challenge(
         )));
     }
 
-    let challenge = NewApiMfaChallenge::new(
+    let (challenge, created) = insert_challenge_or_reuse_pending(
         user.id,
-        Some(token.id),
-        operation,
+        token.id,
+        &operation,
         body.crate_name,
         body.port,
+        &mut conn,
     )
-    .insert(&conn)
     .await?;
 
-    app.instance_metrics.api_mfa_challenges_created_total.inc();
+    if created {
+        app.instance_metrics.api_mfa_challenges_created_total.inc();
+    }
 
     Ok((
         no_store(),
@@ -185,7 +189,7 @@ pub struct GetChallengeResponse {
 /// Aside from rate-limit bucket updates this handler is read-only.
 #[utoipa::path(
     get,
-    path = "/api/v1/me/api_mfa/challenges/{id}",
+    path = "/api/v1/mfa/challenges/{id}",
     params(("id" = String, Path, description = "Operation ID")),
     tag = "users",
     extensions(("x-internal" = json!(true))),
@@ -197,26 +201,14 @@ pub async fn get_api_mfa_challenge(
     req: Parts,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<GetChallengeResponse>)> {
     // Rate-limit buckets need a write connection; challenge rows are only read.
+    //
+    // Unauthenticated polls are limited by the challenge *owner* id. Synthetic
+    // negative IP ids cannot be stored in `publish_limit_buckets` (FK → users).
     let mut conn = app.db_write().await?;
 
     let has_auth_header = AuthHeader::optional_from_request_parts(&req)
         .await?
         .is_some();
-
-    if !has_auth_header {
-        let ip = req
-            .extensions
-            .get::<RealIp>()
-            .map(|ip| **ip)
-            .unwrap_or_else(|| std::net::IpAddr::from([0, 0, 0, 0]));
-        app.rate_limiter
-            .check_rate_limit(
-                rate_limit_id_for_ip(ip),
-                LimitedAction::ApiMfaChallengePoll,
-                &mut conn,
-            )
-            .await?;
-    }
 
     let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
         return Err(not_found());
@@ -236,6 +228,14 @@ pub async fn get_api_mfa_challenge(
                 .await?;
             app.instance_metrics.api_mfa_challenge_polls_total.inc();
         }
+    } else {
+        app.rate_limiter
+            .check_rate_limit(
+                challenge.user_id,
+                LimitedAction::ApiMfaChallengePoll,
+                &mut conn,
+            )
+            .await?;
     }
 
     let acknowledged = challenge.is_acknowledged();
@@ -275,24 +275,11 @@ fn authorize_challenge_read(auth: &Authentication, challenge: &ApiMfaChallenge) 
 
 async fn rate_limit_challenge_ceremony(
     app: &AppState,
-    req: &Parts,
     challenge_user_id: i32,
     conn: &mut diesel_async::AsyncPgConnection,
 ) -> AppResult<()> {
-    let ip = req
-        .extensions
-        .get::<RealIp>()
-        .map(|ip| **ip)
-        .unwrap_or_else(|| std::net::IpAddr::from([0, 0, 0, 0]));
-    // IP bucket: leaked capability URLs cannot thrash the write pool unbounded.
-    app.rate_limiter
-        .check_rate_limit(
-            rate_limit_id_for_ip(ip),
-            LimitedAction::ApiMfaChallengeCreate,
-            conn,
-        )
-        .await?;
-    // Per-owner bucket: protects the account that owns the challenge.
+    // Per-owner bucket only: `publish_limit_buckets.user_id` references `users`,
+    // so synthetic IP ids cannot be used here (see CLI login create rate limit).
     app.rate_limiter
         .check_rate_limit(
             challenge_user_id,
@@ -314,7 +301,7 @@ pub struct StartChallengeAuthResponse {
 /// Passkeys are loaded for the challenge owner (no crates.io cookie session).
 #[utoipa::path(
     post,
-    path = "/api/v1/me/api_mfa/challenges/{id}/start",
+    path = "/api/v1/mfa/challenges/{id}/start",
     params(("id" = String, Path, description = "Operation ID")),
     tag = "users",
     extensions(("x-internal" = json!(true))),
@@ -323,7 +310,6 @@ pub struct StartChallengeAuthResponse {
 pub async fn start_api_mfa_challenge(
     app: AppState,
     Path(id): Path<String>,
-    req: Parts,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<StartChallengeAuthResponse>)> {
     let mut conn = app.db_write().await?;
 
@@ -334,7 +320,7 @@ pub async fn start_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     }
 
-    rate_limit_challenge_ceremony(&app, &req, challenge.user_id, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, challenge.user_id, &mut conn).await?;
 
     let credentials = WebauthnCredential::for_user(challenge.user_id, &conn).await?;
     if credentials.is_empty() {
@@ -384,7 +370,7 @@ pub struct FinishChallengeAuthResponse {
 /// minted the API token that created this challenge.
 #[utoipa::path(
     post,
-    path = "/api/v1/me/api_mfa/challenges/{id}/finish",
+    path = "/api/v1/mfa/challenges/{id}/finish",
     params(("id" = String, Path, description = "Operation ID")),
     request_body = inline(FinishChallengeAuthRequest),
     tag = "users",
@@ -394,7 +380,6 @@ pub struct FinishChallengeAuthResponse {
 pub async fn finish_api_mfa_challenge(
     app: AppState,
     Path(id): Path<String>,
-    req: Parts,
     Json(body): Json<FinishChallengeAuthRequest>,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<FinishChallengeAuthResponse>)> {
     let mut conn = app.db_write().await?;
@@ -406,7 +391,7 @@ pub async fn finish_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     }
 
-    rate_limit_challenge_ceremony(&app, &req, challenge.user_id, &mut conn).await?;
+    rate_limit_challenge_ceremony(&app, challenge.user_id, &mut conn).await?;
 
     let Some(state_json) = challenge.auth_state_json.clone() else {
         return Err(bad_request("passkey authentication has not been started"));
@@ -420,40 +405,57 @@ pub async fn finish_api_mfa_challenge(
         .finish_passkey_authentication(&auth_response, &auth_state)
         .map_err(|err| bad_request(format!("passkey authentication failed: {err}")))?;
 
-    let credentials = WebauthnCredential::for_user(challenge.user_id, &conn).await?;
-    for credential in &credentials {
-        if credential.credential_id.as_slice() == auth_result.cred_id().as_slice() {
-            credential.touch(&conn).await?;
-            break;
-        }
-    }
+    record_passkey_authentication(challenge.user_id, &auth_result, &mut conn).await?;
 
     let otp = ApiMfaChallenge::generate_otp();
-    if !challenge
-        .mark_verified(ApiMfaChallenge::hash_otp(&otp), &conn)
-        .await?
-    {
+    let hashed_otp = ApiMfaChallenge::hash_otp(&otp);
+    let issue_grant = challenge.localhost_port.is_none();
+
+    // Ack + scoped grant in one transaction so a grant insert failure cannot
+    // leave a verified challenge without a retry path for stock cargo.
+    let grant_expires_at: Option<Option<DateTime<Utc>>> = conn
+        .transaction(async |conn| {
+            if !challenge.mark_verified(hashed_otp, conn).await? {
+                return Ok::<_, diesel::result::Error>(None);
+            }
+
+            if !issue_grant {
+                return Ok(Some(None));
+            }
+
+            let grant = NewApiMfaGrant::for_operation(
+                challenge.user_id,
+                challenge.operation.clone(),
+                challenge.crate_name.clone(),
+            )
+            .insert(conn)
+            .await?;
+            Ok(Some(Some(grant.expires_at)))
+        })
+        .await?;
+
+    let Some(grant_expires_at) = grant_expires_at else {
         return Err(bad_request("this challenge is already acknowledged"));
-    }
+    };
 
     let localhost_callback_url = challenge
         .localhost_port
         .map(|port| format!("http://localhost:{port}/?code={otp}"));
 
-    // Scoped grant for stock cargo retries. Skip when a localhost OTP callback was requested.
-    // Only the atomic mark_verified winner reaches this insert.
-    let grant_expires_at = if challenge.localhost_port.is_some() {
-        None
-    } else {
-        let grant = NewApiMfaGrant::for_operation(
-            challenge.user_id,
-            challenge.operation.clone(),
-            challenge.crate_name.clone(),
-        )
-        .insert(&conn)
-        .await?;
-        Some(grant.expires_at)
-    };
+    use crate::models::{NewUserSecurityEvent, SecurityEventType};
+    NewUserSecurityEvent::new(
+        challenge.user_id,
+        SecurityEventType::ApiMfaChallengeVerified,
+        challenge.api_token_id,
+        None,
+        serde_json::json!({
+            "operation": challenge.operation,
+            "crate_name": challenge.crate_name,
+            "operation_id": challenge.id,
+        }),
+    )
+    .record(&mut conn)
+    .await;
 
     Ok((
         no_store(),

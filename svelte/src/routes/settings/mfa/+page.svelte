@@ -17,6 +17,7 @@
     enabled: boolean;
     credentials: Credential[];
     grant_expires_at: string | null;
+    has_verified_email: boolean;
   }
 
   let session = getSession();
@@ -26,11 +27,14 @@
   let loading = $state(true);
   let busy = $state(false);
   let newPasskeyName = $state('Passkey');
+  let emailOtp = $state('');
+  let emailOtpHint = $state<string | null>(null);
+  let emailOtpExpiresAt = $state<string | null>(null);
 
   async function loadStatus() {
     loading = true;
     try {
-      let response = await fetch('/api/v1/me/api_mfa');
+      let response = await fetch('/api/v1/me/mfa');
       if (!response.ok) {
         throw new Error('Failed to load API MFA status');
       }
@@ -42,32 +46,64 @@
     }
   }
 
+  async function sendEmailOtp() {
+    busy = true;
+    try {
+      let response = await fetch('/api/v1/me/mfa/email_codes', { method: 'POST' });
+      if (!response.ok) {
+        let body = await response.json().catch(() => null);
+        throw new Error(body?.errors?.[0]?.detail ?? 'Failed to send email code');
+      }
+      let body = await response.json();
+      emailOtpHint = body.sent_to_hint;
+      emailOtpExpiresAt = body.expires_at;
+      notifications.success(`Verification code sent to ${body.sent_to_hint}.`);
+    } catch (error) {
+      notifications.error(error instanceof Error ? error.message : 'Failed to send email code.');
+    } finally {
+      busy = false;
+    }
+  }
+
   async function setEnabled(enabled: boolean) {
     busy = true;
     try {
-      let payload: { enabled: boolean; credential?: unknown } = { enabled };
+      let payload: { enabled: boolean; credential?: unknown; email_code?: string } = { enabled };
 
-      // Disabling requires a fresh passkey assertion so a stolen cookie alone cannot turn MFA off.
-      if (!enabled && status?.enabled) {
-        if (!globalThis.PublicKeyCredential) {
-          throw new Error('This browser does not support passkeys.');
+      if (enabled) {
+        let otp = emailOtp.trim();
+        if (!otp) {
+          throw new Error('Request an email verification code, then enter it to enable API MFA.');
         }
-        let start = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
-        if (!start.ok) {
-          let body = await start.json().catch(() => null);
-          throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
+        payload.email_code = otp;
+      } else if (status?.enabled) {
+        let otp = emailOtp.trim();
+        if (otp) {
+          payload.email_code = otp;
+        } else {
+          if (!globalThis.PublicKeyCredential) {
+            throw new Error('This browser does not support passkeys. Use an email verification code instead.');
+          }
+          if ((status.credentials?.length ?? 0) === 0) {
+            throw new Error('No passkeys registered. Request an email verification code to disable API MFA.');
+          }
+          let start = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
+          if (!start.ok) {
+            let body = await start.json().catch(() => null);
+            throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
+          }
+          let { public_key } = await start.json();
+          let credential = (await navigator.credentials.get({
+            publicKey: revivePublicKeyRequest(public_key),
+          })) as PublicKeyCredential | null;
+          if (!credential) {
+            throw new Error('Passkey verification was cancelled');
+          }
+          payload.credential = serializeCredential(credential);
         }
-        let { public_key } = await start.json();
-        let credential = (await navigator.credentials.get({
-          publicKey: revivePublicKeyRequest(public_key),
-        })) as PublicKeyCredential | null;
-        if (!credential) {
-          throw new Error('Passkey verification was cancelled');
-        }
-        payload.credential = serializeCredential(credential);
       }
 
-      let response = await fetch('/api/v1/me/api_mfa', {
+      let response = await fetch('/api/v1/me/mfa', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -76,6 +112,7 @@
         let body = await response.json().catch(() => null);
         throw new Error(body?.errors?.[0]?.detail ?? 'Failed to update API MFA');
       }
+      emailOtp = '';
       await loadStatus();
       notifications.success(enabled ? 'API MFA enabled.' : 'API MFA disabled.');
     } catch (error) {
@@ -95,11 +132,12 @@
 
     busy = true;
     try {
-      let startBody: { credential?: unknown } = {};
+      let startBody: { credential?: unknown; email_code?: string } = {};
 
-      // With MFA enabled, prove possession of an existing passkey before enrollment.
-      if (status?.enabled) {
-        let authStart = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
+      // With MFA enabled and an existing passkey, prove possession before enrollment.
+      // Otherwise (first enroll / recovery / MFA off) require an email OTP.
+      if (status?.enabled && (status.credentials?.length ?? 0) > 0) {
+        let authStart = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
         if (!authStart.ok) {
           let body = await authStart.json().catch(() => null);
           throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
@@ -112,9 +150,15 @@
           throw new Error('Passkey verification was cancelled');
         }
         startBody.credential = serializeCredential(assertion);
+      } else {
+        let otp = emailOtp.trim();
+        if (!otp) {
+          throw new Error('Request an email verification code, then enter it to register a passkey.');
+        }
+        startBody.email_code = otp;
       }
 
-      let start = await fetch('/api/v1/me/api_mfa/credentials/start', {
+      let start = await fetch('/api/v1/me/mfa/passkeys/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(startBody),
@@ -131,7 +175,7 @@
         throw new Error('Passkey registration was cancelled');
       }
 
-      let finish = await fetch('/api/v1/me/api_mfa/credentials/finish', {
+      let finish = await fetch('/api/v1/me/mfa/passkeys/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -144,6 +188,7 @@
         throw new Error(body?.errors?.[0]?.detail ?? 'Failed to finish passkey registration');
       }
 
+      emailOtp = '';
       await loadStatus();
       notifications.success('Passkey registered.');
     } catch (error) {
@@ -156,11 +201,45 @@
   async function deleteCredential(id: number) {
     busy = true;
     try {
-      let response = await fetch(`/api/v1/me/api_mfa/credentials/${id}`, { method: 'DELETE' });
+      let payload: { credential?: unknown; email_code?: string } = {};
+
+      if (status?.enabled) {
+        let otp = emailOtp.trim();
+        if (otp) {
+          payload.email_code = otp;
+        } else {
+          if (!globalThis.PublicKeyCredential) {
+            throw new Error('This browser does not support passkeys. Use an email verification code instead.');
+          }
+          if ((status.credentials?.length ?? 0) === 0) {
+            throw new Error('No passkeys registered. Request an email verification code to delete.');
+          }
+          let start = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
+          if (!start.ok) {
+            let body = await start.json().catch(() => null);
+            throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
+          }
+          let { public_key } = await start.json();
+          let credential = (await navigator.credentials.get({
+            publicKey: revivePublicKeyRequest(public_key),
+          })) as PublicKeyCredential | null;
+          if (!credential) {
+            throw new Error('Passkey verification was cancelled');
+          }
+          payload.credential = serializeCredential(credential);
+        }
+      }
+
+      let response = await fetch(`/api/v1/me/mfa/passkeys/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
       if (!response.ok) {
         let body = await response.json().catch(() => null);
         throw new Error(body?.errors?.[0]?.detail ?? 'Failed to delete passkey');
       }
+      emailOtp = '';
       await loadStatus();
       notifications.success('Passkey deleted.');
     } catch (error) {
@@ -178,7 +257,7 @@
 
     busy = true;
     try {
-      let start = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
+      let start = await fetch('/api/v1/me/mfa/authorize/start', { method: 'POST' });
       if (!start.ok) {
         let body = await start.json().catch(() => null);
         throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start authorization');
@@ -191,7 +270,7 @@
         throw new Error('Passkey verification was cancelled');
       }
 
-      let finish = await fetch('/api/v1/me/api_mfa/authorize/finish', {
+      let finish = await fetch('/api/v1/me/mfa/authorize/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential: serializeCredential(credential) }),
@@ -308,15 +387,59 @@
         <input
           type="checkbox"
           checked={status.enabled}
-          disabled={busy || status.credentials.length === 0}
+          disabled={busy || (!status.enabled && status.credentials.length === 0)}
           onchange={event => setEnabled(event.currentTarget.checked)}
         />
         <span class="label">Require passkey verification for publish, yank, and owner changes</span>
       </label>
-      {#if status.credentials.length === 0}
-        <p class="hint">Register at least one passkey before enabling API MFA.</p>
-      {:else if status.enabled}
-        <p class="hint">Disabling API MFA or registering another passkey requires a passkey confirmation.</p>
+      {#if !status.enabled && status.credentials.length === 0}
+        <p class="hint">Register at least one passkey, then enter an email verification code to enable API MFA.</p>
+      {:else if !status.enabled}
+        <p class="hint">Enter an email verification code below, then enable API MFA.</p>
+      {:else if status.credentials.length === 0}
+        <p class="hint">
+          API MFA is enabled with no passkeys. Dangerous actions stay blocked until you register a passkey (email code)
+          or disable API MFA (email code).
+        </p>
+      {:else}
+        <p class="hint">
+          Disabling API MFA requires a passkey confirmation or an email verification code. Registering another passkey
+          requires a passkey confirmation.
+        </p>
+      {/if}
+    </section>
+
+    <section>
+      <h2>Email verification code</h2>
+      <p>
+        Used to enable API MFA, register a passkey when you have none (or when API MFA is off), and to disable API MFA
+        without a passkey. Codes are sent to your verified email address.
+      </p>
+      {#if !status.has_verified_email}
+        <p class="hint">
+          Set and verify an email under <a href="/settings/profile">Settings → Profile</a> before requesting a code.
+        </p>
+      {:else}
+        <div class="email-otp">
+          <button type="button" class="button" disabled={busy} onclick={sendEmailOtp} data-test-send-email-otp>
+            Send code
+          </button>
+          <input
+            type="text"
+            bind:value={emailOtp}
+            maxlength="32"
+            autocomplete="one-time-code"
+            spellcheck="false"
+            aria-label="Email verification code"
+            placeholder="Enter code"
+            data-test-email-otp
+          />
+        </div>
+        {#if emailOtpHint && emailOtpExpiresAt}
+          <p class="hint">
+            Code sent to {emailOtpHint}. Expires {new Date(emailOtpExpiresAt).toLocaleString()}.
+          </p>
+        {/if}
       {/if}
     </section>
 
@@ -352,6 +475,12 @@
           Register passkey
         </button>
       </div>
+      {#if !status.enabled || status.credentials.length === 0}
+        <p class="hint">Enter an email verification code above before registering.</p>
+      {/if}
+      {#if status.enabled && status.credentials.length > 0}
+        <p class="hint">Deleting a passkey requires passkey verification (or an email code).</p>
+      {/if}
 
       {#if status.credentials.length === 0}
         <p class="hint">No passkeys registered yet.</p>
@@ -381,9 +510,9 @@
       <h2>CLI handshake</h2>
       <p>
         Dangerous API calls (publish, yank, change owners) return a short-lived <code>operation_id</code> and
-        <code>verification_url</code> (<code>/webauthn-verify/…</code>, passkey only — no crates.io sign-in). Open that
-        link, complete passkey auth, while the CLI polls until <code>acknowledged</code>, then retries. Optional
-        headers: <code>Crates-MFA-Operation-Id</code>, <code>Crates-MFA-Port</code>,
+        <code>verification_url</code> (<code>/mfa/verify/…</code>, passkey only — no crates.io sign-in). Open that link,
+        complete passkey auth, while the CLI polls until <code>acknowledged</code>, then retries. Optional headers:
+        <code>Crates-MFA-Operation-Id</code>, <code>Crates-MFA-Port</code>,
         <code>Crates-OTP</code>.
       </p>
     </section>
@@ -406,7 +535,8 @@
     font-size: 0.9rem;
   }
 
-  .register {
+  .register,
+  .email-otp {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2xs);

@@ -44,7 +44,7 @@ async fn create_token_exceeded_tokens_per_user() {
     let conn = app.db_conn().await;
     let id = user.as_model().id;
 
-    for i in 0..1000 {
+    for i in 0..50 {
         let name = format!("token {i}");
         let new_token = NewApiToken::builder().name(name).user_id(id).build();
         assert_ok!(new_token.insert(&conn).await);
@@ -52,7 +52,7 @@ async fn create_token_exceeded_tokens_per_user() {
 
     let response = user.put::<()>("/api/v1/me/tokens", NEW_BAR).await;
     assert_snapshot!(response.status(), @"400 Bad Request");
-    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"maximum tokens per user is: 500"}]}"#);
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"maximum active tokens per user is: 50"}]}"#);
     assert!(app.emails().await.is_empty());
 }
 
