@@ -9,13 +9,36 @@ use diesel::sql_types::Interval;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::net::IpAddr;
 use std::time::Duration;
+
+/// Stable synthetic rate-limiter id for an IP (always negative to avoid colliding with user ids).
+pub fn rate_limit_id_for_ip(ip: IpAddr) -> i32 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ip.hash(&mut hasher);
+    let hashed = hasher.finish() as i32;
+    if hashed >= 0 {
+        // Map 0..=i32::MAX onto -1..=i32::MIN+1 (never 0 / positive user ids).
+        hashed.wrapping_neg().saturating_sub(1)
+    } else {
+        hashed
+    }
+}
 
 pg_enum! {
     pub enum LimitedAction {
         PublishNew = 0,
         PublishUpdate = 1,
         YankUnyank = 2,
+        // Creating a new API MFA operation challenge (handshake insert).
+        ApiMfaChallengeCreate = 3,
+        // Polling an API MFA challenge from a CLI token.
+        ApiMfaChallengePoll = 4,
+        // Unauthenticated CLI link-login session creation (IP-scoped via sessions table).
+        CliLoginCreate = 5,
+        // Polling a CLI link-login session for the one-time token.
+        CliLoginPoll = 6,
     }
 }
 
@@ -25,6 +48,14 @@ impl LimitedAction {
             LimitedAction::PublishNew => 10 * 60, // 10 minutes
             LimitedAction::PublishUpdate => 60,   // 1 minute
             LimitedAction::YankUnyank => 60,      // 1 minute
+            // Aligns with pending-challenge cap; stolen tokens cannot spam inserts.
+            LimitedAction::ApiMfaChallengeCreate => 30,
+            // Recommend ≥2s poll interval; allows short bursts then sustains ~0.5 Hz.
+            LimitedAction::ApiMfaChallengePoll => 2,
+            // Window used when counting recent `cli_login_sessions` creates per IP.
+            LimitedAction::CliLoginCreate => 30,
+            // Minimum seconds between polls of the same CLI login session.
+            LimitedAction::CliLoginPoll => 2,
         }
     }
 
@@ -33,6 +64,11 @@ impl LimitedAction {
             LimitedAction::PublishNew => 5,
             LimitedAction::PublishUpdate => 30,
             LimitedAction::YankUnyank => 100,
+            LimitedAction::ApiMfaChallengeCreate => 10,
+            LimitedAction::ApiMfaChallengePoll => 15,
+            LimitedAction::CliLoginCreate => 10,
+            // Unused for CliLoginPoll (per-session min interval); kept for config symmetry.
+            LimitedAction::CliLoginPoll => 1,
         }
     }
 
@@ -41,6 +77,10 @@ impl LimitedAction {
             LimitedAction::PublishNew => "PUBLISH_NEW",
             LimitedAction::PublishUpdate => "PUBLISH_UPDATE",
             LimitedAction::YankUnyank => "YANK_UNYANK",
+            LimitedAction::ApiMfaChallengeCreate => "API_MFA_CHALLENGE_CREATE",
+            LimitedAction::ApiMfaChallengePoll => "API_MFA_CHALLENGE_POLL",
+            LimitedAction::CliLoginCreate => "CLI_LOGIN_CREATE",
+            LimitedAction::CliLoginPoll => "CLI_LOGIN_POLL",
         }
     }
 
@@ -54,6 +94,18 @@ impl LimitedAction {
             }
             LimitedAction::YankUnyank => {
                 "You have yanked or unyanked too many versions in a short period of time"
+            }
+            LimitedAction::ApiMfaChallengeCreate => {
+                "You have created too many API MFA challenges in a short period of time"
+            }
+            LimitedAction::ApiMfaChallengePoll => {
+                "You have polled API MFA challenges too frequently; wait a few seconds between polls"
+            }
+            LimitedAction::CliLoginCreate => {
+                "You have started too many CLI login sessions in a short period of time"
+            }
+            LimitedAction::CliLoginPoll => {
+                "You have polled CLI login sessions too frequently; wait a few seconds between polls"
             }
         }
     }
@@ -188,6 +240,18 @@ mod tests {
     use chrono::NaiveDateTime;
     use crates_io_test_db::TestDatabase;
     use crates_io_test_utils::builders::UserBuilder;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn rate_limit_id_for_ip_is_always_negative() {
+        assert!(rate_limit_id_for_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)) < 0);
+        assert!(rate_limit_id_for_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED)) < 0);
+        assert!(rate_limit_id_for_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)) < 0);
+        assert_eq!(
+            rate_limit_id_for_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            rate_limit_id_for_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        );
+    }
 
     #[tokio::test]
     async fn default_rate_limits() -> anyhow::Result<()> {

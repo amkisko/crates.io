@@ -58,6 +58,7 @@ impl<'a> UserBuilder<'a> {
             account_lock_until: None,
             is_admin: false,
             publish_notifications: true,
+            api_mfa_enabled: false,
             username: self.username.into(),
             created_at: None,
         }

@@ -57,6 +57,7 @@ test('happy path', async ({ expect }) => {
       "expiresAt": "2017-01-24T12:34:56Z",
       "id": 1,
       "invitee": {
+        "apiMfaEnabled": false,
         "avatar": "https://avatars1.githubusercontent.com/u/14631425?v=4",
         "email": "user-2@crates.io",
         "emailVerificationToken": null,
@@ -70,6 +71,7 @@ test('happy path', async ({ expect }) => {
         "url": "https://github.com/user-2",
       },
       "inviter": {
+        "apiMfaEnabled": false,
         "avatar": "https://avatars1.githubusercontent.com/u/14631425?v=4",
         "email": "user-1@crates.io",
         "emailVerificationToken": null,

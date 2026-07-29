@@ -1,0 +1,119 @@
+use chrono::{DateTime, Utc};
+use diesel::dsl::now;
+use diesel::prelude::*;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
+
+use crate::schema::api_mfa_grants;
+
+/// Default lifetime of an API MFA grant after passkey verification.
+pub const DEFAULT_GRANT_DURATION_SECS: i64 = 15 * 60;
+
+/// A short-lived grant allowing API token actions after passkey verification.
+#[derive(Clone, Debug, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = api_mfa_grants, check_for_backend(diesel::pg::Pg))]
+pub struct ApiMfaGrant {
+    pub created_at: DateTime<Utc>,
+    pub crate_name: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub id: i64,
+    pub operation: Option<String>,
+    pub user_id: i32,
+}
+
+/// Insertable row for a new API MFA grant.
+#[derive(Debug, Insertable)]
+#[diesel(table_name = api_mfa_grants, check_for_backend(diesel::pg::Pg))]
+pub struct NewApiMfaGrant {
+    pub user_id: i32,
+    pub operation: Option<String>,
+    pub crate_name: Option<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl ApiMfaGrant {
+    /// Returns whether `user_id` has a non-expired grant covering `operation` / `crate_name`.
+    ///
+    /// A grant with `operation = NULL` is a wildcard (manual authorize) and covers any action.
+    /// Otherwise the grant must match both `operation` and `crate_name` (NULL-safe).
+    pub async fn has_active(
+        user_id: i32,
+        operation: &str,
+        crate_name: Option<&str>,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<bool> {
+        diesel::select(diesel::dsl::exists(
+            api_mfa_grants::table
+                .filter(api_mfa_grants::user_id.eq(user_id))
+                .filter(api_mfa_grants::expires_at.gt(now))
+                .filter(
+                    api_mfa_grants::operation
+                        .is_null()
+                        .or(api_mfa_grants::operation
+                            .eq(operation)
+                            .and(api_mfa_grants::crate_name.is_not_distinct_from(crate_name))),
+                ),
+        ))
+        .get_result(&mut conn)
+        .await
+    }
+
+    /// Returns the latest non-expired grant for `user_id`, if any.
+    pub async fn active_for_user(
+        user_id: i32,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Option<Self>> {
+        api_mfa_grants::table
+            .filter(api_mfa_grants::user_id.eq(user_id))
+            .filter(api_mfa_grants::expires_at.gt(now))
+            .order(api_mfa_grants::expires_at.desc())
+            .select(Self::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
+    /// Deletes all grants for `user_id` (used when disabling API MFA).
+    pub async fn delete_all_for_user(
+        user_id: i32,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<usize> {
+        diesel::delete(api_mfa_grants::table.filter(api_mfa_grants::user_id.eq(user_id)))
+            .execute(&mut conn)
+            .await
+    }
+}
+
+impl NewApiMfaGrant {
+    /// Creates a wildcard grant (manual authorize) that covers any operation for 15 minutes.
+    pub fn for_user(user_id: i32) -> Self {
+        Self {
+            user_id,
+            operation: None,
+            crate_name: None,
+            expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_GRANT_DURATION_SECS),
+        }
+    }
+
+    /// Creates a grant scoped to a single dangerous operation and crate.
+    pub fn for_operation(
+        user_id: i32,
+        operation: impl Into<String>,
+        crate_name: Option<String>,
+    ) -> Self {
+        Self {
+            user_id,
+            operation: Some(operation.into()),
+            crate_name,
+            expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_GRANT_DURATION_SECS),
+        }
+    }
+
+    /// Inserts the grant and returns the created row.
+    pub async fn insert(&self, mut conn: &AsyncPgConnection) -> QueryResult<ApiMfaGrant> {
+        diesel::insert_into(api_mfa_grants::table)
+            .values(self)
+            .returning(ApiMfaGrant::as_returning())
+            .get_result(&mut conn)
+            .await
+    }
+}

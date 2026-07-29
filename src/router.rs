@@ -67,6 +67,25 @@ pub fn build_axum_router(state: AppState) -> Router<()> {
         .routes(routes!(token::list_api_tokens, token::create_api_token))
         .routes(routes!(token::find_api_token, token::revoke_api_token))
         .routes(routes!(token::revoke_current_api_token))
+        .routes(routes!(cli_login::start::start_cli_login))
+        .routes(routes!(cli_login::poll::poll_cli_login))
+        .routes(routes!(
+            cli_login::approve::get_cli_login_meta,
+            cli_login::approve::approve_cli_login
+        ))
+        .routes(routes!(
+            api_mfa::status::get_api_mfa_status,
+            api_mfa::status::update_api_mfa_status
+        ))
+        .routes(routes!(api_mfa::credentials::start_webauthn_registration))
+        .routes(routes!(api_mfa::credentials::finish_webauthn_registration))
+        .routes(routes!(api_mfa::credentials::delete_webauthn_credential))
+        .routes(routes!(api_mfa::authorize::start_api_mfa_authorize))
+        .routes(routes!(api_mfa::authorize::finish_api_mfa_authorize))
+        .routes(routes!(api_mfa::challenges::create_api_mfa_challenge))
+        .routes(routes!(api_mfa::challenges::get_api_mfa_challenge))
+        .routes(routes!(api_mfa::challenges::start_api_mfa_challenge))
+        .routes(routes!(api_mfa::challenges::finish_api_mfa_challenge))
         .routes(routes!(
             crate_owner_invitation::list_crate_owner_invitations_for_user
         ))

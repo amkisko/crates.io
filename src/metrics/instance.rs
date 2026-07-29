@@ -45,6 +45,15 @@ metrics! {
         pub response_times: HistogramVec["endpoint"],
         /// Number of responses per status code
         pub responses_by_status_code_total: IntCounterVec["status"],
+
+        /// Outcomes of `ensure_api_mfa` (`skipped`, `grant`, `otp`, `required`)
+        pub api_mfa_ensure_total: IntCounterVec["result"],
+        /// Wall-clock duration of `ensure_api_mfa` when MFA is enabled for the user
+        pub api_mfa_ensure_duration_seconds: HistogramVec["result"],
+        /// New API MFA challenges inserted (handshake created)
+        pub api_mfa_challenges_created_total: IntCounter,
+        /// CLI polls of API MFA challenges (token-authenticated GET)
+        pub api_mfa_challenge_polls_total: IntCounter,
     }
 
     // All instance metrics will be prefixed with this namespace.

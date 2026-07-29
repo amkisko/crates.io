@@ -17,6 +17,7 @@
   <SideMenu.Root data-test-settings-menu>
     <SideMenu.Item href={resolve('/settings/profile')}>Profile</SideMenu.Item>
     <SideMenu.Item href={resolve('/settings/tokens')} data-test-tokens>API Tokens</SideMenu.Item>
+    <SideMenu.Item href={resolve('/settings/api-mfa')} data-test-api-mfa>API MFA</SideMenu.Item>
   </SideMenu.Root>
 
   <div class="content">

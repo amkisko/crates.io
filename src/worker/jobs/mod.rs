@@ -1,4 +1,5 @@
 mod analyze_crate_file;
+pub mod api_mfa;
 mod archive_version_downloads;
 mod build_crate_zip;
 mod daily_db_maintenance;

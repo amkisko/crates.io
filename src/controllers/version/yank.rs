@@ -2,6 +2,7 @@
 
 use super::CrateVersionPath;
 use super::update::{authenticate, perform_version_yank_update};
+use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::controllers::helpers::OkResponse;
 use crate::rate_limiter::LimitedAction;
@@ -71,6 +72,23 @@ async fn modify_yank(
     let mut conn = state.db_write().await?;
     let (mut version, krate) = path.load_version_and_crate(&conn).await?;
     let auth = authenticate(&req, &mut conn, &krate.name).await?;
+    let operation = if yanked {
+        ApiMfaOperation::yank(&krate.name)
+    } else {
+        ApiMfaOperation::unyank(&krate.name)
+    };
+    ensure_api_mfa(
+        &auth,
+        &req,
+        &mut conn,
+        crate::api_mfa::ApiMfaEnsureDeps {
+            webauthn: &state.config.webauthn,
+            rate_limiter: &state.rate_limiter,
+            metrics: &state.instance_metrics,
+        },
+        operation,
+    )
+    .await?;
 
     state
         .rate_limiter

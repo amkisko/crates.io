@@ -1,10 +1,12 @@
 ---
 source: src/tests/routes/me/get.rs
+assertion_line: 31
 expression: response.json()
 ---
 {
   "owned_crates": [],
   "user": {
+    "api_mfa_enabled": false,
     "avatar": null,
     "created_at": "[datetime]",
     "email": "foo@example.com",

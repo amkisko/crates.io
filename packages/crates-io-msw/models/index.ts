@@ -3,6 +3,7 @@ import { Collection } from '@msw/data';
 import * as counters from '../utils/counters.js';
 import apiTokens from './api-token.js';
 import categories from './category.js';
+import cliLoginSessions from './cli-login-session.js';
 import crateOwnerInvitations from './crate-owner-invitation.js';
 import crateOwnerships from './crate-ownership.js';
 import crates from './crate.js';
@@ -71,6 +72,7 @@ trustpubGitlabConfigs.defineRelations(({ one }) => ({
 export const db = {
   apiToken: apiTokens,
   category: categories,
+  cliLoginSession: cliLoginSessions,
   crateOwnerInvitation: crateOwnerInvitations,
   crateOwnership: crateOwnerships,
   crate: crates,
@@ -103,6 +105,7 @@ export type Db = typeof db;
 // `db.crate.findFirst()` returns a `Crate`.
 export type ApiToken = ReturnType<typeof apiTokens.all>[number];
 export type Category = ReturnType<typeof categories.all>[number];
+export type CliLoginSession = ReturnType<typeof cliLoginSessions.all>[number];
 export type Crate = ReturnType<typeof crates.all>[number];
 export type CrateOwnerInvitation = ReturnType<typeof crateOwnerInvitations.all>[number];
 export type CrateOwnership = ReturnType<typeof crateOwnerships.all>[number];

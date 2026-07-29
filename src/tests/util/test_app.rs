@@ -5,7 +5,7 @@ use claims::assert_some;
 use crates_io::config::{
     self, Base, BindConfig, CdnLogQueueConfig, CdnLogStorageConfig, DatabasePools, DatadogConfig,
     DbPoolConfig, FeaturesConfig, FrontendConfig, GitHubOAuthConfig, PublishLimitsConfig,
-    RateLimitsConfig,
+    RateLimitsConfig, WebauthnConfig,
 };
 use crates_io::middleware::cargo_compat::StatusCodeConfig;
 use crates_io::models::token::{CrateScope, EndpointScope};
@@ -598,6 +598,7 @@ fn simple_config() -> config::Server {
         },
         trustpub_audience: AUDIENCE.to_string(),
         disable_token_creation: None,
+        cli_login_enabled: true,
         banner_message: None,
         features: FeaturesConfig {
             index_include_pubtime: false,
@@ -609,6 +610,7 @@ fn simple_config() -> config::Server {
         sync_git_index: false,
         index_archive_url: None,
         postgres_bin_dir: None,
+        webauthn: WebauthnConfig::for_testing(),
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::controllers::api_mfa::webauthn_util::complete_passkey_authentication;
 use crate::email::EmailMessage;
 use crate::models::ApiToken;
 use crate::schema::api_tokens;
@@ -104,6 +105,9 @@ pub struct NewApiToken {
 pub struct NewApiTokenRequest {
     #[schema(inline)]
     api_token: NewApiToken,
+    /// Passkey assertion required when API MFA is enabled (after `authorize/start`).
+    #[serde(default)]
+    credential: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -161,10 +165,45 @@ pub async fn create_api_token(
         return Err(custom(StatusCode::SERVICE_UNAVAILABLE, message));
     }
 
+    if user.api_mfa_enabled {
+        let Some(credential) = new.credential.as_ref() else {
+            return Err(bad_request(
+                "passkey verification required to create an API token while API MFA is enabled; \
+                 complete authorize/start first and include the credential assertion",
+            ));
+        };
+        complete_passkey_authentication(user.id, credential, &app.config.webauthn, &mut conn)
+            .await?;
+    }
+
+    let api_token = mint_api_token_for_user(
+        &app,
+        user,
+        &new.api_token.name,
+        new.api_token.crate_scopes,
+        new.api_token.endpoint_scopes,
+        new.api_token.expired_at,
+        &mut conn,
+    )
+    .await?;
+
+    Ok(Json(CreateResponse { api_token }))
+}
+
+/// Shared mint path for Settings → New Token and CLI link-login approve.
+pub async fn mint_api_token_for_user(
+    app: &AppState,
+    user: &crate::models::User,
+    name: &str,
+    crate_scopes: Option<Vec<String>>,
+    endpoint_scopes: Option<Vec<String>>,
+    expired_at: Option<DateTime<Utc>>,
+    conn: &mut diesel_async::AsyncPgConnection,
+) -> AppResult<EncodableApiTokenWithToken> {
     let max_token_per_user = 500;
     let count: i64 = ApiToken::belonging_to(user)
         .count()
-        .get_result(&mut conn)
+        .get_result(conn)
         .await?;
     if count >= max_token_per_user {
         return Err(bad_request(format!(
@@ -172,9 +211,7 @@ pub async fn create_api_token(
         )));
     }
 
-    let crate_scopes = new
-        .api_token
-        .crate_scopes
+    let crate_scopes = crate_scopes
         .map(|scopes| {
             scopes
                 .into_iter()
@@ -184,9 +221,7 @@ pub async fn create_api_token(
         .transpose()
         .map_err(|_err| bad_request("invalid crate scope"))?;
 
-    let endpoint_scopes = new
-        .api_token
-        .endpoint_scopes
+    let endpoint_scopes = endpoint_scopes
         .map(|scopes| {
             scopes
                 .into_iter()
@@ -196,40 +231,36 @@ pub async fn create_api_token(
         .transpose()
         .map_err(|_err| bad_request("invalid endpoint scope"))?;
 
-    let recipient = user.email(&conn).await?;
+    let recipient = user.email(conn).await?;
 
     let plaintext = PlainToken::generate();
 
     let new_token = crate::models::token::NewApiToken::builder()
         .user_id(user.id)
-        .name(&new.api_token.name)
+        .name(name)
         .token(plaintext.hashed())
         .maybe_crate_scopes(crate_scopes)
         .maybe_endpoint_scopes(endpoint_scopes)
-        .maybe_expired_at(new.api_token.expired_at)
+        .maybe_expired_at(expired_at)
         .build();
 
     if let Some(recipient) = recipient {
         let context = context! {
-            token_name => &new.api_token.name,
+            token_name => name,
             user_name => &user.gh_login,
             domain => app.emails.domain,
         };
 
-        // At this point the token has been created so failing to send the
-        // email should not cause an error response to be returned to the
-        // caller.
+        // Token mint succeeded even if email delivery fails.
         if let Err(e) = send_creation_email(&app.emails, &recipient, context).await {
             error!("Failed to send token creation email: {e}")
         }
     }
 
-    let api_token = EncodableApiTokenWithToken {
-        token: new_token.insert(&conn).await?,
+    Ok(EncodableApiTokenWithToken {
+        token: new_token.insert(conn).await?,
         plaintext: plaintext.expose_secret().to_string(),
-    };
-
-    Ok(Json(CreateResponse { api_token }))
+    })
 }
 
 /// Response returned when getting an API token by ID.

@@ -22,6 +22,7 @@
     url: 'https://github.com/johndoe',
     is_admin: false,
     publish_notifications: true,
+    api_mfa_enabled: false,
     email: 'john@example.com',
     email_verified: true,
     email_verification_sent: true,

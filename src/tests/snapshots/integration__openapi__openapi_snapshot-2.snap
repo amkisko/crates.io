@@ -99,6 +99,11 @@ expression: response.json()
       },
       "AuthenticatedUser": {
         "properties": {
+          "api_mfa_enabled": {
+            "description": "Whether API token actions require passkey step-up verification.",
+            "example": false,
+            "type": "boolean"
+          },
           "avatar": {
             "description": "The user's avatar URL, if set.",
             "example": "https://avatars2.githubusercontent.com/u/1234567?v=4",
@@ -177,7 +182,8 @@ expression: response.json()
           "email_verified",
           "email_verification_sent",
           "is_admin",
-          "publish_notifications"
+          "publish_notifications",
+          "api_mfa_enabled"
         ],
         "type": "object"
       },
@@ -1584,6 +1590,122 @@ expression: response.json()
         "summary": "List all available category slugs.",
         "tags": [
           "categories"
+        ]
+      }
+    },
+    "/api/v1/cli_login": {
+      "post": {
+        "operationId": "start_cli_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "localhost_port": {
+                    "description": "Optional localhost port the browser may ping (token-free) after approve.",
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "login_id": {
+                      "type": "string"
+                    },
+                    "login_url": {
+                      "type": "string"
+                    },
+                    "poll_url": {
+                      "type": "string"
+                    },
+                    "recommended_poll_interval_secs": {
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "login_id",
+                    "login_url",
+                    "poll_url",
+                    "expires_at",
+                    "recommended_poll_interval_secs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Start a browser-assisted cargo login ceremony (unauthenticated).",
+        "tags": [
+          "api_tokens"
+        ]
+      }
+    },
+    "/api/v1/cli_login/{id}": {
+      "get": {
+        "description": "Returns the plaintext token at most once (`ready` → `consumed`).",
+        "operationId": "poll_cli_login",
+        "parameters": [
+          {
+            "description": "CLI login session id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "description": "Present exactly once when status transitions through `ready` on this poll.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Poll a CLI login session until a token is available (unauthenticated).",
+        "tags": [
+          "api_tokens"
         ]
       }
     },

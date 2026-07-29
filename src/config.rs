@@ -14,6 +14,7 @@ mod publish_limits;
 mod rate_limits;
 mod sentry;
 mod server;
+mod webauthn;
 
 pub use self::base::Base;
 pub use self::bind::BindConfig;
@@ -31,3 +32,4 @@ pub use self::publish_limits::PublishLimitsConfig;
 pub use self::rate_limits::RateLimitsConfig;
 pub use self::sentry::SentryConfig;
 pub use self::server::Server;
+pub use self::webauthn::WebauthnConfig;

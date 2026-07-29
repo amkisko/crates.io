@@ -40,3 +40,6 @@ storybook-static
 
 # insta
 *.pending-snap
+
+# PNPM
+.pnpm-store

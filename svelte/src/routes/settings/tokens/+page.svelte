@@ -106,11 +106,13 @@
   </p>
 
   <p class="explainer">
-    To use an API token, run
+    Prefer browser-assisted
     <a href="https://doc.rust-lang.org/cargo/commands/cargo-login.html"><code>cargo login</code></a>
-    on the command line and paste the key when prompted. This will save it to a
-    <a href="https://doc.rust-lang.org/cargo/reference/config.html#credentials">local credentials file</a>. For CI
-    systems you can use the
+    with the
+    <code>cargo-credential-crates-io</code>
+    provider so the token is never shown in the browser or terminal (see
+    <a href="https://github.com/rust-lang/crates.io/blob/main/docs/CLI-LOGIN.md">CLI login docs</a>). Creating a token
+    here still shows the plaintext once — useful for CI or manual setups. For CI systems you can use the
     <a href="https://doc.rust-lang.org/cargo/reference/config.html?highlight=CARGO_REGISTRY_TOKEN#credentials"
       ><code>CARGO_REGISTRY_TOKEN</code></a
     >

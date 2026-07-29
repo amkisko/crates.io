@@ -719,6 +719,10 @@ pub struct EncodablePrivateUser {
     #[schema(example = true)]
     pub publish_notifications: bool,
 
+    /// Whether API token actions require passkey step-up verification.
+    #[schema(example = false)]
+    pub api_mfa_enabled: bool,
+
     /// The date and time the user was created.
     ///
     /// For users created before June 19, 2026, the creation time will be the
@@ -742,6 +746,7 @@ impl EncodablePrivateUser {
             gh_avatar,
             is_admin,
             publish_notifications,
+            api_mfa_enabled,
             created_at,
             ..
         } = user;
@@ -758,6 +763,7 @@ impl EncodablePrivateUser {
             url: Some(url),
             is_admin,
             publish_notifications,
+            api_mfa_enabled,
             created_at,
         }
     }

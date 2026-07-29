@@ -1,3 +1,4 @@
+mod api_mfa;
 mod archive_index_branch;
 mod build_crate_zip;
 mod generate_og_image;

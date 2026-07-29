@@ -11,9 +11,10 @@
 //! instance-level metric, and you should add it to `src/metrics/instance.rs`.
 
 use crate::metrics::macros::metrics;
-use crate::schema::{background_jobs, crates, versions};
+use crate::schema::{api_mfa_challenges, background_jobs, cli_login_sessions, crates, versions};
 use crate::util::errors::AppResult;
-use diesel::{dsl::count_star, prelude::*};
+use diesel::dsl::{count_star, now};
+use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use prometheus::core::Collector;
 use prometheus::proto::{Metric, MetricFamily};
@@ -28,6 +29,10 @@ metrics! {
         versions_total: IntGauge,
         /// Number of queued up background jobs
         background_jobs: IntGaugeVec["priority", "job"],
+        /// Non-expired pending API MFA challenges awaiting passkey acknowledgment
+        api_mfa_challenges_pending: IntGauge,
+        /// CLI link-login sessions currently in the table, labeled by `status`
+        cli_login_sessions: IntGaugeVec["status"],
     }
 
     // All service metrics will be prefixed with this namespace.
@@ -43,6 +48,29 @@ impl ServiceMetrics {
             .set(crates::table.select(count_star()).first(conn).await?);
         self.versions_total
             .set(versions::table.select(count_star()).first(conn).await?);
+
+        let pending_challenges: i64 = api_mfa_challenges::table
+            .filter(api_mfa_challenges::verified_at.is_null())
+            .filter(api_mfa_challenges::expires_at.gt(now))
+            .select(count_star())
+            .first(conn)
+            .await?;
+        self.api_mfa_challenges_pending.set(pending_challenges);
+
+        let cli_login_counts = cli_login_sessions::table
+            .group_by(cli_login_sessions::status)
+            .select((cli_login_sessions::status, count_star()))
+            .load::<(String, i64)>(conn)
+            .await?;
+        let mut cli_login_by_status: HashMap<String, i64> = cli_login_counts.into_iter().collect();
+        for status in ["pending", "ready", "consumed"] {
+            cli_login_by_status.entry(status.into()).or_insert(0);
+        }
+        for (status, count) in cli_login_by_status {
+            self.cli_login_sessions
+                .get_metric_with_label_values(&[&status])?
+                .set(count);
+        }
 
         let queued_jobs = background_jobs::table
             .group_by((background_jobs::job_type, background_jobs::priority))

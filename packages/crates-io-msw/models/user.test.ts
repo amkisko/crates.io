@@ -6,6 +6,7 @@ test('default are applied', async ({ expect }) => {
   let user = await db.user.create({});
   expect(user).toMatchInlineSnapshot(`
     {
+      "apiMfaEnabled": false,
       "avatar": "https://avatars1.githubusercontent.com/u/14631425?v=4",
       "email": "user-1@crates.io",
       "emailVerificationToken": null,
@@ -25,6 +26,7 @@ test('name can be set', async ({ expect }) => {
   let user = await db.user.create({ name: 'John Doe' });
   expect(user).toMatchInlineSnapshot(`
     {
+      "apiMfaEnabled": false,
       "avatar": "https://avatars1.githubusercontent.com/u/14631425?v=4",
       "email": "john-doe@crates.io",
       "emailVerificationToken": null,

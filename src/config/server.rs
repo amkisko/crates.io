@@ -16,6 +16,7 @@ use crate::config::github::GitHubOAuthConfig;
 use crate::config::metrics::MetricsConfig;
 use crate::config::publish_limits::PublishLimitsConfig;
 use crate::config::rate_limits::RateLimitsConfig;
+use crate::config::webauthn::WebauthnConfig;
 use crate::middleware::cargo_compat::StatusCodeConfig;
 use crate::storage::StorageConfig;
 use crates_io_encryption::TokenEncryption;
@@ -62,6 +63,12 @@ pub struct Server {
     /// The value is used as the error message returned to users.
     pub disable_token_creation: Option<String>,
 
+    /// When false, unauthenticated CLI link-login start/poll are unavailable.
+    ///
+    /// Controlled by `CLI_LOGIN_ENABLED` (default `true`). Use `false` to stage
+    /// or emergency-disable the ceremony without undeploying.
+    pub cli_login_enabled: bool,
+
     /// Banner message to display on all pages (e.g., for security incidents).
     pub banner_message: Option<String>,
 
@@ -84,6 +91,9 @@ pub struct Server {
     /// for database dump generation. When unset, the binaries are resolved via
     /// `PATH`.
     pub postgres_bin_dir: Option<PathBuf>,
+
+    /// `WebAuthn` relying-party settings for API MFA passkeys.
+    pub webauthn: WebauthnConfig,
 }
 
 impl Server {
@@ -102,6 +112,8 @@ impl Server {
     ///   to 200.
     /// - `DISABLE_TOKEN_CREATION`: If set to any non-empty value, disables API token creation
     ///   and uses the value as the error message returned to users.
+    /// - `CLI_LOGIN_ENABLED`: When `false`, disables CLI link-login session create/poll.
+    ///   Defaults to `true`.
     /// - `GIT_ARCHIVE_REPO_URL`: HTTPS URL (e.g. `https://github.com/<org>/<repo>.git`) of a git
     ///   repository to mirror the crate index's snapshot branches to. Must be HTTPS because the
     ///   `ArchiveIndexBranch` job authenticates via a GitHub App installation token; SSH remotes
@@ -128,7 +140,9 @@ impl Server {
         let domain_name = dotenvy::var("DOMAIN_NAME").unwrap_or_else(|_| "crates.io".into());
         let trustpub_audience = var("TRUSTPUB_AUDIENCE")?.unwrap_or_else(|| domain_name.clone());
         let disable_token_creation = var("DISABLE_TOKEN_CREATION")?.filter(|s| !s.is_empty());
+        let cli_login_enabled = var_parsed("CLI_LOGIN_ENABLED")?.unwrap_or(true);
         let banner_message = var("BANNER_MESSAGE")?.filter(|s| !s.is_empty());
+        let webauthn = WebauthnConfig::from_env(&domain_name)?;
 
         Ok(Server {
             db: DatabasePools::full_from_environment(&base)?,
@@ -158,12 +172,14 @@ impl Server {
             frontend: FrontendConfig::from_env()?,
             trustpub_audience,
             disable_token_creation,
+            cli_login_enabled,
             banner_message,
             features,
             fastly: FastlyConfig::from_env()?,
             sync_git_index: true,
             index_archive_url: var_parsed("GIT_ARCHIVE_REPO_URL")?,
             postgres_bin_dir: var_parsed("POSTGRES_BIN_DIR")?,
+            webauthn,
         })
     }
 }

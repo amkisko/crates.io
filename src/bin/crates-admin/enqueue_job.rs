@@ -55,6 +55,8 @@ pub enum Command {
     },
     SyncCratesFeed,
     SyncUpdatesFeed,
+    /// Purge expired API MFA challenges, grants, and `WebAuthn` ceremony state
+    ApiMfaCleanup,
     TrustpubCleanup,
     UpdateDownloads,
     /// Sync the oldest batch of users with GitHub
@@ -154,6 +156,9 @@ pub async fn run(command: Command) -> Result<()> {
         }
         Command::SyncUpdatesFeed => {
             jobs::rss::SyncUpdatesFeed.enqueue(&conn).await?;
+        }
+        Command::ApiMfaCleanup => {
+            jobs::api_mfa::PurgeExpiredApiMfa.enqueue(&conn).await?;
         }
         Command::TrustpubCleanup => {
             let job = jobs::trustpub::DeleteExpiredTokens;

@@ -171,6 +171,8 @@ typomania = { version = "=0.2.0", default-features = false }
 url = "=2.5.8"
 utoipa = { version = "=5.5.0", features = ["chrono"] }
 utoipa-axum = "=0.2.0"
+uuid = { version = "=1.24.0", features = ["serde", "v5"] }
+webauthn-rs = { version = "=0.5.5", default-features = false, features = ["danger-allow-state-serialisation"] }
 
 [dev-dependencies]
 bytes = "=1.12.1"
@@ -192,3 +194,4 @@ quoted_printable = "=0.5.2"
 sentry = { version = "=0.48.5", features = ["test"] }
 tokio = "=1.53.1"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+webauthn-authenticator-rs = { version = "=0.5.5", default-features = false, features = ["softpasskey"] }

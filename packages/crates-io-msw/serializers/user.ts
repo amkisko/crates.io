@@ -27,6 +27,7 @@ export function serializeUser(
       email_verification_sent: user.emailVerified || Boolean(user.emailVerificationToken),
       is_admin: user.isAdmin,
       publish_notifications: user.publishNotifications,
+      api_mfa_enabled: user.apiMfaEnabled ?? false,
     };
   }
 

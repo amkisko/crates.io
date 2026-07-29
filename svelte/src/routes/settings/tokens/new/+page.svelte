@@ -10,16 +10,19 @@
   import PatternDescription from '$lib/components/PatternDescription.svelte';
   import SettingsPage from '$lib/components/SettingsPage.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
+  import { getSession } from '$lib/utils/session.svelte';
   import { scopeDescription } from '$lib/utils/token-scopes';
   import { getTokenPageState } from '../+layout.svelte';
 
   const ENDPOINT_SCOPES = ['change-owners', 'publish-new', 'publish-update', 'trusted-publishing', 'yank'];
 
+  let session = getSession();
   let notifications = getNotifications();
   let client = createClient({ fetch });
   let id = $props.id();
   let { data } = $props();
   let tokenPageState = getTokenPageState();
+  let apiMfaEnabled = $derived(session.currentUser?.api_mfa_enabled ?? false);
 
   class CratePattern {
     pattern = $state('');
@@ -133,6 +136,70 @@
     return !nameInvalid && !expiryDateInvalid && !scopesInvalid && crateScopesValid;
   }
 
+  function b64urlToBuffer(value: string): ArrayBuffer {
+    let padded = value.replaceAll('-', '+').replaceAll('_', '/');
+    while (padded.length % 4) padded += '=';
+    let binary = atob(padded);
+    let bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i)!;
+    return bytes.buffer;
+  }
+
+  function bufferToB64url(buffer: ArrayBuffer): string {
+    let bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let byte of bytes) binary += String.fromCodePoint(byte);
+    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll(/=+$/g, '');
+  }
+
+  function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
+    return {
+      ...(options as PublicKeyCredentialRequestOptions),
+      challenge: b64urlToBuffer(options.challenge as string),
+      allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
+        ...(cred as PublicKeyCredentialDescriptor),
+        id: b64urlToBuffer(cred.id as string),
+      })),
+    };
+  }
+
+  function serializeAssertion(credential: PublicKeyCredential) {
+    let assertion = credential.response as AuthenticatorAssertionResponse;
+    return {
+      id: credential.id,
+      rawId: bufferToB64url(credential.rawId),
+      type: credential.type,
+      response: {
+        clientDataJSON: bufferToB64url(assertion.clientDataJSON),
+        authenticatorData: bufferToB64url(assertion.authenticatorData),
+        signature: bufferToB64url(assertion.signature),
+        userHandle: assertion.userHandle ? bufferToB64url(assertion.userHandle) : null,
+      },
+    };
+  }
+
+  async function assertPasskeyIfNeeded(): Promise<unknown | undefined> {
+    if (!apiMfaEnabled) return undefined;
+
+    if (!globalThis.PublicKeyCredential) {
+      throw new Error('This browser does not support passkeys.');
+    }
+
+    let start = await fetch('/api/v1/me/api_mfa/authorize/start', { method: 'POST' });
+    if (!start.ok) {
+      let body = await start.json().catch(() => null);
+      throw new Error(body?.errors?.[0]?.detail ?? 'Failed to start passkey verification');
+    }
+    let { public_key } = await start.json();
+    let credential = (await navigator.credentials.get({
+      publicKey: revivePublicKeyRequest(public_key),
+    })) as PublicKeyCredential | null;
+    if (!credential) {
+      throw new Error('Passkey verification was cancelled');
+    }
+    return serializeAssertion(credential);
+  }
+
   async function handleSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
 
@@ -146,6 +213,8 @@
     }
 
     try {
+      let credential = await assertPasskeyIfNeeded();
+
       let result = await client.PUT('/api/v1/me/tokens', {
         body: {
           api_token: {
@@ -154,7 +223,8 @@
             crate_scopes: crateScopePatterns,
             expired_at: expiryDate?.toISOString() ?? null,
           },
-        },
+          credential,
+        } as never,
       });
 
       if (result.error) {
@@ -165,8 +235,12 @@
       tokenPageState.pendingToken = { id: apiToken.id, token: apiToken.token };
 
       await goto(resolve('/settings/tokens'));
-    } catch {
-      notifications.error('An error has occurred while generating your API token. Please try again later!');
+    } catch (error) {
+      notifications.error(
+        error instanceof Error
+          ? error.message
+          : 'An error has occurred while generating your API token. Please try again later!',
+      );
     } finally {
       isSaving = false;
     }
@@ -179,6 +253,12 @@
 
 <SettingsPage>
   <h2>New API Token</h2>
+
+  {#if apiMfaEnabled}
+    <p class="explainer" data-test-new-token-mfa-note>
+      API MFA is enabled. Creating this token will ask for a passkey confirmation.
+    </p>
+  {/if}
 
   <form class="form" onsubmit={handleSubmit}>
     <div class="form-group" data-test-name-group>
@@ -552,6 +632,11 @@
     &:hover {
       background: light-dark(var(--grey200), #333333);
     }
+  }
+
+  .explainer {
+    margin: var(--space-s) 0;
+    line-height: 1.5;
   }
 
   .generate-button {

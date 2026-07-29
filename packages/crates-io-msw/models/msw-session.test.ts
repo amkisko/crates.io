@@ -16,6 +16,7 @@ test('happy path', async ({ expect }) => {
     {
       "id": 1,
       "user": {
+        "apiMfaEnabled": false,
         "avatar": "https://avatars1.githubusercontent.com/u/14631425?v=4",
         "email": "user-1@crates.io",
         "emailVerificationToken": null,

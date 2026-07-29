@@ -8,11 +8,13 @@ use crates_io::views::{
 use serde::{Deserialize, Serialize};
 
 mod account_lock;
+mod api_mfa;
 mod authentication;
 mod blocked_routes;
 pub use crates_io_test_utils::builders;
 mod caching;
 mod categories;
+mod cli_login;
 mod cors;
 mod dump_db;
 mod github_secret_scanning;

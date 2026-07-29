@@ -1,5 +1,6 @@
 ---
 source: src/tests/routes/me/get.rs
+assertion_line: 41
 expression: response.json()
 ---
 {
@@ -11,6 +12,7 @@ expression: response.json()
     }
   ],
   "user": {
+    "api_mfa_enabled": false,
     "avatar": null,
     "created_at": "[datetime]",
     "email": "foo@example.com",

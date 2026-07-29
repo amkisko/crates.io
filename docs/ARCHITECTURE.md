@@ -71,6 +71,8 @@ Authentication depends on the kind of client. Browsers use a session cookie, cre
 
 Trusted Publishing is an alternative way for CI to obtain a token without storing a long-lived secret. Instead of configuring a durable API token, a CI workflow proves its identity with a short-lived OIDC token from a trusted provider like GitHub Actions or GitLab CI, and exchanges it for a temporary token that can only publish.
 
+Users can optionally enable API MFA so that publish, yank, and owner-change actions require a passkey step-up for both API tokens and website cookie sessions (short-lived grant, one-time OTP, or CLI challenge handshake). See [`API-MFA.md`](API-MFA.md). Browser-assisted `cargo login` (link → scopes → one-time poll) is documented in [`CLI-LOGIN.md`](CLI-LOGIN.md).
+
 Authorization for crates is based on ownership. A crate is owned by one or more users or teams, owners can invite others, and team ownership is backed by membership in the corresponding GitHub team. Publishing, yanking, and managing owners all require the caller to be an owner of the crate.
 
 ## Observability

@@ -1,4 +1,5 @@
 use super::CrateVersionPath;
+use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::{AuthCheck, Authentication};
 use crate::controllers::helpers::authorization::Rights;
@@ -57,6 +58,25 @@ pub async fn update_version(
     let (mut version, krate) = path.load_version_and_crate(&conn).await?;
     validate_yank_update(&update_request.version, &version)?;
     let auth = authenticate(&req, &mut conn, &krate.name).await?;
+    if let Some(yanked) = update_request.version.yanked {
+        let operation = if yanked {
+            ApiMfaOperation::yank(&krate.name)
+        } else {
+            ApiMfaOperation::unyank(&krate.name)
+        };
+        ensure_api_mfa(
+            &auth,
+            &req,
+            &mut conn,
+            crate::api_mfa::ApiMfaEnsureDeps {
+                webauthn: &state.config.webauthn,
+                rate_limiter: &state.rate_limiter,
+                metrics: &state.instance_metrics,
+            },
+            operation,
+        )
+        .await?;
+    }
 
     state
         .rate_limiter

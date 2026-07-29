@@ -17,6 +17,7 @@ const schema = v.pipe(
     emailVerified: v.optional(v.boolean()),
     isAdmin: v.optional(v.boolean(), false),
     publishNotifications: v.optional(v.boolean(), true),
+    apiMfaEnabled: v.optional(v.boolean(), false),
 
     followedCrates: v.optional(v.array(v.any()), []),
   }),

@@ -1,5 +1,6 @@
 //! Functionality related to publishing a new crate or version of a crate.
 
+use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::{AuthCheck, AuthHeader, Authentication};
 use crate::worker::jobs::{
@@ -219,6 +220,19 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
             .for_crate(&metadata.name)
             .check(&req, &mut conn)
             .await?;
+
+        ensure_api_mfa(
+            &auth,
+            &req,
+            &mut conn,
+            crate::api_mfa::ApiMfaEnsureDeps {
+                webauthn: &app.config.webauthn,
+                rate_limiter: &app.rate_limiter,
+                metrics: &app.instance_metrics,
+            },
+            ApiMfaOperation::publish(&*metadata.name),
+        )
+        .await?;
 
         AuthType::Regular(Box::new(auth))
     };

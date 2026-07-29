@@ -28,6 +28,7 @@
     email_verification_sent: true,
     is_admin: false,
     publish_notifications: true,
+    api_mfa_enabled: false,
     url: 'https://github.com/johndoe',
   };
 

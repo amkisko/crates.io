@@ -1,5 +1,6 @@
 //! All routes related to managing owners of a crate
 
+use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
 use crate::controllers::helpers::authorization::Rights;
 use crate::controllers::krate::CratePath;
 use crate::models::krate::OwnerRemoveError;
@@ -190,6 +191,19 @@ async fn modify_owners(
         .for_crate(&crate_name)
         .check(&parts, &mut conn)
         .await?;
+
+    ensure_api_mfa(
+        &auth,
+        &parts,
+        &mut conn,
+        crate::api_mfa::ApiMfaEnsureDeps {
+            webauthn: &app.config.webauthn,
+            rate_limiter: &app.rate_limiter,
+            metrics: &app.instance_metrics,
+        },
+        ApiMfaOperation::change_owners(&crate_name),
+    )
+    .await?;
 
     let user = auth.user();
 

@@ -31,6 +31,8 @@ pub struct User {
     pub account_lock_until: Option<DateTime<Utc>>,
     pub is_admin: bool,
     pub publish_notifications: bool,
+    /// When true, API token actions require passkey step-up (grant or OTP).
+    pub api_mfa_enabled: bool,
     pub username: String,
     pub created_at: Option<DateTime<Utc>>,
 }

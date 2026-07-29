@@ -1,5 +1,14 @@
 pub use self::action::{NewVersionOwnerAction, VersionAction, VersionOwnerAction};
+pub use self::api_mfa::{
+    ApiMfaChallenge, ApiMfaGrant, KIND_AUTHENTICATION, KIND_REGISTRATION,
+    MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, NewApiMfaGrant, NewWebauthnCredential,
+    WebauthnCeremonyState, WebauthnCredential,
+};
 pub use self::category::{Category, CrateCategory, NewCategory};
+pub use self::cli_login::{
+    CliLoginSession, MAX_PENDING_CLI_LOGIN_PER_IP, NewCliLoginSession, STATUS_CONSUMED,
+    STATUS_EXPIRED, STATUS_PENDING, STATUS_READY, TouchPollOutcome,
+};
 pub use self::cloudfront_invalidation_queue::{
     CloudFrontDistribution, CloudFrontInvalidationQueueItem,
 };
@@ -24,7 +33,9 @@ pub use self::version::{NewVersion, TopVersions, Version};
 pub mod helpers;
 
 mod action;
+pub mod api_mfa;
 pub mod category;
+pub mod cli_login;
 mod cloudfront_invalidation_queue;
 pub mod crate_owner_invitation;
 pub mod default_versions;

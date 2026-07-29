@@ -2,7 +2,9 @@ pub mod helpers;
 pub mod util;
 
 pub mod admin;
+pub mod api_mfa;
 pub mod category;
+pub mod cli_login;
 pub mod crate_owner_invitation;
 pub mod git;
 pub mod github;
