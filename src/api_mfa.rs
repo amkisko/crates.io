@@ -23,6 +23,9 @@ const OTP_HEADER: &str = "otp";
 /// Optional localhost callback port for RubyGems-style OTP delivery.
 pub const CRATES_MFA_PORT_HEADER: &str = "crates-mfa-port";
 
+/// Client-held secret authorizing localhost callback port refreshes.
+pub const CRATES_MFA_CALLBACK_SECRET_HEADER: &str = "crates-mfa-callback-secret";
+
 /// Optional client-supplied operation id for idempotent handshake reuse.
 pub const CRATES_MFA_OPERATION_ID_HEADER: &str = "crates-mfa-operation-id";
 
@@ -270,9 +273,10 @@ async fn ensure_api_mfa_inner(
         return Ok(EnsureOutcome::Grant);
     }
 
-    if let Some(otp) = otp_from_headers(parts)
+    if let (Some(token_id), Some(otp)) = (token_id, otp_from_headers(parts))
         && ApiMfaChallenge::consume_otp(
             user.id,
+            token_id,
             &otp,
             operation.kind,
             operation.crate_name.as_deref(),
@@ -300,11 +304,18 @@ async fn ensure_api_mfa_inner(
     };
 
     let localhost_port = mfa_port_from_headers(parts)?;
+    let localhost_callback_secret = mfa_callback_secret_from_headers(parts)?;
+    if localhost_port.is_none() && localhost_callback_secret.is_some() {
+        return Err(bad_request(
+            "Crates-MFA-Callback-Secret requires Crates-MFA-Port",
+        ));
+    }
     let challenge = resolve_or_create_challenge(
         user.id,
         token_id,
         operation,
         localhost_port,
+        localhost_callback_secret.as_deref(),
         parts,
         conn,
         deps,
@@ -339,6 +350,7 @@ async fn resolve_or_create_challenge(
     api_token_id: i32,
     operation: &ApiMfaOperation,
     localhost_port: Option<i32>,
+    localhost_callback_secret: Option<&str>,
     parts: &Parts,
     conn: &mut AsyncPgConnection,
     deps: &ApiMfaEnsureDeps<'_>,
@@ -352,7 +364,13 @@ async fn resolve_or_create_challenge(
         && existing.crate_name.as_deref() == operation.crate_name.as_deref()
         && !existing.is_acknowledged()
     {
-        return Ok(existing);
+        return refresh_challenge_localhost_callback(
+            existing,
+            localhost_port,
+            localhost_callback_secret,
+            conn,
+        )
+        .await;
     }
 
     // Reuse an in-flight pending challenge for the same token + operation.
@@ -365,7 +383,13 @@ async fn resolve_or_create_challenge(
     )
     .await?
     {
-        return Ok(existing);
+        return refresh_challenge_localhost_callback(
+            existing,
+            localhost_port,
+            localhost_callback_secret,
+            conn,
+        )
+        .await;
     }
 
     deps.rate_limiter
@@ -395,6 +419,7 @@ async fn resolve_or_create_challenge(
         operation.kind,
         operation.crate_name.clone(),
         localhost_port,
+        localhost_callback_secret,
         conn,
     )
     .await?;
@@ -403,6 +428,47 @@ async fn resolve_or_create_challenge(
         deps.metrics.api_mfa_challenges_created_total.inc();
     }
     Ok(challenge)
+}
+
+/// Refreshes a pending challenge's localhost callback without allowing downgrade.
+///
+/// Once callback mode is active, omitting `Crates-MFA-Port` cannot switch the
+/// challenge to the broader polling-grant flow. Replacing an existing port
+/// requires the client-held secret that was stored when the challenge was
+/// created.
+async fn refresh_challenge_localhost_callback(
+    existing: ApiMfaChallenge,
+    localhost_port: Option<i32>,
+    localhost_callback_secret: Option<&str>,
+    conn: &mut AsyncPgConnection,
+) -> AppResult<ApiMfaChallenge> {
+    let Some(localhost_port) = localhost_port else {
+        return Ok(existing);
+    };
+
+    match existing.localhost_port {
+        Some(existing_port) if existing_port == localhost_port => Ok(existing),
+        Some(_) => {
+            let Some(secret) = localhost_callback_secret else {
+                return Ok(existing);
+            };
+            let supplied_hash = ApiMfaChallenge::hash_localhost_callback_secret(secret);
+            if existing.localhost_callback_secret_hash.as_deref() != Some(supplied_hash.as_slice())
+            {
+                return Ok(existing);
+            }
+            Ok(existing
+                .update_localhost_callback(localhost_port, Some(supplied_hash), conn)
+                .await?)
+        }
+        None => {
+            let secret_hash =
+                localhost_callback_secret.map(ApiMfaChallenge::hash_localhost_callback_secret);
+            Ok(existing
+                .update_localhost_callback(localhost_port, secret_hash, conn)
+                .await?)
+        }
+    }
 }
 
 /// Inserts a challenge, or reuses the pending row when a concurrent insert hit the unique index.
@@ -414,6 +480,7 @@ pub async fn insert_challenge_or_reuse_pending(
     operation: &str,
     crate_name: Option<String>,
     localhost_port: Option<i32>,
+    localhost_callback_secret: Option<&str>,
     conn: &mut AsyncPgConnection,
 ) -> AppResult<(ApiMfaChallenge, bool)> {
     use diesel::result::{DatabaseErrorKind, Error as DieselError};
@@ -425,6 +492,7 @@ pub async fn insert_challenge_or_reuse_pending(
         operation,
         crate_name,
         localhost_port,
+        localhost_callback_secret,
     )
     .insert(conn)
     .await
@@ -444,6 +512,13 @@ pub async fn insert_challenge_or_reuse_pending(
                     "API MFA challenge unique conflict but no pending row found",
                 )
             })?;
+            let existing = refresh_challenge_localhost_callback(
+                existing,
+                localhost_port,
+                localhost_callback_secret,
+                conn,
+            )
+            .await?;
             Ok((existing, false))
         }
         Err(err) => Err(err.into()),
@@ -457,16 +532,9 @@ fn api_mfa_required_error(
 ) -> BoxedAppError {
     let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
 
-    let target = match &operation.crate_name {
-        Some(name) => format!(" {} for `{name}`", operation.kind),
-        None => format!(" {}", operation.kind),
-    };
-
     let detail = format!(
-        "API MFA required to{target}. Please visit the following URL to authenticate via security device \
-         (operation_id={}):\n\n{verification_url}\n\n\
-         Poll {poll_url} every {RECOMMENDED_POLL_INTERVAL_SECS}s until acknowledged, then retry this request.",
-        challenge.id
+        "API MFA required. Open this link to verify with your passkey:\n\n\
+         {verification_url}\n\nAfter verification, retry the request."
     );
 
     ApiMfaRequired {
@@ -523,4 +591,27 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
         ));
     }
     Ok(Some(port))
+}
+
+fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Option<String>> {
+    let Some(secret) = parts
+        .headers
+        .get(CRATES_MFA_CALLBACK_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let valid_length = (32..=128).contains(&secret.len());
+    let valid_characters = secret
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !valid_length || !valid_characters {
+        return Err(bad_request(
+            "Crates-MFA-Callback-Secret must be 32 to 128 URL-safe characters",
+        ));
+    }
+    Ok(Some(secret.to_owned()))
 }

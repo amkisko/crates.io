@@ -16,14 +16,15 @@ Put `cargo-credential-crates-io` on your PATH, then in `~/.cargo/config.toml`:
 
 ```toml
 [registry]
-global-credential-providers = ["cargo-credential-crates-io", "cargo:token"]
+# Last entry is tried first (Cargo reverses this list).
+global-credential-providers = ["cargo:token", "cargo-credential-crates-io"]
 ```
 
 ## Use it
 
 Run `cargo login`. The provider starts a short-lived session, prints a login URL and a confirmation code on stderr, and waits. Open that URL, sign in, enter the confirmation code from the terminal, choose name, scopes, and expiry, then approve. The code binds the browser step to the CLI that started the session (it is not shown on the page). The provider polls until the token is ready, writes it to `~/.cargo/credentials.toml` under `[registry]`, and finishes without printing the secret. Later cargo commands load it through the provider’s get action.
 
-If API MFA is enabled, approve also asks for a passkey (same step-up as disabling MFA). When MFA is on with zero passkeys, approve accepts an email OTP instead so recovery is not a dead-end. See [API-MFA.md](API-MFA.md).
+If API MFA is enabled, approve also asks for a passkey (same step-up as disabling MFA). When MFA is on with zero passkeys, approve accepts an email OTP instead so recovery is not a dead-end. Passkeys are account-wide step-up factors here; token scopes (name, expiry, publish/yank/…) are chosen on this page and apply to the minted API token, not to the passkey. GitHub sign-in remains account identity. See [API-MFA.md](API-MFA.md).
 
 ## Staging or local
 

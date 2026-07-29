@@ -1,7 +1,7 @@
 //! End-to-end `WebAuthn` ceremonies using `SoftPasskey` (software authenticator).
 
 use crate::builders::PublishBuilder;
-use crate::util::{MockCookieUser, RequestHelper, TestApp};
+use crate::util::{MockCookieUser, MockRequestExt, RequestHelper, TestApp};
 use crates_io::schema::users;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -100,6 +100,11 @@ async fn challenge_ack_with_soft_passkey_allows_scoped_retry() {
         .good();
     assert!(finish["otp"].as_str().unwrap().len() >= 8);
     assert_eq!(finish["operation_id"], operation_id);
+    assert!(
+        finish["grant_expires_at"].is_string(),
+        "poll/grant path should issue a scoped grant when no localhost port is set"
+    );
+    assert!(finish["localhost_callback_url"].is_null());
 
     let ready = token
         .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
@@ -111,6 +116,117 @@ async fn challenge_ack_with_soft_passkey_allows_scoped_retry() {
         .publish_crate(PublishBuilder::new("foo_soft_challenge", "1.0.0"))
         .await;
     assert_eq!(published.status(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
+    use http::Method;
+
+    let (app, anon, user, token) = TestApp::full().with_token().await;
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+
+    register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
+    enable_api_mfa(&app, &user).await;
+
+    let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Crates-MFA-Port", "34567");
+    request.header(
+        "Crates-MFA-Callback-Secret",
+        "0123456789abcdef0123456789abcdef",
+    );
+    let blocked = token.run::<Value>(request.with_body(body.clone())).await;
+    assert_eq!(blocked.status(), 403);
+    let operation_id = blocked.json()["errors"][0]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // A later retry can refresh the stored localhost port on the pending challenge.
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Crates-MFA-Port", "34568");
+    request.header(
+        "Crates-MFA-Callback-Secret",
+        "0123456789abcdef0123456789abcdef",
+    );
+    let blocked_again = token.run::<Value>(request.with_body(body.clone())).await;
+    assert_eq!(blocked_again.status(), 403);
+    assert_eq!(
+        blocked_again.json()["errors"][0]["operation_id"],
+        operation_id
+    );
+
+    // The token alone cannot downgrade callback mode to a polling grant.
+    let downgrade = token
+        .run::<Value>(
+            token
+                .request_builder(Method::PUT, "/api/v1/crates/new")
+                .with_body(body.clone()),
+        )
+        .await;
+    assert_eq!(downgrade.status(), 403);
+    assert_eq!(downgrade.json()["errors"][0]["operation_id"], operation_id);
+
+    // A different callback secret cannot replace the bound port.
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Crates-MFA-Port", "34569");
+    request.header(
+        "Crates-MFA-Callback-Secret",
+        "abcdef0123456789abcdef0123456789",
+    );
+    let wrong_secret = token.run::<Value>(request.with_body(body)).await;
+    assert_eq!(wrong_secret.status(), 403);
+    assert_eq!(
+        wrong_secret.json()["errors"][0]["operation_id"],
+        operation_id
+    );
+
+    let start = anon
+        .post::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}/start"), "")
+        .await
+        .good();
+    let rcr = RequestChallengeResponse {
+        public_key: serde_json::from_value(start["public_key"].clone()).unwrap(),
+        mediation: None,
+    };
+    let assertion = authenticator
+        .do_authentication(Url::parse(TEST_ORIGIN).unwrap(), rcr)
+        .expect("soft passkey authentication");
+
+    let finish = anon
+        .post::<Value>(
+            &format!("/api/v1/mfa/challenges/{operation_id}/finish"),
+            json!({ "credential": assertion }).to_string(),
+        )
+        .await
+        .good();
+    let otp = finish["otp"].as_str().unwrap().to_owned();
+    assert!(otp.len() >= 8);
+    assert_eq!(
+        finish["localhost_callback_url"],
+        format!("http://127.0.0.1:34568/?code={otp}")
+    );
+    assert!(
+        finish["grant_expires_at"].is_null(),
+        "localhost OTP path must not issue a scoped grant"
+    );
+
+    // Retry without OTP must fail (no grant).
+    let still_blocked = token
+        .publish_crate(PublishBuilder::new("foo_soft_localhost", "1.0.0"))
+        .await;
+    assert_eq!(still_blocked.status(), 403);
+
+    let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Crates-OTP", &otp);
+    let published = token
+        .run::<crates_io::views::GoodCrate>(request.with_body(body))
+        .await;
+    token.app().run_pending_background_jobs().await;
+    assert_eq!(published.status(), 200);
+
+    drop(app);
 }
 
 #[tokio::test(flavor = "multi_thread")]

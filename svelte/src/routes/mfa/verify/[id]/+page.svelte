@@ -2,9 +2,9 @@
   import { page } from '$app/state';
 
   import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
-  import PageHeader from '$lib/components/PageHeader.svelte';
   import PageTitle from '$lib/components/PageTitle.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
+  import { deliverLocalhostCallback } from './localhost-callback';
 
   interface ChallengeMeta {
     operation_id: string;
@@ -20,9 +20,9 @@
   let busy = $state(false);
   let loading = $state(true);
   let done = $state(false);
-  let otp = $state<string | null>(null);
   let localhostCallbackUrl = $state<string | null>(null);
-  let grantExpiresAt = $state<string | null>(null);
+  let callbackDeliveryBusy = $state(false);
+  let callbackDeliveryFailed = $state(false);
   let meta = $state<ChallengeMeta | null>(null);
   let loadError = $state<string | null>(null);
 
@@ -83,17 +83,11 @@
       }
 
       let result = await finish.json();
-      otp = result.otp;
       localhostCallbackUrl = result.localhost_callback_url ?? null;
-      grantExpiresAt = result.grant_expires_at ?? null;
       done = true;
 
-      if (localhostCallbackUrl) {
-        try {
-          await fetch(localhostCallbackUrl, { mode: 'no-cors' });
-        } catch {
-          // Ignore; CLI can poll for acknowledgment instead.
-        }
+      if (localhostCallbackUrl && !(await sendLocalhostCallback())) {
+        return;
       }
 
       notifications.success('Acknowledged. You may return to the command line.');
@@ -101,6 +95,23 @@
       notifications.error(error instanceof Error ? error.message : 'Verification failed.');
     } finally {
       busy = false;
+    }
+  }
+
+  async function sendLocalhostCallback() {
+    if (!localhostCallbackUrl) return true;
+
+    callbackDeliveryBusy = true;
+    callbackDeliveryFailed = false;
+    try {
+      await deliverLocalhostCallback(localhostCallbackUrl);
+      return true;
+    } catch {
+      callbackDeliveryFailed = true;
+      notifications.error('Cargo could not be reached. Keep the command running and try again.');
+      return false;
+    } finally {
+      callbackDeliveryBusy = false;
     }
   }
 
@@ -122,10 +133,10 @@
 
   function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
     return {
-      ...(options as PublicKeyCredentialRequestOptions),
+      ...(options as unknown as PublicKeyCredentialRequestOptions),
       challenge: b64urlToBuffer(options.challenge as string),
       allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as PublicKeyCredentialDescriptor),
+        ...(cred as unknown as PublicKeyCredentialDescriptor),
         id: b64urlToBuffer(cred.id as string),
       })),
     };
@@ -153,6 +164,19 @@
     return operation;
   }
 
+  let pageHeading = $derived.by(() => {
+    if (done) {
+      return callbackDeliveryFailed ? 'Cargo was not reached' : 'Passkey verified';
+    }
+    if (meta) {
+      return `Confirm ${operationLabel(meta.operation, meta.crate_name)}`;
+    }
+    if (loadError) {
+      return 'Verification failed';
+    }
+    return 'Confirm action';
+  });
+
   $effect(() => {
     if (challengeId) {
       loadMeta();
@@ -160,62 +184,72 @@
   });
 </script>
 
-<PageTitle title="Authenticate with security device" />
-<PageHeader title="Authenticate with security device" />
+<PageTitle title={pageHeading} />
 
-<main class="verify" data-test-mfa-verify>
-  {#if loading}
-    <LoadingSpinner />
-  {:else if loadError}
+<div class="content" data-test-mfa-verify>
+  <h1>
+    {pageHeading}
+    {#if loading}
+      <LoadingSpinner />
+    {/if}
+  </h1>
+
+  {#if !loading && loadError}
     <p data-test-verify-error>{loadError}</p>
-  {:else if done}
-    <h2 data-test-verify-success>You are verified with a security device</h2>
-    <p>You may close this window and return to the command line. The CLI can retry now.</p>
-    {#if meta}
-      <p>
-        Operation <code data-test-operation-id>{meta.operation_id}</code>
-        ({operationLabel(meta.operation, meta.crate_name)}).
-      </p>
+  {:else if !loading && done}
+    {#if callbackDeliveryFailed}
+      <p data-test-callback-error>Passkey verified, but Cargo could not be reached.</p>
+      <p>Keep the Cargo command running, then retry the connection.</p>
+      <div class="actions">
+        <button
+          type="button"
+          class="button"
+          disabled={callbackDeliveryBusy}
+          onclick={sendLocalhostCallback}
+          data-test-retry-callback
+        >
+          Retry Cargo connection
+          {#if callbackDeliveryBusy}
+            <LoadingSpinner theme="light" class="spinner" />
+          {/if}
+        </button>
+      </div>
+    {:else}
+      <p data-test-verify-success>You may close this window and return to the command line.</p>
     {/if}
-    {#if grantExpiresAt}
-      <p>
-        A scoped grant is active until {new Date(grantExpiresAt).toLocaleString()} for stock
-        <code>cargo</code> retries.
-      </p>
-    {:else if otp}
-      <p>
-        One-time code for CLI clients (shown only when a localhost OTP callback was requested):
-        <code data-test-otp>{otp}</code>
-      </p>
-    {/if}
-  {:else if meta}
-    <h2>Confirm {operationLabel(meta.operation, meta.crate_name)}</h2>
-    <p>
-      No crates.io sign-in is required. Use a registered passkey for this account. Your API token from
-      <code>cargo login</code> already identified you.
-    </p>
-    <p class="meta">
-      Operation id <code>{meta.operation_id}</code> · expires {new Date(meta.expires_at).toLocaleString()}
-    </p>
-    <button type="button" class="button" disabled={busy} onclick={verify} data-test-verify-passkey>
-      {#if busy}
-        <LoadingSpinner />
-      {:else}
-        Authenticate
-      {/if}
-    </button>
+  {:else if !loading && meta}
+    <p>Expires {new Date(meta.expires_at).toLocaleString()}</p>
+    <div class="actions">
+      <button type="button" class="button" disabled={busy} onclick={verify} data-test-verify-passkey>
+        Verify with passkey
+        {#if busy}
+          <LoadingSpinner theme="light" class="spinner" />
+        {/if}
+      </button>
+    </div>
   {/if}
-</main>
+</div>
 
 <style>
-  .verify {
-    max-width: 40rem;
-    margin: 0 auto;
-    padding: var(--space-m);
+  .content {
+    max-width: 600px;
+    margin: var(--space-xl) auto;
+
+    h1 {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-2xs);
+      margin-top: 0;
+    }
   }
 
-  .meta {
-    color: var(--grey600);
-    font-size: 0.9rem;
+  .actions {
+    display: flex;
+    justify-content: center;
+    margin-top: var(--space-m);
+  }
+
+  .actions :global(.spinner) {
+    margin-left: var(--space-2xs);
   }
 </style>

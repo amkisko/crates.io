@@ -2,7 +2,7 @@
 
 Opt-in protection so publish, yank, and owner changes require a recent passkey verification — for API tokens and for website cookie sessions.
 
-This is the crates.io counterpart of [RubyGems WebAuthn MFA for the CLI](https://guides.rubygems.org/using-mfa-in-command-line/): a token-authenticated dangerous API call returns a short-lived operation handshake; the browser completes passkey verification without a crates.io cookie while the CLI polls for acknowledgment. `cargo login` still mints the API token before `cargo publish`. Cookie sessions use the settings "Authorize for 15 minutes" grant instead of that handshake.
+A token-authenticated dangerous API call returns a short-lived operation handshake; the browser completes passkey verification without a crates.io cookie while the CLI receives acknowledgment (localhost OTP callback, or poll). `cargo login` still mints the API token before `cargo publish`. Cookie sessions use the settings "Authorize for 15 minutes" grant instead of that handshake.
 
 ## Threat model
 
@@ -21,11 +21,16 @@ GitHub session / crates.io cookie:
 
 Trusted Publishing (`cio_tp_…`) OIDC token:
 
-- Unaffected either way (OIDC identity is the second factor). Non-OIDC CI that still uses a long-lived API token needs a human MFA step (or Trusted Publishing / a future scoped automation token).
+- Trusted Publishing is the automation path; API MFA is the interactive-token path. OIDC publish stays ungated either way (OIDC identity is the second factor) so CI does not sit on a passkey prompt. Non-OIDC CI that still uses a long-lived API token needs a human MFA step (or Trusted Publishing / a future scoped automation token).
+- TrustPub only becomes available after the crate already exists. The first publish (and other bootstrap ownership work) still needs a long-lived API token or a cookie session — the window where a stolen token is most dangerous. API MFA closes that bootstrap gap; the same step-up can later cover other unsafe operations that still need human supervision (yank, owners, delete, TrustPub config, and similar).
+
+Passkeys vs token scopes / identity:
+
+- GitHub OAuth remains account identity. Passkeys are account-wide second factors for step-up (approve and mutate); they are not a login replacement and have no capability scopes in v1. Least privilege stays on API token scopes. Passkey `name` and `last_used_at` (plus register/delete in the security activity feed) are hygiene only.
 
 Multi-owner / team crates:
 
-- If any *individual* owner has `api_mfa_enabled`, dangerous mutates on that crate require MFA for the *acting* user (including team members and co-owners who have not opted in yet). Actors without MFA enabled get a clear error to enable API MFA first. Instant GitHub team owner-add is unchanged. Trusted Publishing OIDC publish still skips MFA. Optional `trustpub_only` remains a separate crate-level control.
+- If any individual owner has `api_mfa_enabled`, dangerous mutates on that crate require MFA for the acting user (including team members and co-owners who have not opted in yet). Actors without MFA enabled get a clear error to enable API MFA first. Instant GitHub team owner-add is unchanged. Trusted Publishing OIDC publish still skips MFA. Optional `trustpub_only` remains a separate crate-level control.
 
 GitHub account 2FA does not protect a leaked cargo token ([rust-lang/crates.io#815](https://github.com/rust-lang/crates.io/issues/815)).
 
@@ -55,21 +60,25 @@ Any future factor (hardware token protocol, external signing service, etc.) must
 
 1. Register a passkey under Settings → API MFA and enable enforcement.
 2. CLI performs a dangerous action (`cargo publish`, yank, change owners) with an API token.
-3. API responds `403` with structured fields:
+3. Preferred (localhost OTP): CLI binds `127.0.0.1`, sends `Crates-MFA-Port` plus a client-held `Crates-MFA-Callback-Secret`, and waits for the verify page to `GET http://127.0.0.1:{port}/?code={otp}`.
+4. Fallback (stock / remote): omit the port; API responds `403` with structured fields and the CLI polls until acknowledged.
+5. API `403` fields:
    - `operation_id` — temporary transaction id (`mfa_…`)
    - `verification_url` — browser page for passkey verification (`/mfa/verify/{operation_id}`; no sign-in)
    - `poll_url` — `GET /api/v1/mfa/challenges/{operation_id}`
    - `expires_at` — short TTL (5 minutes)
    - `recommended_poll_interval_secs` — currently `2` (do not poll faster)
-4. CLI prints `verification_url` and polls `poll_url` every 2 seconds or slower until `status` is `acknowledged`.
-5. User opens the link and completes passkey check. The verify page does not require a crates.io cookie; the opaque `operation_id` is the capability, and the passkey proves control of the account that owns the token.
-6. CLI retries the original request (idempotent). A 15-minute scoped grant (same operation + crate) is issued on acknowledgment so stock cargo can retry without OTP headers — unless `Crates-MFA-Port` was set, in which case only the OTP callback is used (no grant row).
+6. User opens the link and completes passkey check. The verify page does not require a crates.io cookie; the opaque `operation_id` is the capability, and the passkey proves control of the account that owns the token.
+7. CLI retries the original request (idempotent):
+   - With `Crates-MFA-Port`: finish returns `localhost_callback_url` + OTP and does not insert a grant; retry with `Crates-OTP` / `OTP`.
+   - Without port: finish issues a 15-minute scoped grant (same operation + crate) so poll-then-retry works without OTP headers.
 
 Optional headers on the dangerous request:
 
-- `Crates-MFA-Port` — localhost port for RubyGems-style OTP callback after verification (skips scoped grant)
+- `Crates-MFA-Port` — localhost port for OTP callback after verification (skips scoped grant; refreshed if a pending challenge is reused)
+- `Crates-MFA-Callback-Secret` — URL-safe client secret authorizing callback port refreshes; callback mode cannot be downgraded to a polling grant
 - `Crates-MFA-Operation-Id` — reuse a previous `operation_id` for an idempotent handshake
-- `Crates-OTP` / `OTP` — one-time code after verification (alternative to grant retry)
+- `Crates-OTP` / `OTP` — one-time code after verification (required for the localhost path; alternative to grant retry)
 
 Retries of the same token + operation + crate reuse the pending challenge until it expires or is acknowledged.
 
@@ -102,7 +111,7 @@ Owner invitation accept (`PUT /api/v1/me/crate_owner_invitations/accept/{token}`
 
 - website publish / yank / owner / delete / Trusted Publishing config changes while MFA is enabled
 - toggling `trustpub_only` on crate settings while MFA is enabled
-- CLI clients that do not yet poll `mfa_required` (released stock cargo until MFA support lands; see [Cargo integration](#cargo-integration))
+- CLI clients that do not yet speak `mfa_required` (released stock cargo until MFA support lands; see [Cargo integration](#cargo-integration))
 
 Challenge acknowledgment remains scoped to the operation + crate that created the challenge. With cargo MFA support, challenge acknowledgment already issues a scoped grant for the operation + crate; the settings wildcard grant remains the escape hatch for the website and older clients.
 
@@ -148,15 +157,17 @@ Service gauge: `cratesio_service_api_mfa_challenges_pending`.
 
 Upstream support lives in the cargo fork branch
 [`feature/crates-io-api-mfa`](https://github.com/amkisko/cargo/tree/feature/crates-io-api-mfa)
-(`amkisko/cargo`): on `mfa_required`, cargo prints `verification_url`, polls
-`poll_url` until `status` is `acknowledged`, then retries publish / yank /
-unyank / owner changes.
+(`amkisko/cargo`): on `mfa_required`, cargo prefers a localhost OTP callback
+(`Crates-MFA-Port` + `Crates-OTP`) when interactive, and falls back to polling
+`poll_url` until acknowledged, then retries publish / yank / unyank / owner
+changes. Set `CARGO_API_MFA_PREFER_LOCALHOST=1` to force the OTP path.
 
 Until that lands in rust-lang/cargo releases:
 
-- humans can use the settings "Authorize for 15 minutes" grant, or
+- use the settings "Authorize for 15 minutes" grant, or
 - build/run cargo from that branch, or
-- a wrapper/tool can show `verification_url`, poll `poll_url` every `recommended_poll_interval_secs`, then retry.
+- a wrapper/tool can show `verification_url`, complete localhost OTP or poll
+  `poll_url` every `recommended_poll_interval_secs`, then retry.
 
 ## CLI link-login
 
@@ -195,7 +206,7 @@ Treat API MFA as the interactive publish step-up layer only. Separate tracks rem
 
 - Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutate; it does not bind the published tarball to a long-term publisher key. Step-up MFA and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound step-up or for signed package bytes.
 - Tighter ceremony binding: bind acknowledgment to upload content hashes and/or prefer one-shot OTP once cargo speaks `mfa_required`. Challenge grants are already token-scoped; keep wildcard Authorize as the multi-use website escape hatch.
-- Scoped automation tokens: Trusted Publishing covers OIDC CI; non-OIDC automation still needs a human MFA step or a future short-lived / scoped automation token (npm-style bypass is a product decision, not part of this design).
+- Scoped automation tokens: Trusted Publishing covers OIDC CI; non-OIDC automation still needs a human MFA step or a future short-lived / scoped automation token (automation bypass policy is a separate product decision, not part of this design).
 - Consumer trust policy: optional client or UI signals for `trustpub_only`, MFA-enabled owners, or signed crates; complements ecosystem mandates under [#815](https://github.com/rust-lang/crates.io/issues/815).
 - Public provenance: optional version metadata that a publish completed after an MFA ceremony or Trusted Publishing exchange, without exposing private activity IPs or challenge ids.
 - Compromise hygiene: passkey / credential revocation feeds or Activity prompts when credentials are known-bad, beyond settings-change emails.

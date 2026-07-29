@@ -29,6 +29,7 @@ pub struct ApiMfaChallenge {
     pub expires_at: DateTime<Utc>,
     pub hashed_otp: Option<Vec<u8>>,
     pub id: String,
+    pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
     pub operation: String,
     pub otp_consumed_at: Option<DateTime<Utc>>,
@@ -45,6 +46,7 @@ pub struct NewApiMfaChallenge {
     pub api_token_id: Option<i32>,
     pub operation: String,
     pub crate_name: Option<String>,
+    pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
     pub expires_at: DateTime<Utc>,
 }
@@ -66,6 +68,11 @@ impl ApiMfaChallenge {
     /// Hashes a plaintext OTP for storage / comparison.
     pub fn hash_otp(otp: &str) -> Vec<u8> {
         Sha256::digest(otp.as_bytes()).as_slice().to_vec()
+    }
+
+    /// Hashes a client-held localhost callback secret for storage and comparison.
+    pub fn hash_localhost_callback_secret(secret: &str) -> Vec<u8> {
+        Sha256::digest(secret.as_bytes()).as_slice().to_vec()
     }
 
     /// Whether passkey verification has acknowledged this operation.
@@ -154,6 +161,30 @@ impl ApiMfaChallenge {
         }
     }
 
+    /// Updates the localhost OTP callback binding on a pending challenge.
+    ///
+    /// Authorization to replace an existing port is checked by the caller using
+    /// the stored callback-secret hash.
+    pub async fn update_localhost_callback(
+        &self,
+        localhost_port: i32,
+        localhost_callback_secret_hash: Option<Vec<u8>>,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Self> {
+        diesel::update(
+            api_mfa_challenges::table
+                .find(&self.id)
+                .filter(api_mfa_challenges::verified_at.is_null()),
+        )
+        .set((
+            api_mfa_challenges::localhost_port.eq(localhost_port),
+            api_mfa_challenges::localhost_callback_secret_hash.eq(localhost_callback_secret_hash),
+        ))
+        .returning(Self::as_returning())
+        .get_result(&mut conn)
+        .await
+    }
+
     /// Stores `WebAuthn` authentication state for an in-progress ceremony.
     ///
     /// No-op (returns `false`) if the challenge is already acknowledged.
@@ -199,6 +230,7 @@ impl ApiMfaChallenge {
     /// Consumes a matching unused OTP for the given operation and crate.
     pub async fn consume_otp(
         user_id: i32,
+        api_token_id: i32,
         otp: &str,
         operation: &str,
         crate_name: Option<&str>,
@@ -207,6 +239,7 @@ impl ApiMfaChallenge {
         let hashed = Self::hash_otp(otp);
         let base = api_mfa_challenges::table
             .filter(api_mfa_challenges::user_id.eq(user_id))
+            .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
             .filter(api_mfa_challenges::operation.eq(operation))
             .filter(api_mfa_challenges::hashed_otp.eq(hashed))
             .filter(api_mfa_challenges::otp_consumed_at.is_null())
@@ -240,6 +273,7 @@ impl NewApiMfaChallenge {
         operation: impl Into<String>,
         crate_name: Option<String>,
         localhost_port: Option<i32>,
+        localhost_callback_secret: Option<&str>,
     ) -> Self {
         Self {
             id: ApiMfaChallenge::generate_id(),
@@ -247,6 +281,8 @@ impl NewApiMfaChallenge {
             api_token_id,
             operation: operation.into(),
             crate_name,
+            localhost_callback_secret_hash: localhost_callback_secret
+                .map(ApiMfaChallenge::hash_localhost_callback_secret),
             localhost_port,
             expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_CHALLENGE_DURATION_SECS),
         }

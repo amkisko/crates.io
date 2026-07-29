@@ -135,6 +135,7 @@ pub async fn create_api_mfa_challenge(
         &operation,
         body.crate_name,
         body.port,
+        None,
         &mut conn,
     )
     .await?;
@@ -449,7 +450,7 @@ pub async fn finish_api_mfa_challenge(
 
     let localhost_callback_url = challenge
         .localhost_port
-        .map(|port| format!("http://localhost:{port}/?code={otp}"));
+        .map(|port| format!("http://127.0.0.1:{port}/?code={otp}"));
 
     use crate::models::{NewUserSecurityEvent, SecurityEventType};
     NewUserSecurityEvent::new(

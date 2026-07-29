@@ -5,7 +5,7 @@ use crate::util::{MockRequestExt, RequestHelper, TestApp};
 use crates_io::models::{
     ApiMfaChallenge, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, NewApiMfaGrant,
 };
-use crates_io::schema::{api_mfa_challenges, users};
+use crates_io::schema::{api_mfa_challenges, api_tokens, users};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use http::Method;
@@ -50,11 +50,13 @@ async fn publish_returns_operation_challenge_link() {
             .unwrap()
             .contains(&format!("/api/v1/mfa/challenges/{operation_id}"))
     );
-    assert!(
-        error["detail"]
-            .as_str()
-            .unwrap()
-            .contains("API MFA required")
+    assert_eq!(
+        error["detail"],
+        format!(
+            "API MFA required. Open this link to verify with your passkey:\n\n\
+             http://127.0.0.1:8888/mfa/verify/{operation_id}\n\n\
+             After verification, retry the request."
+        )
     );
 
     // Idempotent: retrying the same operation reuses the challenge.
@@ -186,12 +188,14 @@ async fn publish_allowed_with_active_grant() {
 async fn publish_allowed_with_otp_header() {
     let (app, _, user, token) = TestApp::full().with_token().await;
     let mut conn = app.db_conn().await;
+    let other_token = user.db_new_token("other-token").await;
 
     diesel::update(users::table.find(user.as_model().id))
         .set(users::api_mfa_enabled.eq(true))
         .execute(&mut conn)
         .await
         .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
 
     let otp = ApiMfaChallenge::generate_otp();
     let challenge = NewApiMfaChallenge::new(
@@ -199,6 +203,7 @@ async fn publish_allowed_with_otp_header() {
         Some(token.as_model().id),
         "publish",
         Some("foo_api_mfa_otp".into()),
+        None,
         None,
     )
     .insert(&conn)
@@ -210,6 +215,13 @@ async fn publish_allowed_with_otp_header() {
         .unwrap();
 
     let body = PublishBuilder::new("foo_api_mfa_otp", "1.0.0").body();
+    let mut wrong_request = other_token.request_builder(Method::PUT, "/api/v1/crates/new");
+    wrong_request.header("Crates-OTP", &otp);
+    let wrong_token = other_token
+        .run::<Value>(wrong_request.with_body(body.clone()))
+        .await;
+    assert_snapshot!(wrong_token.status(), @"403 Forbidden");
+
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     request.header("Crates-OTP", &otp);
     let request = request.with_body(body);
@@ -217,6 +229,57 @@ async fn publish_allowed_with_otp_header() {
     token.app().run_pending_background_jobs().await;
 
     assert_snapshot!(response.status(), @"200 OK");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn otp_from_revoked_token_challenge_is_rejected() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+    let revoked_token = user.db_new_token("revoked-token").await;
+
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let otp = ApiMfaChallenge::generate_otp();
+    let challenge = NewApiMfaChallenge::new(
+        user.as_model().id,
+        Some(revoked_token.as_model().id),
+        "publish",
+        Some("foo_api_mfa_revoked_otp".into()),
+        None,
+        None,
+    )
+    .insert(&conn)
+    .await
+    .unwrap();
+    challenge
+        .mark_verified(ApiMfaChallenge::hash_otp(&otp), &conn)
+        .await
+        .unwrap();
+
+    diesel::delete(api_tokens::table.find(revoked_token.as_model().id))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let challenge = ApiMfaChallenge::find_active(&challenge.id, &mut conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        challenge.api_token_id, None,
+        "deleting the originating token must clear the challenge foreign key"
+    );
+
+    let body = PublishBuilder::new("foo_api_mfa_revoked_otp", "1.0.0").body();
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Crates-OTP", &otp);
+    let response = token.run::<Value>(request.with_body(body)).await;
+
+    assert_snapshot!(response.status(), @"403 Forbidden");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -237,6 +300,7 @@ async fn otp_for_other_crate_is_rejected() {
         Some(token.as_model().id),
         "publish",
         Some("other_crate".into()),
+        None,
         None,
     )
     .insert(&conn)
@@ -275,6 +339,7 @@ async fn pending_challenge_cap_is_enforced() {
             Some(token.as_model().id),
             "publish",
             Some(format!("pending_cap_{i}")),
+            None,
             None,
         )
         .insert(&conn)
