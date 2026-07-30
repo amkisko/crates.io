@@ -32,7 +32,7 @@ pub struct EncodableSecurityEvent {
     /// Truncated client IP when recorded (`/24` IPv4 or `/56` IPv6); never set for `token_used`.
     #[schema(example = "203.0.113.0/24")]
     pub ip: Option<String>,
-    /// Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`.
+    /// Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `challenge_id`.
     pub metadata: JsonValue,
     /// When the event was recorded.
     #[schema(example = "2026-07-29T12:00:00Z")]
@@ -87,6 +87,19 @@ pub async fn list_security_events(
     let mut conn = app.db_read_prefer_primary().await?;
     let auth = AuthCheck::only_cookie().check(&req, &mut conn).await?;
     let user = auth.user();
+
+    if !app.config.security_activity_enabled {
+        return Ok((
+            no_store(),
+            Json(ListSecurityEventsResponse {
+                security_events: Vec::new(),
+                meta: ListSecurityEventsMeta {
+                    total: 0,
+                    next_page: None,
+                },
+            }),
+        ));
+    }
 
     let pagination: PaginationOptions = PaginationOptions::builder()
         .enable_pages(false)

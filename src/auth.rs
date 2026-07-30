@@ -17,6 +17,10 @@ use http::{StatusCode, header};
 use secrecy::{ExposeSecret, SecretString};
 use tracing::instrument;
 
+/// Request-scoped security activity collection gate.
+#[derive(Clone, Copy, Debug)]
+pub struct SecurityActivityEnabled(pub bool);
+
 pub struct AuthHeader(SecretString);
 
 impl AuthHeader {
@@ -306,7 +310,11 @@ async fn authenticate_via_token(
     let token = auth_header.token().expose_secret();
     let token = HashedToken::parse(token).map_err(|_| InsecurelyGeneratedTokenRevoked::boxed())?;
 
-    let token = ApiToken::find_by_api_token(conn, &token)
+    let record_security_activity = parts
+        .extensions()
+        .get::<SecurityActivityEnabled>()
+        .is_some_and(|enabled| enabled.0);
+    let token = ApiToken::find_by_api_token(conn, &token, record_security_activity)
         .await
         .map_err(|e| {
             let cause = format!("invalid token caused by {e}");

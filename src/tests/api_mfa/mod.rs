@@ -32,29 +32,31 @@ async fn publish_returns_operation_challenge_link() {
 
     let body: Value = response.json();
     let error = &body["errors"][0];
-    assert_eq!(error["id"], "mfa_required");
+    assert_eq!(error["id"], "step_up_required");
+    assert_eq!(error["protocol_version"], 1);
+    assert_eq!(error["interaction"], "browser");
     assert_eq!(error["operation"], "publish");
     assert_eq!(error["crate"], "foo_api_mfa");
 
-    let operation_id = error["operation_id"].as_str().unwrap();
-    assert!(operation_id.starts_with("mfa_"));
+    let challenge_id = error["challenge_id"].as_str().unwrap();
+    assert!(challenge_id.starts_with("stp_"));
     assert!(
         error["verification_url"]
             .as_str()
             .unwrap()
-            .contains(&format!("/mfa/verify/{operation_id}"))
+            .contains(&format!("/verify/{challenge_id}"))
     );
     assert!(
         error["poll_url"]
             .as_str()
             .unwrap()
-            .contains(&format!("/api/v1/mfa/challenges/{operation_id}"))
+            .contains(&format!("/api/v1/auth/challenges/{challenge_id}"))
     );
     assert_eq!(
         error["detail"],
         format!(
-            "API MFA required. Open this link to verify with your passkey:\n\n\
-             http://localhost:8888/mfa/verify/{operation_id}\n\n\
+            "Additional authentication is required. Open this link to verify with your passkey:\n\n\
+             http://localhost:8888/verify/{challenge_id}\n\n\
              After verification, retry the request."
         )
     );
@@ -64,7 +66,7 @@ async fn publish_returns_operation_challenge_link() {
         .publish_crate(PublishBuilder::new("foo_api_mfa", "1.0.0"))
         .await;
     let body2: Value = response2.json();
-    assert_eq!(body2["errors"][0]["operation_id"], operation_id);
+    assert_eq!(body2["errors"][0]["challenge_id"], challenge_id);
 
     let count: i64 = api_mfa_challenges::table
         .filter(api_mfa_challenges::user_id.eq(user.as_model().id))
@@ -91,10 +93,10 @@ async fn cli_can_poll_until_acknowledged_then_publish() {
         .publish_crate(PublishBuilder::new("foo_api_mfa_poll", "1.0.0"))
         .await;
     let body: Value = response.json();
-    let operation_id = body["errors"][0]["operation_id"].as_str().unwrap();
+    let challenge_id = body["errors"][0]["challenge_id"].as_str().unwrap();
 
     let pending = token
-        .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
+        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
         .await;
     assert_snapshot!(pending.status(), @"200 OK");
     let pending_body = pending.json();
@@ -102,7 +104,7 @@ async fn cli_can_poll_until_acknowledged_then_publish() {
     assert_eq!(pending_body["acknowledged"], false);
 
     // Simulate browser acknowledgment with a scoped grant for this operation/crate.
-    let challenge = ApiMfaChallenge::find_active(operation_id, &conn)
+    let challenge = ApiMfaChallenge::find_active(challenge_id, &conn)
         .await
         .unwrap()
         .unwrap();
@@ -122,7 +124,7 @@ async fn cli_can_poll_until_acknowledged_then_publish() {
     .unwrap();
 
     let ready = token
-        .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
+        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
         .await
         .good();
     assert_eq!(ready["status"], "acknowledged");
@@ -158,11 +160,11 @@ async fn approval_is_bound_to_exact_publish_tarball() {
         )
         .await;
     assert_eq!(initial.status(), 403);
-    let operation_id = initial.json()["errors"][0]["operation_id"]
+    let challenge_id = initial.json()["errors"][0]["challenge_id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let challenge = ApiMfaChallenge::find_active(&operation_id, &conn)
+    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
         .unwrap()
         .unwrap();
@@ -186,8 +188,8 @@ async fn approval_is_bound_to_exact_publish_tarball() {
         .await;
     assert_snapshot!(substituted.status(), @"403 Forbidden");
     assert_ne!(
-        substituted.json()["errors"][0]["operation_id"],
-        operation_id
+        substituted.json()["errors"][0]["challenge_id"],
+        challenge_id
     );
 
     // Metadata is part of the mutation too, even when the tarball is byte-identical.
@@ -208,8 +210,8 @@ async fn approval_is_bound_to_exact_publish_tarball() {
         .await;
     assert_snapshot!(substituted.status(), @"403 Forbidden");
     assert_ne!(
-        substituted.json()["errors"][0]["operation_id"],
-        operation_id
+        substituted.json()["errors"][0]["challenge_id"],
+        challenge_id
     );
 
     let approved = token
@@ -256,7 +258,7 @@ async fn scoped_grant_does_not_cover_other_crate() {
         .publish_crate(PublishBuilder::new("foo_api_mfa_scope", "1.0.0"))
         .await;
     assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "mfa_required");
+    assert_eq!(response.json()["errors"][0]["id"], "step_up_required");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -280,7 +282,7 @@ async fn cookie_wildcard_grant_does_not_authorize_api_token() {
     let crate_to_publish = PublishBuilder::new("foo_api_mfa_grant", "1.0.0");
     let response = token.publish_crate(crate_to_publish).await;
     assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "mfa_required");
+    assert_eq!(response.json()["errors"][0]["id"], "step_up_required");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -304,11 +306,11 @@ async fn publish_allowed_with_otp_header() {
                 .with_body(body.clone()),
         )
         .await;
-    let operation_id = initial.json()["errors"][0]["operation_id"]
+    let challenge_id = initial.json()["errors"][0]["challenge_id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let challenge = ApiMfaChallenge::find_active(&operation_id, &conn)
+    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
         .unwrap()
         .unwrap();
@@ -355,11 +357,11 @@ async fn otp_from_revoked_token_challenge_is_rejected() {
                 .with_body(body.clone()),
         )
         .await;
-    let operation_id = initial.json()["errors"][0]["operation_id"]
+    let challenge_id = initial.json()["errors"][0]["challenge_id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let challenge = ApiMfaChallenge::find_active(&operation_id, &conn)
+    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
         .unwrap()
         .unwrap();
@@ -429,7 +431,7 @@ async fn otp_for_other_crate_is_rejected() {
     let response = token.run::<Value>(request).await;
 
     assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "mfa_required");
+    assert_eq!(response.json()["errors"][0]["id"], "step_up_required");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -488,7 +490,7 @@ async fn challenge_create_rejects_unknown_operation() {
 
     let response = token
         .post::<Value>(
-            "/api/v1/mfa/challenges",
+            "/api/v1/auth/challenges",
             json!({ "operation": "harmless-check", "crate_name": "foo" }).to_string(),
         )
         .await;
@@ -499,6 +501,54 @@ async fn challenge_create_rejects_unknown_operation() {
             .unwrap()
             .contains("invalid operation")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_callback_challenge_requires_and_binds_secret() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let missing_secret = token
+        .post::<Value>(
+            "/api/v1/auth/challenges",
+            json!({ "operation": "manual", "port": 34567 }).to_string(),
+        )
+        .await;
+    assert_eq!(missing_secret.status(), 400);
+    assert!(
+        missing_secret.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Callback-Secret is required")
+    );
+
+    let callback_secret = "0123456789abcdef0123456789abcdef";
+    let mut request = token.request_builder(Method::POST, "/api/v1/auth/challenges");
+    request.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    let response = token
+        .run::<Value>(
+            request.with_body(
+                json!({ "operation": "manual", "port": 34567 })
+                    .to_string()
+                    .into(),
+            ),
+        )
+        .await
+        .good();
+    assert!(
+        response["verification_url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("#callback_secret={callback_secret}"))
+    );
+    assert!(response["poll_url"].is_string());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -527,10 +577,10 @@ async fn challenge_create_is_rate_limited() {
         .publish_crate(PublishBuilder::new("foo_mfa_rl_a", "1.0.0"))
         .await;
     assert_eq!(first.status(), 403);
-    assert_eq!(first.json()["errors"][0]["id"], "mfa_required");
+    assert_eq!(first.json()["errors"][0]["id"], "step_up_required");
     assert_eq!(
         first.json()["errors"][0]["recommended_poll_interval_secs"],
-        2
+        5
     );
 
     // Different crate forces a new challenge insert → rate limit.
@@ -649,7 +699,7 @@ async fn challenge_grant_does_not_cover_other_token() {
         .publish_crate(PublishBuilder::new("foo_mfa_token_bind", "1.0.0"))
         .await;
     assert_snapshot!(blocked.status(), @"403 Forbidden");
-    assert_eq!(blocked.json()["errors"][0]["id"], "mfa_required");
+    assert_eq!(blocked.json()["errors"][0]["id"], "step_up_required");
 
     // A cookie wildcard grant must not become an API-token bypass.
     NewApiMfaGrant::for_user(user.as_model().id)

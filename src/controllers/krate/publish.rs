@@ -40,6 +40,7 @@ use crate::models::{
 use crate::controllers::helpers::authorization::Rights;
 use crate::licenses::parse_license_expr;
 use crate::middleware::log_request::RequestLogExt;
+use crate::middleware::real_ip::RealIp;
 use crate::models::token::EndpointScope;
 use crate::rate_limiter::LimitedAction;
 use crate::schema::*;
@@ -241,6 +242,23 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
         None
     };
 
+    if let AuthType::Regular(auth) = &auth
+        && let Some(token) = auth.api_token()
+    {
+        let real_ip = req
+            .extensions
+            .get::<RealIp>()
+            .ok_or_else(|| internal("request is missing its resolved client IP"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"publish-request");
+        hasher.update(token.id.to_be_bytes());
+        hasher.update(real_ip.to_string().as_bytes());
+        let bucket_key = hex::encode(hasher.finalize());
+        app.rate_limiter
+            .check_key_rate_limit(&bucket_key, LimitedAction::PublishRequest, &mut conn)
+            .await?;
+    }
+
     let max_upload_size = existing_crate
         .as_ref()
         .and_then(|c| c.max_upload_size())
@@ -278,7 +296,7 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
     }
 
     if let Some(user_id) = auth.user_id() {
-        // MFA handshakes and failed OTP attempts must not consume the mutation
+        // Step-up handshakes and failed OTP attempts must not consume the mutation
         // bucket; otherwise an attacker with a challenge ID can exhaust the
         // legitimate publisher's allowance before verification completes.
         let rate_limit_action = match existing_crate {

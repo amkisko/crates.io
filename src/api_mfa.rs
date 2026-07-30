@@ -22,16 +22,18 @@ pub const CRATES_OTP_HEADER: &str = "crates-otp";
 const OTP_HEADER: &str = "otp";
 
 /// Optional localhost callback port for RubyGems-style OTP delivery.
-pub const CRATES_MFA_PORT_HEADER: &str = "crates-mfa-port";
+pub const CRATES_STEP_UP_PORT_HEADER: &str = "crates-step-up-port";
 
 /// Client-held secret authorizing localhost callback port refreshes.
-pub const CRATES_MFA_CALLBACK_SECRET_HEADER: &str = "crates-mfa-callback-secret";
+pub const CRATES_STEP_UP_CALLBACK_SECRET_HEADER: &str = "crates-step-up-callback-secret";
 
-/// Optional client-supplied operation id for idempotent handshake reuse.
-pub const CRATES_MFA_OPERATION_ID_HEADER: &str = "crates-mfa-operation-id";
+/// Optional client-supplied challenge id for idempotent handshake reuse.
+pub const CRATES_STEP_UP_CHALLENGE_ID_HEADER: &str = "crates-step-up-challenge-id";
 
 /// Recommended CLI poll interval for challenge acknowledgment (seconds).
-pub const RECOMMENDED_POLL_INTERVAL_SECS: u64 = 2;
+///
+/// This is a minimum interval (RFC 8628-style): clients must not poll faster.
+pub const RECOMMENDED_POLL_INTERVAL_SECS: u64 = 5;
 
 /// Optional loopback delivery details supplied by a Cargo client.
 #[derive(Clone, Copy)]
@@ -40,7 +42,7 @@ pub(crate) struct ApiMfaCallback<'a> {
     pub(crate) secret: Option<&'a str>,
 }
 
-/// Allowed `operation` values for preflight `POST /api/v1/mfa/challenges`.
+/// Allowed `operation` values for preflight `POST /api/v1/auth/challenges`.
 pub const ALLOWED_CHALLENGE_OPERATIONS: &[&str] = &[
     "publish",
     "yank",
@@ -263,7 +265,7 @@ pub struct ApiMfaEnsureDeps<'a> {
 enum EnsureOutcome {
     Grant,
     Otp,
-    /// Token client: CLI handshake challenge (`403` `mfa_required`).
+    /// Token client: CLI handshake challenge (`403` `step_up_required`).
     Challenge(BoxedAppError),
     /// Cookie session: must authorize on the settings page first (`400`).
     CookieAuthorize(BoxedAppError),
@@ -362,19 +364,8 @@ async fn ensure_api_mfa_inner(
 ) -> AppResult<EnsureOutcome> {
     let user = auth.user();
 
-    if ApiMfaGrant::has_active(
-        user.id,
-        token_id,
-        operation.kind,
-        operation.crate_name.as_deref(),
-        &operation.mutation_fingerprint,
-        conn,
-    )
-    .await?
-    {
-        return Ok(EnsureOutcome::Grant);
-    }
-
+    // Prefer a supplied one-time proof over the concurrently available grant so
+    // callback completion is consumed exactly once.
     if let (Some(token_id), Some(otp)) = (token_id, otp_from_headers(parts))
         && ApiMfaChallenge::consume_otp(
             user.id,
@@ -388,6 +379,30 @@ async fn ensure_api_mfa_inner(
         .await?
     {
         return Ok(EnsureOutcome::Otp);
+    }
+
+    if ApiMfaGrant::has_active(
+        user.id,
+        token_id,
+        operation.kind,
+        operation.crate_name.as_deref(),
+        &operation.mutation_fingerprint,
+        conn,
+    )
+    .await?
+    {
+        if let Some(token_id) = token_id {
+            ApiMfaChallenge::mark_callback_completed_by_grant(
+                user.id,
+                token_id,
+                operation.kind,
+                operation.crate_name.as_deref(),
+                &operation.mutation_fingerprint,
+                conn,
+            )
+            .await?;
+        }
+        return Ok(EnsureOutcome::Grant);
     }
 
     let credentials = WebauthnCredential::for_user(user.id, conn).await?;
@@ -410,7 +425,7 @@ async fn ensure_api_mfa_inner(
     let localhost_callback_secret = mfa_callback_secret_from_headers(parts)?;
     if localhost_port.is_none() && localhost_callback_secret.is_some() {
         return Err(bad_request(
-            "Crates-MFA-Callback-Secret requires Crates-MFA-Port",
+            "Crates-Step-Up-Callback-Secret requires Crates-Step-Up-Port",
         ));
     }
     let challenge = resolve_or_create_challenge(
@@ -429,9 +444,9 @@ async fn ensure_api_mfa_inner(
 
     parts
         .request_log()
-        .add("api_mfa_operation_id", challenge.id.clone());
+        .add("api_mfa_challenge_id", challenge.id.clone());
 
-    Ok(EnsureOutcome::Challenge(api_mfa_required_error(
+    Ok(EnsureOutcome::Challenge(step_up_required_error(
         deps.webauthn,
         &challenge,
         operation,
@@ -443,11 +458,11 @@ async fn ensure_api_mfa_inner(
 ///
 /// The verify page is a top-level capability URL (no crates.io cookie), modeled
 /// after the `RubyGems` `/webauthn_verification/…` pattern.
-pub fn public_mfa_urls(webauthn: &WebauthnConfig, operation_id: &str) -> (String, String) {
+pub fn public_mfa_urls(webauthn: &WebauthnConfig, challenge_id: &str) -> (String, String) {
     let base = webauthn.rp_origin.as_str().trim_end_matches('/');
     (
-        format!("{base}/mfa/verify/{operation_id}"),
-        format!("{base}/api/v1/mfa/challenges/{operation_id}"),
+        format!("{base}/verify/{challenge_id}"),
+        format!("{base}/api/v1/auth/challenges/{challenge_id}"),
     )
 }
 
@@ -461,8 +476,8 @@ async fn resolve_or_create_challenge(
     deps: &ApiMfaEnsureDeps<'_>,
 ) -> AppResult<ApiMfaChallenge> {
     // Explicit operation id from a previous 403 makes retries idempotent.
-    if let Some(operation_id) = operation_id_from_headers(parts)
-        && let Some(existing) = ApiMfaChallenge::find_active(&operation_id, conn).await?
+    if let Some(challenge_id) = challenge_id_from_headers(parts)
+        && let Some(existing) = ApiMfaChallenge::find_active(&challenge_id, conn).await?
         && existing.user_id == user_id
         && existing.api_token_id == Some(api_token_id)
         && existing.operation == operation.kind
@@ -520,11 +535,11 @@ async fn resolve_or_create_challenge(
 
 /// Refreshes a pending challenge's localhost callback without allowing downgrade.
 ///
-/// Once callback mode is active, omitting `Crates-MFA-Port` cannot switch the
+/// Once callback mode is active, omitting `Crates-Step-Up-Port` cannot switch the
 /// challenge to the broader polling-grant flow. Replacing an existing port
 /// requires the client-held secret that was stored when the challenge was
 /// created.
-async fn refresh_challenge_localhost_callback(
+pub(crate) async fn refresh_challenge_localhost_callback(
     existing: ApiMfaChallenge,
     callback: ApiMfaCallback<'_>,
     conn: &mut AsyncPgConnection,
@@ -609,7 +624,7 @@ pub(crate) async fn insert_challenge_or_reuse_pending(
     }
 }
 
-fn api_mfa_required_error(
+fn step_up_required_error(
     webauthn: &WebauthnConfig,
     challenge: &ApiMfaChallenge,
     operation: &ApiMfaOperation,
@@ -626,12 +641,12 @@ fn api_mfa_required_error(
     }
 
     let detail = format!(
-        "API MFA required. Open this link to verify with your passkey:\n\n\
+        "Additional authentication is required. Open this link to verify with your passkey:\n\n\
          {verification_url}\n\nAfter verification, retry the request."
     );
 
     ApiMfaRequired {
-        operation_id: challenge.id.clone(),
+        challenge_id: challenge.id.clone(),
         operation: operation.kind.to_string(),
         operation_summary: operation.summary.clone(),
         crate_name: operation.crate_name.clone(),
@@ -655,10 +670,10 @@ fn otp_from_headers(parts: &Parts) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn operation_id_from_headers(parts: &Parts) -> Option<String> {
+fn challenge_id_from_headers(parts: &Parts) -> Option<String> {
     parts
         .headers
-        .get(CRATES_MFA_OPERATION_ID_HEADER)
+        .get(CRATES_STEP_UP_CHALLENGE_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -668,7 +683,7 @@ fn operation_id_from_headers(parts: &Parts) -> Option<String> {
 fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
     let Some(raw) = parts
         .headers
-        .get(CRATES_MFA_PORT_HEADER)
+        .get(CRATES_STEP_UP_PORT_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -676,12 +691,12 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
         return Ok(None);
     };
 
-    let port: i32 = raw
-        .parse()
-        .map_err(|_| bad_request("Crates-MFA-Port must be an integer between 1024 and 65535"))?;
+    let port: i32 = raw.parse().map_err(|_| {
+        bad_request("Crates-Step-Up-Port must be an integer between 1024 and 65535")
+    })?;
     if !(1024..=65535).contains(&port) {
         return Err(bad_request(
-            "Crates-MFA-Port must be an integer between 1024 and 65535",
+            "Crates-Step-Up-Port must be an integer between 1024 and 65535",
         ));
     }
     Ok(Some(port))
@@ -690,7 +705,7 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
 pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Option<String>> {
     let Some(secret) = parts
         .headers
-        .get(CRATES_MFA_CALLBACK_SECRET_HEADER)
+        .get(CRATES_STEP_UP_CALLBACK_SECRET_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -704,7 +719,7 @@ pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Optio
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
     if !valid_length || !valid_characters {
         return Err(bad_request(
-            "Crates-MFA-Callback-Secret must be 32 to 128 URL-safe characters",
+            "Crates-Step-Up-Callback-Secret must be 32 to 128 URL-safe characters",
         ));
     }
     Ok(Some(secret.to_owned()))

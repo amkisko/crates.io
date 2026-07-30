@@ -10,9 +10,9 @@ export async function recoverLocalhostCallbackUrl(
   callbackSecret: string,
   fetchImpl: Fetch = globalThis.fetch,
 ): Promise<string | null> {
-  let response = await fetchImpl(`/api/v1/mfa/challenges/${challengeId}/recover`, {
+  let response = await fetchImpl(`/api/v1/auth/challenges/${challengeId}/recover`, {
     method: 'POST',
-    headers: { 'Crates-MFA-Callback-Secret': callbackSecret },
+    headers: { 'Crates-Step-Up-Callback-Secret': callbackSecret },
   });
   // The OTP was already consumed, so the original Cargo mutation completed.
   if (response.status === 400) return null;
@@ -38,7 +38,8 @@ export async function deliverLocalhostCallback(
     port >= MIN_CALLBACK_PORT &&
     port <= MAX_CALLBACK_PORT &&
     url.pathname === '/' &&
-    Boolean(url.searchParams.get('code'));
+    Boolean(url.searchParams.get('code')) &&
+    Boolean(url.searchParams.get('state'));
 
   if (!valid) {
     throw new Error('Invalid Cargo callback URL');

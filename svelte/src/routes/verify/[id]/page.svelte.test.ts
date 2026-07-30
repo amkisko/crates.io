@@ -11,20 +11,20 @@ import PageTestWrapper from './PageTestWrapper.svelte';
 const callback = vi.hoisted(() => vi.fn());
 
 vi.mock('$app/state', () => ({
-  page: { params: { id: 'mfa_test' }, url: new URL('https://crates.io/mfa/verify/mfa_test') },
+  page: { params: { id: 'stp_test' }, url: new URL('https://crates.io/verify/stp_test') },
 }));
 
 vi.mock('./localhost-callback', () => ({
   deliverLocalhostCallback: callback,
 }));
 
-const callbackUrl = 'http://127.0.0.1:34567/?code=TestOtp1';
+const callbackUrl = 'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef';
 
 function installApiHandlers(worker: SetupWorker) {
   worker.use(
-    http.get('/api/v1/mfa/challenges/mfa_test', () =>
+    http.get('/api/v1/auth/challenges/stp_test', () =>
       HttpResponse.json({
-        operation_id: 'mfa_test',
+        challenge_id: 'stp_test',
         status: 'pending',
         acknowledged: false,
         operation: 'publish',
@@ -34,7 +34,7 @@ function installApiHandlers(worker: SetupWorker) {
         localhost_port: null,
       }),
     ),
-    http.post('/api/v1/mfa/challenges/mfa_test/start', () =>
+    http.post('/api/v1/auth/challenges/stp_test/start', () =>
       HttpResponse.json({
         public_key: {
           challenge: 'AQ',
@@ -42,11 +42,11 @@ function installApiHandlers(worker: SetupWorker) {
         },
       }),
     ),
-    http.post('/api/v1/mfa/challenges/mfa_test/finish', () =>
+    http.post('/api/v1/auth/challenges/stp_test/finish', () =>
       HttpResponse.json({
         otp: 'TestOtp1',
         localhost_callback_url: callbackUrl,
-        grant_expires_at: null,
+        grant_expires_at: '2099-01-01T00:00:00Z',
       }),
     ),
   );
@@ -69,7 +69,7 @@ function mockPasskey() {
   return vi.spyOn(navigator.credentials, 'get').mockResolvedValue(credential);
 }
 
-describe('/mfa/verify/[id]', () => {
+describe('/verify/[id]', () => {
   beforeEach(() => {
     callback.mockReset();
   });

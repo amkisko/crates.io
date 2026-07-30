@@ -36,6 +36,44 @@ async fn list_empty() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn disabled_feed_does_not_collect_or_expose_events() {
+    let (app, _, user) = TestApp::init()
+        .with_config(|config| config.security_activity_enabled = false)
+        .with_user()
+        .await;
+    let mut conn = app.db_conn().await;
+
+    let body: &[u8] = br#"{ "api_token": { "name": "not-recorded" } }"#;
+    let response = user.put::<()>("/api/v1/me/tokens", body).await;
+    assert_eq!(response.status(), 200);
+
+    let count: i64 = user_security_events::table
+        .filter(user_security_events::user_id.eq(user.as_model().id))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    NewUserSecurityEvent::new(
+        user.as_model().id,
+        SecurityEventType::SessionLogin,
+        None,
+        None,
+        json!({}),
+    )
+    .insert(&mut conn)
+    .await
+    .unwrap();
+
+    let response = user.get::<()>("/api/v1/me/security_events").await;
+    assert_eq!(
+        response.text(),
+        r#"{"security_events":[],"meta":{"total":0}}"#
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn create_token_records_security_event() {
     let (app, _, user) = TestApp::init().with_user().await;
     let mut conn = app.db_conn().await;

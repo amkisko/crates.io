@@ -6,25 +6,27 @@ describe('recoverLocalhostCallbackUrl', () => {
   it('recovers a lost finish response with the fragment-held secret', async () => {
     let fetchMock = vi.fn().mockResolvedValue(
       Response.json(
-        { localhost_callback_url: 'http://127.0.0.1:34567/?code=TestOtp1' },
+        {
+          localhost_callback_url: 'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef',
+        },
         {
           status: 200,
         },
       ),
     );
 
-    await expect(recoverLocalhostCallbackUrl('mfa_test', 'callback-secret', fetchMock)).resolves.toBe(
-      'http://127.0.0.1:34567/?code=TestOtp1',
+    await expect(recoverLocalhostCallbackUrl('stp_test', 'callback-secret', fetchMock)).resolves.toBe(
+      'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef',
     );
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/mfa/challenges/mfa_test/recover', {
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/auth/challenges/stp_test/recover', {
       method: 'POST',
-      headers: { 'Crates-MFA-Callback-Secret': 'callback-secret' },
+      headers: { 'Crates-Step-Up-Callback-Secret': 'callback-secret' },
     });
   });
 
   it('treats an already-consumed OTP as completed', async () => {
     let fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 400 }));
-    await expect(recoverLocalhostCallbackUrl('mfa_test', 'callback-secret', fetchMock)).resolves.toBeNull();
+    await expect(recoverLocalhostCallbackUrl('stp_test', 'callback-secret', fetchMock)).resolves.toBeNull();
   });
 
   it('reports recovery errors from the server', async () => {
@@ -36,7 +38,7 @@ describe('recoverLocalhostCallbackUrl', () => {
         },
       ),
     );
-    await expect(recoverLocalhostCallbackUrl('mfa_test', 'wrong-secret', fetchMock)).rejects.toThrow(
+    await expect(recoverLocalhostCallbackUrl('stp_test', 'wrong-secret', fetchMock)).rejects.toThrow(
       'Challenge not found or expired',
     );
   });
@@ -51,12 +53,15 @@ describe('deliverLocalhostCallback', () => {
       src: '',
     } as Pick<HTMLImageElement, 'addEventListener' | 'src'>;
 
-    let delivery = deliverLocalhostCallback('http://127.0.0.1:34567/?code=TestOtp1', () => image);
+    let delivery = deliverLocalhostCallback(
+      'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef',
+      () => image,
+    );
     await vi.waitFor(() => expect(listeners.get('load')).toBeTypeOf('function'));
     listeners.get('load')!(new Event('load'));
 
     await expect(delivery).resolves.toBeUndefined();
-    expect(image.src).toBe('http://127.0.0.1:34567/?code=TestOtp1');
+    expect(image.src).toBe('http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef');
   });
 
   it.each([
@@ -65,6 +70,7 @@ describe('deliverLocalhostCallback', () => {
     'http://127.0.0.1:80/?code=TestOtp1',
     'http://127.0.0.1:34567/other?code=TestOtp1',
     'http://127.0.0.1:34567/',
+    'http://127.0.0.1:34567/?code=TestOtp1',
   ])('rejects an unsafe callback URL: %s', async callbackUrl => {
     let imageFactory = vi.fn();
     await expect(deliverLocalhostCallback(callbackUrl, imageFactory)).rejects.toThrow('Invalid Cargo callback URL');
@@ -79,7 +85,10 @@ describe('deliverLocalhostCallback', () => {
       src: '',
     } as Pick<HTMLImageElement, 'addEventListener' | 'src'>;
 
-    let delivery = deliverLocalhostCallback('http://127.0.0.1:34567/?code=TestOtp1', () => image);
+    let delivery = deliverLocalhostCallback(
+      'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef',
+      () => image,
+    );
     await vi.waitFor(() => expect(listeners.get('error')).toBeTypeOf('function'));
     listeners.get('error')!(new Event('error'));
 

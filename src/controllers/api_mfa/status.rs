@@ -3,7 +3,7 @@ use super::notify::notify_api_mfa_settings_changed;
 use super::webauthn_util::complete_passkey_authentication;
 use crate::app::AppState;
 use crate::auth::AuthCheck;
-use crate::models::{ApiMfaGrant, WebauthnCredential};
+use crate::models::{ApiMfaChallenge, ApiMfaGrant, WebauthnCeremonyState, WebauthnCredential};
 use crate::schema::users;
 use crate::util::errors::{AppResult, bad_request};
 use crate::util::no_store;
@@ -70,7 +70,7 @@ pub async fn get_api_mfa_status(
     let user = auth.user();
 
     let credentials = WebauthnCredential::for_user(user.id, &conn).await?;
-    let grant = ApiMfaGrant::active_for_user(user.id, &conn).await?;
+    let grant = ApiMfaGrant::active_browser_for_user(user.id, &conn).await?;
     let has_verified_email = user.verified_email(&conn).await?.is_some();
 
     Ok((
@@ -174,6 +174,8 @@ pub async fn update_api_mfa_status(
             }
         }
         ApiMfaGrant::delete_all_for_user(user.id, &conn).await?;
+        ApiMfaChallenge::clear_auth_state_for_user(user.id, &conn).await?;
+        WebauthnCeremonyState::delete_all_for_user(user.id, &conn).await?;
     }
 
     let previously_enabled = user.api_mfa_enabled;
@@ -217,7 +219,7 @@ pub async fn update_api_mfa_status(
             req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
             serde_json::json!({}),
         )
-        .record(&mut conn)
+        .record_if(app.config.security_activity_enabled, &mut conn)
         .await;
 
         notify_api_mfa_settings_changed(

@@ -99,7 +99,8 @@ pub async fn finish_api_mfa_authorize(
     complete_passkey_authentication(user.id, &body.credential, &app.config.webauthn, &mut conn)
         .await?;
 
-    // Wildcard grant for stock cargo after an explicit settings-page authorize.
+    // Browser-cookie wildcard after explicit settings-page authorization.
+    // API-token requests require exact token-bound operation grants.
     let grant = NewApiMfaGrant::for_user(user.id).insert(&conn).await?;
 
     use crate::middleware::real_ip::RealIp;
@@ -111,7 +112,7 @@ pub async fn finish_api_mfa_authorize(
         req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
         serde_json::json!({}),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     Ok((

@@ -80,6 +80,7 @@ impl ApiToken {
     pub async fn find_by_api_token(
         conn: &mut AsyncPgConnection,
         token: &HashedToken,
+        record_security_activity: bool,
     ) -> QueryResult<ApiToken> {
         let tokens = api_tokens::table
             .filter(api_tokens::revoked.eq(false))
@@ -111,7 +112,7 @@ impl ApiToken {
             token.id,
             serde_json::json!({ "token_name": token.name }),
         )
-        .record(conn)
+        .record_if(record_security_activity, conn)
         .await;
 
         Ok(token)

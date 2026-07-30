@@ -655,7 +655,7 @@ expression: document
           },
           "metadata": {
             "$ref": "#/components/schemas/Value",
-            "description": "Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`."
+            "description": "Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `challenge_id`."
           }
         },
         "required": [
@@ -1809,6 +1809,349 @@ expression: document
         "summary": "Begin authentication flow.",
         "tags": [
           "session"
+        ]
+      }
+    },
+    "/api/v1/auth/challenges": {
+      "post": {
+        "description": "Prefer letting dangerous endpoints auto-create challenges; this endpoint is for\nexplicit preflight handshakes.",
+        "operationId": "create_api_mfa_challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "crate_name": {
+                    "description": "Optional crate name associated with the operation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "operation": {
+                    "description": "Dangerous operation label. Defaults to `manual`.\n\nAllowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,\n`change-trusted-publishing`, `delete-crate`, `manual`.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "description": "Optional localhost port (1024–65535) for OTP delivery to the CLI.\n\nRequires a valid `Crates-Step-Up-Callback-Secret` header. Polling remains\navailable as a fallback when callback delivery fails.",
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "challenge_id": {
+                      "description": "Opaque step-up challenge identifier.",
+                      "type": "string"
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "poll_url": {
+                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "type": "string"
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls of `poll_url`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "verification_url": {
+                      "description": "Browser URL where the user must complete passkey verification.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "challenge_id",
+                    "verification_url",
+                    "poll_url",
+                    "expires_at",
+                    "recommended_poll_interval_secs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ],
+        "summary": "Create an API MFA challenge for a CLI client (token auth).",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/challenges/{id}": {
+      "get": {
+        "description": "The opaque `challenge_id` is a capability URL: the verify page can load\nmetadata without a crates.io cookie. API token clients (CLI poll loops) are\nrate-limited per user; unauthenticated browsers are rate-limited per IP.\nAside from rate-limit bucket updates this handler is read-only.",
+        "operationId": "get_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Challenge ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "acknowledged": {
+                      "description": "True once the browser passkey ceremony has acknowledged the operation.",
+                      "type": "boolean"
+                    },
+                    "challenge_id": {
+                      "description": "Opaque step-up challenge identifier.",
+                      "type": "string"
+                    },
+                    "crate_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "localhost_port": {
+                      "format": "int32",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "operation_summary": {
+                      "description": "Server-generated description of the exact mutation being approved.",
+                      "type": "string"
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls while status is `pending`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "description": "`pending` until passkey succeeds, then `acknowledged`.",
+                      "type": "string"
+                    },
+                    "verified": {
+                      "description": "Alias of `acknowledged` for older clients.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "challenge_id",
+                    "status",
+                    "acknowledged",
+                    "verified",
+                    "operation",
+                    "operation_summary",
+                    "expires_at",
+                    "recommended_poll_interval_secs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Poll an API MFA challenge until the browser acknowledges it.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/challenges/{id}/finish": {
+      "post": {
+        "description": "Unauthenticated: passkey assertion for the challenge owner's credentials is\nthe only factor (no crates.io cookie). `cargo login` must already have\nminted the API token that created this challenge.",
+        "operationId": "finish_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Challenge ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "credential": {}
+                },
+                "required": [
+                  "credential"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "challenge_id": {
+                      "type": "string"
+                    },
+                    "grant_expires_at": {
+                      "description": "Expiry of the exact token-and-operation-scoped polling fallback grant.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "localhost_callback_url": {
+                      "description": "Optional URL the browser can hit to deliver the OTP to a local CLI listener.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "otp": {
+                      "description": "One-time password for the CLI to send as `Crates-OTP`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "otp",
+                    "grant_expires_at",
+                    "challenge_id"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Finish challenge verification, issue OTP + grant.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/challenges/{id}/recover": {
+      "post": {
+        "description": "The callback secret lives only in the verification URL fragment and request\nheader. The server stores only its hash.",
+        "operationId": "recover_api_mfa_challenge_callback",
+        "parameters": [
+          {
+            "description": "Challenge ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "challenge_id": {
+                      "type": "string"
+                    },
+                    "localhost_callback_url": {
+                      "description": "URL for the browser to retry against the waiting loopback listener.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "localhost_callback_url",
+                    "challenge_id"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Recover a verified callback after a browser reload or transient delivery failure.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/challenges/{id}/start": {
+      "post": {
+        "description": "Unauthenticated: possession of the opaque operation id is the capability.\nPasskeys are loaded for the challenge owner (no crates.io cookie session).",
+        "operationId": "start_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Challenge ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "public_key": {}
+                  },
+                  "required": [
+                    "public_key"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Start passkey authentication for a pending challenge.",
+        "tags": [
+          "users"
         ]
       }
     },
@@ -5494,351 +5837,6 @@ expression: document
         "summary": "List versions of crates that the authenticated user follows.",
         "tags": [
           "versions"
-        ]
-      }
-    },
-    "/api/v1/mfa/challenges": {
-      "post": {
-        "description": "Prefer letting dangerous endpoints auto-create challenges; this endpoint is for\nexplicit preflight handshakes.",
-        "operationId": "create_api_mfa_challenge",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "crate_name": {
-                    "description": "Optional crate name associated with the operation.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "operation": {
-                    "description": "Dangerous operation label. Defaults to `manual`.\n\nAllowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,\n`change-trusted-publishing`, `delete-crate`, `manual`.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "port": {
-                    "description": "Optional localhost port (1024–65535) for RubyGems-style OTP delivery to the CLI.",
-                    "format": "int32",
-                    "type": [
-                      "integer",
-                      "null"
-                    ]
-                  }
-                },
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "expires_at": {
-                      "format": "date-time",
-                      "type": "string"
-                    },
-                    "operation_id": {
-                      "description": "Opaque operation / transaction identifier.",
-                      "type": "string"
-                    },
-                    "poll_url": {
-                      "description": "URL the CLI should poll until `acknowledged` is true.",
-                      "type": "string"
-                    },
-                    "recommended_poll_interval_secs": {
-                      "description": "Suggested seconds between CLI polls of `poll_url`.",
-                      "format": "int64",
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "verification_url": {
-                      "description": "Browser URL where the user must complete passkey verification.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "operation_id",
-                    "verification_url",
-                    "poll_url",
-                    "expires_at",
-                    "recommended_poll_interval_secs"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "api_token": []
-          }
-        ],
-        "summary": "Create an API MFA challenge for a CLI client (token auth).",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/mfa/challenges/{id}": {
-      "get": {
-        "description": "The opaque `operation_id` is a capability URL: the verify page can load\nmetadata without a crates.io cookie. API token clients (CLI poll loops) are\nrate-limited per user; unauthenticated browsers are rate-limited per IP.\nAside from rate-limit bucket updates this handler is read-only.",
-        "operationId": "get_api_mfa_challenge",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "acknowledged": {
-                      "description": "True once the browser passkey ceremony has acknowledged the operation.",
-                      "type": "boolean"
-                    },
-                    "crate_name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "expires_at": {
-                      "format": "date-time",
-                      "type": "string"
-                    },
-                    "localhost_port": {
-                      "format": "int32",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "operation": {
-                      "type": "string"
-                    },
-                    "operation_id": {
-                      "description": "Opaque operation / transaction identifier.",
-                      "type": "string"
-                    },
-                    "operation_summary": {
-                      "description": "Server-generated description of the exact mutation being approved.",
-                      "type": "string"
-                    },
-                    "recommended_poll_interval_secs": {
-                      "description": "Suggested seconds between CLI polls while status is `pending`.",
-                      "format": "int64",
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "status": {
-                      "description": "`pending` until passkey succeeds, then `acknowledged`.",
-                      "type": "string"
-                    },
-                    "verified": {
-                      "description": "Alias of `acknowledged` for older clients.",
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "operation_id",
-                    "status",
-                    "acknowledged",
-                    "verified",
-                    "operation",
-                    "operation_summary",
-                    "expires_at",
-                    "recommended_poll_interval_secs"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Poll an API MFA challenge until the browser acknowledges it.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/mfa/challenges/{id}/finish": {
-      "post": {
-        "description": "Unauthenticated: passkey assertion for the challenge owner's credentials is\nthe only factor (no crates.io cookie). `cargo login` must already have\nminted the API token that created this challenge.",
-        "operationId": "finish_api_mfa_challenge",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "properties": {
-                  "credential": {}
-                },
-                "required": [
-                  "credential"
-                ],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "grant_expires_at": {
-                      "description": "Present when a scoped grant was issued (stock cargo retry without OTP).\n\nOmitted when `localhost_port` was set — the CLI is expected to use the OTP callback.",
-                      "format": "date-time",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "localhost_callback_url": {
-                      "description": "Optional URL the browser can hit to deliver the OTP to a local CLI listener.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "operation_id": {
-                      "type": "string"
-                    },
-                    "otp": {
-                      "description": "One-time password for the CLI to send as `Crates-OTP`.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "otp",
-                    "operation_id"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Finish challenge verification, issue OTP + grant.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/mfa/challenges/{id}/recover": {
-      "post": {
-        "description": "The callback secret lives only in the verification URL fragment and request\nheader. The server stores only its hash.",
-        "operationId": "recover_api_mfa_challenge_callback",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "localhost_callback_url": {
-                      "description": "URL for the browser to retry against the waiting loopback listener.",
-                      "type": "string"
-                    },
-                    "operation_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "localhost_callback_url",
-                    "operation_id"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Recover a verified callback after a browser reload or transient delivery failure.",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/v1/mfa/challenges/{id}/start": {
-      "post": {
-        "description": "Unauthenticated: possession of the opaque operation id is the capability.\nPasskeys are loaded for the challenge owner (no crates.io cookie session).",
-        "operationId": "start_api_mfa_challenge",
-        "parameters": [
-          {
-            "description": "Operation ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "public_key": {}
-                  },
-                  "required": [
-                    "public_key"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Start passkey authentication for a pending challenge.",
-        "tags": [
-          "users"
         ]
       }
     },

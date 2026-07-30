@@ -49,7 +49,7 @@ pub async fn confirm_user_email(
             ip,
             serde_json::json!({}),
         )
-        .record(&mut conn)
+        .record_if(state.config.security_activity_enabled, &mut conn)
         .await;
     }
 

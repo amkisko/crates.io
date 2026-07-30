@@ -21,7 +21,7 @@ pub async fn run(opts: Opts) -> anyhow::Result<()> {
         .context("Failed to connect to the database")?;
 
     let token = HashedToken::parse(&opts.api_token)?;
-    let token = ApiToken::find_by_api_token(&mut conn, &token).await?;
+    let token = ApiToken::find_by_api_token(&mut conn, &token, false).await?;
     let user = User::find(&conn, token.user_id).await?;
     println!("The token belongs to user {}", user.gh_login);
     Ok(())

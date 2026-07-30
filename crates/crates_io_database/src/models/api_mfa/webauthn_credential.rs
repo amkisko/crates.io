@@ -61,6 +61,21 @@ impl WebauthnCredential {
             .optional()
     }
 
+    /// Finds a credential id belonging to `user_id`.
+    pub async fn find_by_credential_id_for_user(
+        credential_id: &[u8],
+        user_id: i32,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Option<Self>> {
+        webauthn_credentials::table
+            .filter(webauthn_credentials::credential_id.eq(credential_id))
+            .filter(webauthn_credentials::user_id.eq(user_id))
+            .select(Self::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
     /// Deletes a credential belonging to `user_id`.
     pub async fn delete_for_user(
         id: i64,

@@ -14,7 +14,7 @@ pub const DEFAULT_CHALLENGE_DURATION_SECS: i64 = 5 * 60;
 /// Maximum non-expired pending challenges a user may hold at once.
 pub const MAX_PENDING_CHALLENGES_PER_USER: i64 = 10;
 
-const CHALLENGE_ID_PREFIX: &str = "mfa_";
+const CHALLENGE_ID_PREFIX: &str = "stp_";
 const CHALLENGE_ID_LENGTH: usize = 32;
 const OTP_LENGTH: usize = 8;
 
@@ -66,7 +66,7 @@ pub struct NewApiMfaChallengeOperation {
 }
 
 impl ApiMfaChallenge {
-    /// Generates a new opaque operation / transaction identifier.
+    /// Generates a new opaque step-up challenge identifier.
     pub fn generate_id() -> String {
         format!(
             "{CHALLENGE_ID_PREFIX}{}",
@@ -228,6 +228,25 @@ impl ApiMfaChallenge {
         Ok(updated > 0)
     }
 
+    /// Clears in-progress `WebAuthn` state from every pending challenge for a user.
+    ///
+    /// Passkey deletion and MFA disablement use this to revoke ceremonies that
+    /// were created from an older credential set.
+    pub async fn clear_auth_state_for_user(
+        user_id: i32,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<usize> {
+        diesel::update(
+            api_mfa_challenges::table
+                .filter(api_mfa_challenges::user_id.eq(user_id))
+                .filter(api_mfa_challenges::verified_at.is_null())
+                .filter(api_mfa_challenges::auth_state_json.is_not_null()),
+        )
+        .set(api_mfa_challenges::auth_state_json.eq(None::<JsonValue>))
+        .execute(&mut conn)
+        .await
+    }
+
     /// Atomically acknowledges the challenge and stores the hashed OTP.
     ///
     /// Returns `true` only for the first successful acknowledgment (`verified_at` was null).
@@ -290,6 +309,45 @@ impl ApiMfaChallenge {
         };
 
         Ok(updated > 0)
+    }
+
+    /// Marks callback delivery complete when the client used the scoped poll grant.
+    ///
+    /// Hybrid challenges can finish through either channel. Once the original
+    /// mutation succeeds through polling, callback recovery must stop returning
+    /// an OTP to a listener that Cargo has already closed.
+    pub async fn mark_callback_completed_by_grant(
+        user_id: i32,
+        api_token_id: i32,
+        operation: &str,
+        crate_name: Option<&str>,
+        mutation_fingerprint: &[u8],
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<usize> {
+        let base = api_mfa_challenges::table
+            .filter(api_mfa_challenges::user_id.eq(user_id))
+            .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
+            .filter(api_mfa_challenges::operation.eq(operation))
+            .filter(api_mfa_challenges::mutation_fingerprint.eq(mutation_fingerprint))
+            .filter(api_mfa_challenges::localhost_port.is_not_null())
+            .filter(api_mfa_challenges::verified_at.is_not_null())
+            .filter(api_mfa_challenges::otp_consumed_at.is_null())
+            .filter(api_mfa_challenges::expires_at.gt(now));
+
+        match crate_name {
+            Some(name) => {
+                diesel::update(base.filter(api_mfa_challenges::crate_name.eq(name)))
+                    .set(api_mfa_challenges::otp_consumed_at.eq(Utc::now()))
+                    .execute(&mut conn)
+                    .await
+            }
+            None => {
+                diesel::update(base.filter(api_mfa_challenges::crate_name.is_null()))
+                    .set(api_mfa_challenges::otp_consumed_at.eq(Utc::now()))
+                    .execute(&mut conn)
+                    .await
+            }
+        }
     }
 }
 

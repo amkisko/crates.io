@@ -27,6 +27,7 @@ use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutLayer};
 
 use crate::Env;
 use crate::app::AppState;
+use crate::auth::SecurityActivityEnabled;
 
 pub fn apply_axum_middleware(state: AppState, router: Router<()>) -> Router {
     let config = &state.config;
@@ -82,6 +83,9 @@ pub fn apply_axum_middleware(state: AppState, router: Router<()>) -> Router {
         .layer(conditional_layer(config.frontend.serve_html, || {
             from_fn_with_state(state.clone(), frontend_html::serve)
         }))
+        .layer(AddExtensionLayer::new(SecurityActivityEnabled(
+            config.security_activity_enabled,
+        )))
         .layer(AddExtensionLayer::new(state.clone()));
 
     router

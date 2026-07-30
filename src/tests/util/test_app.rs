@@ -600,6 +600,7 @@ fn simple_config() -> config::Server {
         disable_token_creation: None,
         cli_login_enabled: true,
         api_mfa_enforcement_enabled: true,
+        security_activity_enabled: true,
         banner_message: None,
         features: FeaturesConfig {
             index_include_pubtime: false,

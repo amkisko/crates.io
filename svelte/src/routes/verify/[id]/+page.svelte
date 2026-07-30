@@ -7,7 +7,7 @@
   import { deliverLocalhostCallback } from './localhost-callback';
 
   interface ChallengeMeta {
-    operation_id: string;
+    challenge_id: string;
     status: string;
     acknowledged: boolean;
     operation: string;
@@ -37,7 +37,7 @@
     loadError = null;
     missingCallbackSecret = false;
     try {
-      let response = await fetch(`/api/v1/mfa/challenges/${challengeId}`);
+      let response = await fetch(`/api/v1/auth/challenges/${challengeId}`);
       if (!response.ok) {
         let body = await response.json().catch(() => null);
         throw new Error(body?.errors?.[0]?.detail ?? 'Challenge not found or expired');
@@ -72,7 +72,7 @@
 
     busy = true;
     try {
-      let start = await fetch(`/api/v1/mfa/challenges/${challengeId}/start`, {
+      let start = await fetch(`/api/v1/auth/challenges/${challengeId}/start`, {
         method: 'POST',
       });
       if (!start.ok) {
@@ -88,8 +88,8 @@
       }
 
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (callbackSecret) headers['Crates-MFA-Callback-Secret'] = callbackSecret;
-      let finish = await fetch(`/api/v1/mfa/challenges/${challengeId}/finish`, {
+      if (callbackSecret) headers['Crates-Step-Up-Callback-Secret'] = callbackSecret;
+      let finish = await fetch(`/api/v1/auth/challenges/${challengeId}/finish`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ credential: serializeAssertion(credential) }),
@@ -116,9 +116,9 @@
   }
 
   async function recoverLocalhostCallback() {
-    let recovery = await fetch(`/api/v1/mfa/challenges/${challengeId}/recover`, {
+    let recovery = await fetch(`/api/v1/auth/challenges/${challengeId}/recover`, {
       method: 'POST',
-      headers: { 'Crates-MFA-Callback-Secret': callbackSecret! },
+      headers: { 'Crates-Step-Up-Callback-Secret': callbackSecret! },
     });
     if (!recovery.ok) {
       // A consumed OTP means Cargo already completed the original mutation.

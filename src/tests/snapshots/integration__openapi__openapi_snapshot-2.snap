@@ -655,7 +655,7 @@ expression: document
           },
           "metadata": {
             "$ref": "#/components/schemas/Value",
-            "description": "Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`."
+            "description": "Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `challenge_id`."
           }
         },
         "required": [

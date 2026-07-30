@@ -34,7 +34,7 @@ async fn register_authorize_is_cookie_only_with_soft_passkey() {
         .publish_crate(PublishBuilder::new("foo_soft_passkey", "1.0.0"))
         .await;
     assert_eq!(blocked.status(), 403);
-    assert_eq!(blocked.json()["errors"][0]["id"], "mfa_required");
+    assert_eq!(blocked.json()["errors"][0]["id"], "step_up_required");
 
     // Settings-page authorize issues a wildcard grant.
     let assertion = authenticate(&user, &mut authenticator).await;
@@ -71,25 +71,25 @@ async fn challenge_ack_with_soft_passkey_allows_scoped_retry() {
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
 
     register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
-    let _user = enable_api_mfa(&app, &user).await;
+    let user = enable_api_mfa(&app, &user).await;
 
     let blocked = token
         .publish_crate(PublishBuilder::new("foo_soft_challenge", "1.0.0"))
         .await;
-    let operation_id = blocked.json()["errors"][0]["operation_id"]
+    let challenge_id = blocked.json()["errors"][0]["challenge_id"]
         .as_str()
         .unwrap()
         .to_owned();
 
     // Verify page is cookie-less: capability URL + passkey (anonymous client).
     let meta = anon
-        .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
+        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
         .await
         .good();
     assert_eq!(meta["status"], "pending");
 
     let start = anon
-        .post::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}/start"), "")
+        .post::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}/start"), "")
         .await
         .good();
     let rcr = RequestChallengeResponse {
@@ -102,21 +102,27 @@ async fn challenge_ack_with_soft_passkey_allows_scoped_retry() {
 
     let finish = anon
         .post::<Value>(
-            &format!("/api/v1/mfa/challenges/{operation_id}/finish"),
+            &format!("/api/v1/auth/challenges/{challenge_id}/finish"),
             json!({ "credential": assertion }).to_string(),
         )
         .await
         .good();
     assert!(finish["otp"].as_str().unwrap().len() >= 8);
-    assert_eq!(finish["operation_id"], operation_id);
+    assert_eq!(finish["challenge_id"], challenge_id);
     assert!(
         finish["grant_expires_at"].is_string(),
         "poll/grant path should issue a scoped grant when no localhost port is set"
     );
     assert!(finish["localhost_callback_url"].is_null());
 
+    let status = user.get::<Value>("/api/v1/me/mfa").await.good();
+    assert!(
+        status["grant_expires_at"].is_null(),
+        "token-scoped grants must not be presented as browser authorization"
+    );
+
     let ready = token
-        .get::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}"))
+        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
         .await
         .good();
     assert_eq!(ready["status"], "acknowledged");
@@ -140,24 +146,24 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
     let callback_secret = "0123456789abcdef0123456789abcdef";
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-MFA-Port", "34567");
-    request.header("Crates-MFA-Callback-Secret", callback_secret);
+    request.header("Crates-Step-Up-Port", "34567");
+    request.header("Crates-Step-Up-Callback-Secret", callback_secret);
     let blocked = token.run::<Value>(request.with_body(body.clone())).await;
     assert_eq!(blocked.status(), 403);
-    let operation_id = blocked.json()["errors"][0]["operation_id"]
+    let challenge_id = blocked.json()["errors"][0]["challenge_id"]
         .as_str()
         .unwrap()
         .to_owned();
 
     // A later retry can refresh the stored localhost port on the pending challenge.
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-MFA-Port", "34568");
-    request.header("Crates-MFA-Callback-Secret", callback_secret);
+    request.header("Crates-Step-Up-Port", "34568");
+    request.header("Crates-Step-Up-Callback-Secret", callback_secret);
     let blocked_again = token.run::<Value>(request.with_body(body.clone())).await;
     assert_eq!(blocked_again.status(), 403);
     assert_eq!(
-        blocked_again.json()["errors"][0]["operation_id"],
-        operation_id
+        blocked_again.json()["errors"][0]["challenge_id"],
+        challenge_id
     );
 
     // The token alone cannot downgrade callback mode to a polling grant.
@@ -169,24 +175,24 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         )
         .await;
     assert_eq!(downgrade.status(), 403);
-    assert_eq!(downgrade.json()["errors"][0]["operation_id"], operation_id);
+    assert_eq!(downgrade.json()["errors"][0]["challenge_id"], challenge_id);
 
     // A different callback secret cannot replace the bound port.
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-MFA-Port", "34569");
+    request.header("Crates-Step-Up-Port", "34569");
     request.header(
-        "Crates-MFA-Callback-Secret",
+        "Crates-Step-Up-Callback-Secret",
         "abcdef0123456789abcdef0123456789",
     );
     let wrong_secret = token.run::<Value>(request.with_body(body)).await;
     assert_eq!(wrong_secret.status(), 403);
     assert_eq!(
-        wrong_secret.json()["errors"][0]["operation_id"],
-        operation_id
+        wrong_secret.json()["errors"][0]["challenge_id"],
+        challenge_id
     );
 
     let start = anon
-        .post::<Value>(&format!("/api/v1/mfa/challenges/{operation_id}/start"), "")
+        .post::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}/start"), "")
         .await
         .good();
     let rcr = RequestChallengeResponse {
@@ -199,9 +205,9 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
 
     let mut finish_request = anon.request_builder(
         Method::POST,
-        &format!("/api/v1/mfa/challenges/{operation_id}/finish"),
+        &format!("/api/v1/auth/challenges/{challenge_id}/finish"),
     );
-    finish_request.header("Crates-MFA-Callback-Secret", callback_secret);
+    finish_request.header("Crates-Step-Up-Callback-Secret", callback_secret);
     let finish = anon
         .run::<Value>(
             finish_request.with_body(json!({ "credential": assertion }).to_string().into()),
@@ -212,52 +218,44 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     assert!(otp.len() >= 8);
     assert_eq!(
         finish["localhost_callback_url"],
-        format!("http://127.0.0.1:34568/?code={otp}")
+        format!("http://127.0.0.1:34568/?code={otp}&state={callback_secret}")
     );
     assert!(
-        finish["grant_expires_at"].is_null(),
-        "localhost OTP path must not issue a scoped grant"
+        finish["grant_expires_at"].is_string(),
+        "callback challenges must retain the scoped polling fallback grant"
     );
 
     // A reload/lost finish response can recover the same OTP with the URL-fragment secret.
     let missing_secret = anon
         .post::<Value>(
-            &format!("/api/v1/mfa/challenges/{operation_id}/recover"),
+            &format!("/api/v1/auth/challenges/{challenge_id}/recover"),
             "",
         )
         .await;
     assert_eq!(missing_secret.status(), 404);
     let mut recovery_request = anon.request_builder(
         Method::POST,
-        &format!("/api/v1/mfa/challenges/{operation_id}/recover"),
+        &format!("/api/v1/auth/challenges/{challenge_id}/recover"),
     );
-    recovery_request.header("Crates-MFA-Callback-Secret", callback_secret);
+    recovery_request.header("Crates-Step-Up-Callback-Secret", callback_secret);
     let recovered = anon.run::<Value>(recovery_request).await.good();
     assert_eq!(
         recovered["localhost_callback_url"],
-        format!("http://127.0.0.1:34568/?code={otp}")
+        format!("http://127.0.0.1:34568/?code={otp}&state={callback_secret}")
     );
 
-    // Retry without OTP must fail (no grant).
-    let still_blocked = token
+    // Poll fallback: retry without OTP succeeds through the exact scoped grant.
+    let published_with_grant = token
         .publish_crate(PublishBuilder::new("foo_soft_localhost", "1.0.0"))
         .await;
-    assert_eq!(still_blocked.status(), 403);
-
-    let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
-    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-OTP", &otp);
-    let published = token
-        .run::<crates_io::views::GoodCrate>(request.with_body(body))
-        .await;
+    assert_eq!(published_with_grant.status(), 200);
     token.app().run_pending_background_jobs().await;
-    assert_eq!(published.status(), 200);
 
     let mut consumed_recovery = anon.request_builder(
         Method::POST,
-        &format!("/api/v1/mfa/challenges/{operation_id}/recover"),
+        &format!("/api/v1/auth/challenges/{challenge_id}/recover"),
     );
-    consumed_recovery.header("Crates-MFA-Callback-Secret", callback_secret);
+    consumed_recovery.header("Crates-Step-Up-Callback-Secret", callback_secret);
     let consumed_recovery = anon.run::<Value>(consumed_recovery).await;
     assert_eq!(consumed_recovery.status(), 400);
 
@@ -471,6 +469,60 @@ async fn delete_passkey_requires_step_up_when_mfa_enabled() {
     let status = user.get::<Value>("/api/v1/me/mfa").await.good();
     assert!(status["credentials"].as_array().unwrap().is_empty());
     assert!(status["enabled"].as_bool().unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_passkey_revokes_in_flight_operation_ceremony() {
+    let (app, anon, user, token) = TestApp::full().with_token().await;
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+
+    register_passkey(&app, &user, &mut authenticator, "soft-passkey", None).await;
+    let user = enable_api_mfa(&app, &user).await;
+
+    let blocked = token
+        .publish_crate(PublishBuilder::new("foo_revoked_ceremony", "1.0.0"))
+        .await;
+    let challenge_id = blocked.json()["errors"][0]["challenge_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let start = anon
+        .post::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}/start"), "")
+        .await
+        .good();
+    let assertion = authenticator
+        .do_authentication(
+            Url::parse(TEST_ORIGIN).unwrap(),
+            RequestChallengeResponse {
+                public_key: serde_json::from_value(start["public_key"].clone()).unwrap(),
+                mediation: None,
+            },
+        )
+        .expect("soft passkey authentication");
+
+    let status = user.get::<Value>("/api/v1/me/mfa").await.good();
+    let credential_id = status["credentials"][0]["id"].as_i64().unwrap();
+    let email_code = request_email_code(&app, &user).await;
+    user.delete_with_body::<Value>(
+        &format!("/api/v1/me/mfa/passkeys/{credential_id}"),
+        json!({ "email_code": email_code }).to_string(),
+    )
+    .await
+    .good();
+
+    let finish = anon
+        .post::<Value>(
+            &format!("/api/v1/auth/challenges/{challenge_id}/finish"),
+            json!({ "credential": assertion }).to_string(),
+        )
+        .await;
+    assert_eq!(finish.status(), 400);
+    assert!(
+        finish.json()["errors"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("has not been started")
+    );
 }
 
 async fn enable_api_mfa(app: &TestApp, user: &MockCookieUser) -> MockCookieUser {

@@ -221,7 +221,7 @@ pub async fn approve_cli_login(
         session.client_ip.clone(),
         serde_json::json!({ "token_name": name }),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     Ok((

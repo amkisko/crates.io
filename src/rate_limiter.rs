@@ -51,6 +51,8 @@ pg_enum! {
         TokenRevoke = 11,
         // High-cap aggregate protection across unauthenticated MFA capability callers.
         ApiMfaChallengeAggregate = 12,
+        // Pre-authorization publish request/body protection, keyed by token and source IP.
+        PublishRequest = 13,
     }
 }
 
@@ -77,6 +79,9 @@ impl LimitedAction {
             // Capability/IP buckets are the primary limiter; this only bounds
             // distributed aggregate traffic for one challenge owner.
             LimitedAction::ApiMfaChallengeAggregate => 1,
+            // Allows normal retries and short release bursts while bounding
+            // repeated maximum-size uploads before step-up completes.
+            LimitedAction::PublishRequest => 2,
         }
     }
 
@@ -96,6 +101,7 @@ impl LimitedAction {
             LimitedAction::TokenCreate => 10,
             LimitedAction::TokenRevoke => 20,
             LimitedAction::ApiMfaChallengeAggregate => 300,
+            LimitedAction::PublishRequest => 30,
         }
     }
 
@@ -114,6 +120,7 @@ impl LimitedAction {
             LimitedAction::TokenCreate => "TOKEN_CREATE",
             LimitedAction::TokenRevoke => "TOKEN_REVOKE",
             LimitedAction::ApiMfaChallengeAggregate => "API_MFA_CHALLENGE_AGGREGATE",
+            LimitedAction::PublishRequest => "PUBLISH_REQUEST",
         }
     }
 
@@ -157,6 +164,9 @@ impl LimitedAction {
             }
             LimitedAction::ApiMfaChallengeAggregate => {
                 "This account has received too much API MFA challenge traffic in a short period of time"
+            }
+            LimitedAction::PublishRequest => {
+                "This API token has sent too many publish requests in a short period of time"
             }
         }
     }

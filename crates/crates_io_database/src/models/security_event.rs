@@ -24,7 +24,7 @@ pub const METADATA_ALLOWLIST: &[&str] = &[
     "crate_name",
     "operation",
     "passkey_name",
-    "operation_id",
+    "challenge_id",
 ];
 
 pg_enum! {
@@ -178,6 +178,13 @@ impl NewUserSecurityEvent {
                 event_type = ?self.event_type,
                 "failed to record security event: {err}"
             );
+        }
+    }
+
+    /// Best-effort insert controlled by the deployment's privacy rollout gate.
+    pub async fn record_if(&self, enabled: bool, conn: &mut AsyncPgConnection) {
+        if enabled {
+            self.record(conn).await;
         }
     }
 }

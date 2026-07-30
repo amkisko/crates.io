@@ -156,7 +156,7 @@ async fn start_approve_poll_delivers_token_once() {
     assert!(plaintext.is_none());
 
     let hashed = HashedToken::parse(&token).expect("token format");
-    let looked_up = ApiToken::find_by_api_token(&mut conn, &hashed)
+    let looked_up = ApiToken::find_by_api_token(&mut conn, &hashed, true)
         .await
         .expect("redeemed token must authenticate");
     assert_eq!(

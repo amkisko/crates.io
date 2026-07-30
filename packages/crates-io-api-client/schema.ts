@@ -108,6 +108,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/challenges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create an API MFA challenge for a CLI client (token auth).
+         * @description Prefer letting dangerous endpoints auto-create challenges; this endpoint is for
+         *     explicit preflight handshakes.
+         */
+        post: operations["create_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/challenges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Poll an API MFA challenge until the browser acknowledges it.
+         * @description The opaque `challenge_id` is a capability URL: the verify page can load
+         *     metadata without a crates.io cookie. API token clients (CLI poll loops) are
+         *     rate-limited per user; unauthenticated browsers are rate-limited per IP.
+         *     Aside from rate-limit bucket updates this handler is read-only.
+         */
+        get: operations["get_api_mfa_challenge"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/challenges/{id}/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish challenge verification, issue OTP + grant.
+         * @description Unauthenticated: passkey assertion for the challenge owner's credentials is
+         *     the only factor (no crates.io cookie). `cargo login` must already have
+         *     minted the API token that created this challenge.
+         */
+        post: operations["finish_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/challenges/{id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover a verified callback after a browser reload or transient delivery failure.
+         * @description The callback secret lives only in the verification URL fragment and request
+         *     header. The server stores only its hash.
+         */
+        post: operations["recover_api_mfa_challenge_callback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/challenges/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start passkey authentication for a pending challenge.
+         * @description Unauthenticated: possession of the opaque operation id is the capability.
+         *     Passkeys are loaded for the challenge owner (no crates.io cookie session).
+         */
+        post: operations["start_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/categories": {
         parameters: {
             query?: never;
@@ -1019,114 +1127,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/mfa/challenges": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create an API MFA challenge for a CLI client (token auth).
-         * @description Prefer letting dangerous endpoints auto-create challenges; this endpoint is for
-         *     explicit preflight handshakes.
-         */
-        post: operations["create_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mfa/challenges/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Poll an API MFA challenge until the browser acknowledges it.
-         * @description The opaque `operation_id` is a capability URL: the verify page can load
-         *     metadata without a crates.io cookie. API token clients (CLI poll loops) are
-         *     rate-limited per user; unauthenticated browsers are rate-limited per IP.
-         *     Aside from rate-limit bucket updates this handler is read-only.
-         */
-        get: operations["get_api_mfa_challenge"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mfa/challenges/{id}/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Finish challenge verification, issue OTP + grant.
-         * @description Unauthenticated: passkey assertion for the challenge owner's credentials is
-         *     the only factor (no crates.io cookie). `cargo login` must already have
-         *     minted the API token that created this challenge.
-         */
-        post: operations["finish_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mfa/challenges/{id}/recover": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Recover a verified callback after a browser reload or transient delivery failure.
-         * @description The callback secret lives only in the verification URL fragment and request
-         *     header. The server stores only its hash.
-         */
-        post: operations["recover_api_mfa_challenge_callback"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/mfa/challenges/{id}/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Start passkey authentication for a pending challenge.
-         * @description Unauthenticated: possession of the opaque operation id is the capability.
-         *     Passkeys are loaded for the challenge owner (no crates.io cookie session).
-         */
-        post: operations["start_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/site_metadata": {
         parameters: {
             query?: never;
@@ -1816,7 +1816,7 @@ export interface components {
              * @example 203.0.113.0/24
              */
             ip?: string | null;
-            /** @description Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`. */
+            /** @description Allowlisted context only: `token_name`, `crate_name`, `operation`, `passkey_name`, `challenge_id`. */
             metadata: components["schemas"]["Value"];
         };
         /** @enum {string} */
@@ -2477,6 +2477,199 @@ export interface operations {
                         state: string;
                         /** @example https://github.com/login/oauth/authorize?client_id=...&state=...&scope=read%3Aorg */
                         url: string;
+                    };
+                };
+            };
+        };
+    };
+    create_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Optional crate name associated with the operation. */
+                    crate_name?: string | null;
+                    /**
+                     * @description Dangerous operation label. Defaults to `manual`.
+                     *
+                     *     Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,
+                     *     `change-trusted-publishing`, `delete-crate`, `manual`.
+                     */
+                    operation?: string | null;
+                    /**
+                     * Format: int32
+                     * @description Optional localhost port (1024–65535) for OTP delivery to the CLI.
+                     *
+                     *     Requires a valid `Crates-Step-Up-Callback-Secret` header. Polling remains
+                     *     available as a fallback when callback delivery fails.
+                     */
+                    port?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Opaque step-up challenge identifier. */
+                        challenge_id: string;
+                        /** Format: date-time */
+                        expires_at: string;
+                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        poll_url: string;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls of `poll_url`.
+                         */
+                        recommended_poll_interval_secs: number;
+                        /** @description Browser URL where the user must complete passkey verification. */
+                        verification_url: string;
+                    };
+                };
+            };
+        };
+    };
+    get_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Challenge ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description True once the browser passkey ceremony has acknowledged the operation. */
+                        acknowledged: boolean;
+                        /** @description Opaque step-up challenge identifier. */
+                        challenge_id: string;
+                        crate_name?: string | null;
+                        /** Format: date-time */
+                        expires_at: string;
+                        /** Format: int32 */
+                        localhost_port?: number | null;
+                        operation: string;
+                        /** @description Server-generated description of the exact mutation being approved. */
+                        operation_summary: string;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls while status is `pending`.
+                         */
+                        recommended_poll_interval_secs: number;
+                        /** @description `pending` until passkey succeeds, then `acknowledged`. */
+                        status: string;
+                        /** @description Alias of `acknowledged` for older clients. */
+                        verified: boolean;
+                    };
+                };
+            };
+        };
+    };
+    finish_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Challenge ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    credential: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        challenge_id: string;
+                        /**
+                         * Format: date-time
+                         * @description Expiry of the exact token-and-operation-scoped polling fallback grant.
+                         */
+                        grant_expires_at: string;
+                        /** @description Optional URL the browser can hit to deliver the OTP to a local CLI listener. */
+                        localhost_callback_url?: string | null;
+                        /** @description One-time password for the CLI to send as `Crates-OTP`. */
+                        otp: string;
+                    };
+                };
+            };
+        };
+    };
+    recover_api_mfa_challenge_callback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Challenge ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        challenge_id: string;
+                        /** @description URL for the browser to retry against the waiting loopback listener. */
+                        localhost_callback_url: string;
+                    };
+                };
+            };
+        };
+    };
+    start_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Challenge ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        public_key: unknown;
                     };
                 };
             };
@@ -4588,198 +4781,6 @@ export interface operations {
                         };
                         /** @description The list of recent versions of crates that the authenticated user follows. */
                         versions: components["schemas"]["Version"][];
-                    };
-                };
-            };
-        };
-    };
-    create_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description Optional crate name associated with the operation. */
-                    crate_name?: string | null;
-                    /**
-                     * @description Dangerous operation label. Defaults to `manual`.
-                     *
-                     *     Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,
-                     *     `change-trusted-publishing`, `delete-crate`, `manual`.
-                     */
-                    operation?: string | null;
-                    /**
-                     * Format: int32
-                     * @description Optional localhost port (1024–65535) for RubyGems-style OTP delivery to the CLI.
-                     */
-                    port?: number | null;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** Format: date-time */
-                        expires_at: string;
-                        /** @description Opaque operation / transaction identifier. */
-                        operation_id: string;
-                        /** @description URL the CLI should poll until `acknowledged` is true. */
-                        poll_url: string;
-                        /**
-                         * Format: int64
-                         * @description Suggested seconds between CLI polls of `poll_url`.
-                         */
-                        recommended_poll_interval_secs: number;
-                        /** @description Browser URL where the user must complete passkey verification. */
-                        verification_url: string;
-                    };
-                };
-            };
-        };
-    };
-    get_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description True once the browser passkey ceremony has acknowledged the operation. */
-                        acknowledged: boolean;
-                        crate_name?: string | null;
-                        /** Format: date-time */
-                        expires_at: string;
-                        /** Format: int32 */
-                        localhost_port?: number | null;
-                        operation: string;
-                        /** @description Opaque operation / transaction identifier. */
-                        operation_id: string;
-                        /** @description Server-generated description of the exact mutation being approved. */
-                        operation_summary: string;
-                        /**
-                         * Format: int64
-                         * @description Suggested seconds between CLI polls while status is `pending`.
-                         */
-                        recommended_poll_interval_secs: number;
-                        /** @description `pending` until passkey succeeds, then `acknowledged`. */
-                        status: string;
-                        /** @description Alias of `acknowledged` for older clients. */
-                        verified: boolean;
-                    };
-                };
-            };
-        };
-    };
-    finish_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    credential: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /**
-                         * Format: date-time
-                         * @description Present when a scoped grant was issued (stock cargo retry without OTP).
-                         *
-                         *     Omitted when `localhost_port` was set — the CLI is expected to use the OTP callback.
-                         */
-                        grant_expires_at?: string | null;
-                        /** @description Optional URL the browser can hit to deliver the OTP to a local CLI listener. */
-                        localhost_callback_url?: string | null;
-                        operation_id: string;
-                        /** @description One-time password for the CLI to send as `Crates-OTP`. */
-                        otp: string;
-                    };
-                };
-            };
-        };
-    };
-    recover_api_mfa_challenge_callback: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description URL for the browser to retry against the waiting loopback listener. */
-                        localhost_callback_url: string;
-                        operation_id: string;
-                    };
-                };
-            };
-        };
-    };
-    start_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Operation ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        public_key: unknown;
                     };
                 };
             };

@@ -151,7 +151,7 @@ pub async fn authorize_session(
         ip,
         serde_json::json!({}),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     super::user::me::authenticated_user(&mut conn, user_id).await
@@ -371,7 +371,7 @@ pub async fn end_all_sessions(
         req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
         serde_json::json!({}),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     session.remove("user_id");

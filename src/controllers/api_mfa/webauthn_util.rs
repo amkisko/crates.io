@@ -47,34 +47,37 @@ pub async fn record_passkey_authentication(
     auth_result: &AuthenticationResult,
     conn: &mut AsyncPgConnection,
 ) -> AppResult<()> {
-    let credentials = WebauthnCredential::for_user(user_id, conn).await?;
-    for credential in &credentials {
-        if credential.credential_id.as_slice() != auth_result.cred_id().as_slice() {
-            continue;
+    let Some(credential) = WebauthnCredential::find_by_credential_id_for_user(
+        auth_result.cred_id().as_slice(),
+        user_id,
+        conn,
+    )
+    .await?
+    else {
+        return Err(bad_request(
+            "the passkey used for this ceremony has been removed; start verification again",
+        ));
+    };
+
+    credential.touch(conn).await?;
+
+    if auth_result.needs_update() {
+        let mut passkey: Passkey = serde_json::from_value(credential.passkey_json.clone())
+            .map_err(|err| {
+                server_error(format!(
+                    "corrupt passkey credential {}: {err}",
+                    credential.id
+                ))
+            })?;
+        if passkey.update_credential(auth_result) == Some(true) {
+            let passkey_json = serde_json::to_value(&passkey).map_err(|err| {
+                server_error(format!(
+                    "failed to serialize updated passkey {}: {err}",
+                    credential.id
+                ))
+            })?;
+            credential.update_passkey_json(passkey_json, conn).await?;
         }
-
-        credential.touch(conn).await?;
-
-        if auth_result.needs_update() {
-            let mut passkey: Passkey = serde_json::from_value(credential.passkey_json.clone())
-                .map_err(|err| {
-                    server_error(format!(
-                        "corrupt passkey credential {}: {err}",
-                        credential.id
-                    ))
-                })?;
-            if passkey.update_credential(auth_result) == Some(true) {
-                let passkey_json = serde_json::to_value(&passkey).map_err(|err| {
-                    server_error(format!(
-                        "failed to serialize updated passkey {}: {err}",
-                        credential.id
-                    ))
-                })?;
-                credential.update_passkey_json(passkey_json, conn).await?;
-            }
-        }
-
-        return Ok(());
     }
 
     Ok(())

@@ -1,6 +1,6 @@
 # Security activity feed
 
-Settings → Activity and `GET /api/v1/me/security_events` show recent account security events to the signed-in owner only. The feed exists so people can see sign-ins, API token changes, CLI login approvals, and API MFA actions. It is not used for analytics, ads, or ranking.
+Settings → Activity and `GET /api/v1/me/security_events` show recent account security events to the signed-in owner only. The feed exists so people can see sign-ins, API token changes, CLI login approvals, and API MFA actions. It is not used for analytics, ads, or ranking. This is a best-effort user activity feed, not an authoritative forensic audit log; an event-write failure does not fail the parent account operation.
 
 ## Events
 
@@ -19,19 +19,37 @@ These event types may appear:
 
 ## Retention and access
 
-Events are kept for 90 days, then removed by `crates-admin enqueue-job security_events_cleanup` (`security_events::purge_expired`). Deleting a user account cascades and removes their events.
+The retention policy is up to 90 days. Enforcement depends on a monitored daily
+`crates-admin enqueue-job security_events_cleanup` schedule
+(`security_events::purge_expired`). Deleting a user account cascades and removes
+their events.
 
 Only the account owner’s cookie session can read the feed (internal API). Responses never include secrets, hashes, passkey material, or sealed CLI tokens. The Activity page and list API are the access path for data-subject requests about this feed.
 
 ## What we store with each event
 
-Metadata is limited to these keys when present: `token_name`, `crate_name`, `operation`, `passkey_name`, `operation_id`. Nothing else (no user-agent, geo, email, ASN, or free-form request dumps).
+Metadata is limited to these keys when present: `token_name`, `crate_name`, `operation`, `passkey_name`, `challenge_id`. Nothing else (no user-agent, geo, email, ASN, or free-form request dumps).
 
 IP addresses are stored only when useful for that event (for example session login or CLI approve). They are truncated at write time to IPv4 /24 or IPv6 /56. `token_used` never stores an IP. IPs from this feed are not written to application or Sentry logs; see LOGGING.md.
 
 ## Abuse limits
 
 A user may have at most 50 active (non-revoked, non-expired) API tokens and at most 10 passkeys.
+
+## Deployment gate
+
+Collection and feed reads are controlled by `SECURITY_ACTIVITY_ENABLED`, which
+defaults to `false`. When disabled, event producers do not insert rows and the
+owner endpoint returns an empty feed.
+
+Enable it only after:
+
+- the privacy notice below is approved and published;
+- ownership for the daily purge job is assigned;
+- missed/failed purge runs alert an operator;
+- monitoring verifies that the oldest retained row remains within policy;
+- event-write failures have a metric or alert, since best-effort recording can
+  otherwise leave gaps.
 
 ## Privacy notice update (Rust Foundation)
 

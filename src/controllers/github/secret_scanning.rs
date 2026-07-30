@@ -208,7 +208,7 @@ async fn alert_revoke_token(
         None,
         serde_json::json!({ "token_name": token.name }),
     )
-    .record(conn)
+    .record_if(state.config.security_activity_enabled, conn)
     .await;
 
     warn!(

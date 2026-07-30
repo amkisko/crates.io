@@ -91,14 +91,20 @@ impl ApiMfaGrant {
         }
     }
 
-    /// Returns the latest non-expired grant for `user_id`, if any.
-    pub async fn active_for_user(
+    /// Returns the latest non-expired browser wildcard grant for `user_id`, if any.
+    ///
+    /// Token-bound and operation-scoped grants must not be presented as browser
+    /// authorization because they cannot authorize cookie-authenticated requests.
+    pub async fn active_browser_for_user(
         user_id: i32,
         mut conn: &AsyncPgConnection,
     ) -> QueryResult<Option<Self>> {
         api_mfa_grants::table
             .filter(api_mfa_grants::user_id.eq(user_id))
             .filter(api_mfa_grants::expires_at.gt(now))
+            .filter(api_mfa_grants::api_token_id.is_null())
+            .filter(api_mfa_grants::operation.is_null())
+            .filter(api_mfa_grants::mutation_fingerprint.is_null())
             .order(api_mfa_grants::expires_at.desc())
             .select(Self::as_select())
             .first(&mut conn)

@@ -24,7 +24,7 @@ global-credential-providers = ["cargo:token", "cargo-credential-crates-io"]
 
 Run `cargo login`. The provider starts a short-lived session, prints a login URL and a confirmation code on stderr, and waits. Open that URL, sign in, enter the confirmation code from the terminal, choose name, scopes, and expiry, then approve. The code binds the browser step to the CLI that started the session (it is not shown on the page). The provider polls until the token is ready, writes it to `~/.cargo/credentials.toml` under `[registry]`, and finishes without printing the secret. Later cargo commands load it through the provider’s get action.
 
-If API MFA is enabled, approve also asks for a passkey (same step-up as disabling MFA). When MFA is on with zero passkeys, approve accepts an email OTP instead so recovery is not a dead-end. Passkeys are account-wide step-up factors here; token scopes (name, expiry, publish/yank/…) are chosen on this page and apply to the minted API token, not to the passkey. GitHub sign-in remains account identity. See [API-MFA.md](API-MFA.md).
+If API MFA is enabled, approve also asks for a passkey (same step-up as disabling MFA). When MFA is on with zero passkeys, approve accepts an email OTP instead so recovery stays available. Passkeys are account-wide step-up factors here; token scopes (name, expiry, publish/yank/…) are chosen on this page and apply to the minted API token, not to the passkey. OAuth sign-in remains account identity. See [API-MFA.md](API-MFA.md).
 
 ## Staging or local
 
@@ -49,6 +49,8 @@ Approving a CLI login records a durable `cli_login_approved` security event (tru
 
 Enqueue `crates-admin enqueue-job api_mfa_cleanup` at least every 15 minutes so expired and consumed `cli_login_sessions` rows are deleted. Prometheus gauge `cratesio_service_cli_login_sessions` (label `status`) tracks table size by status.
 
-Set `CLI_LOGIN_ENABLED=false` to disable session creation and poll (approve returns the same unavailable response). Default is enabled.
+Set `CLI_LOGIN_ENABLED=true` to enable session creation and polling after
+staging. It defaults to disabled; turning it off again also makes approve return
+the unavailable response.
 
 Create/poll pacing honors `RATE_LIMITER_CLI_LOGIN_CREATE_RATE_SECONDS` / `_BURST` and `RATE_LIMITER_CLI_LOGIN_POLL_RATE_SECONDS` (defaults: 30s window / burst 10 creates per IP; 2s min poll interval).

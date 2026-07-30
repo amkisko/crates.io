@@ -207,7 +207,7 @@ pub async fn finish_webauthn_registration(
         req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
         serde_json::json!({ "passkey_name": credential.name }),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     notify_api_mfa_settings_changed(
@@ -301,6 +301,8 @@ pub async fn delete_webauthn_credential(
     if deleted == 0 {
         return Err(not_found());
     }
+    WebauthnCeremonyState::delete_all_for_user(user.id, &conn).await?;
+    crate::models::ApiMfaChallenge::clear_auth_state_for_user(user.id, &conn).await?;
 
     NewUserSecurityEvent::new(
         user.id,
@@ -309,7 +311,7 @@ pub async fn delete_webauthn_credential(
         req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
         serde_json::json!({ "passkey_name": target.name }),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     notify_api_mfa_settings_changed(&app, user, &mut conn, "passkey_deleted", Some(&target.name))

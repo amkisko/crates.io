@@ -65,19 +65,26 @@ pub struct Server {
 
     /// When false, unauthenticated CLI link-login start/poll are unavailable.
     ///
-    /// Controlled by `CLI_LOGIN_ENABLED` (default `true`). Use `false` to stage
-    /// or emergency-disable the ceremony without undeploying.
+    /// Controlled by `CLI_LOGIN_ENABLED` (default `false`). Enable explicitly
+    /// after staging, or disable to stop the ceremony without undeploying.
     pub cli_login_enabled: bool,
 
     /// When false, skips API MFA checks on dangerous mutates only (publish, yank,
     /// owners, delete, trustpub config / `trustpub_only`).
     ///
-    /// Controlled by `API_MFA_ENFORCEMENT_ENABLED` (default `true`). Use `false`
-    /// for emergency bypass (e.g. WebAuthn/RP outage) without mass-updating users.
+    /// Controlled by `API_MFA_ENFORCEMENT_ENABLED` (default `false`). Enable
+    /// explicitly after the compatible Cargo release and staging checks. Set
+    /// false for emergency bypass (e.g. WebAuthn/RP outage) without mass-updating users.
     /// Bootstrap / plant-prevention gates (enable/disable OTP, passkey enroll/delete,
     /// New Token, CLI approve) always stay on. Status GET reports `enabled` (user
     /// opt-in) and `enforcement_active` (this flag).
     pub api_mfa_enforcement_enabled: bool,
+
+    /// Whether user security activity events are collected and exposed.
+    ///
+    /// Controlled by `SECURITY_ACTIVITY_ENABLED` (default `false`). Keep this
+    /// disabled until privacy notice and retention-job ownership are in place.
+    pub security_activity_enabled: bool,
 
     /// Banner message to display on all pages (e.g., for security incidents).
     pub banner_message: Option<String>,
@@ -123,10 +130,12 @@ impl Server {
     /// - `DISABLE_TOKEN_CREATION`: If set to any non-empty value, disables API token creation
     ///   and uses the value as the error message returned to users.
     /// - `CLI_LOGIN_ENABLED`: When `false`, disables CLI link-login session create/poll.
-    ///   Defaults to `true`.
+    ///   Defaults to `false`.
     /// - `API_MFA_ENFORCEMENT_ENABLED`: When `false`, skips API MFA on dangerous mutates only
     ///   (publish/yank/owners/delete/trustpub). Bootstrap OTP and settings step-up stay on.
-    ///   Defaults to `true`.
+    ///   Defaults to `false`.
+    /// - `SECURITY_ACTIVITY_ENABLED`: When `true`, records and exposes the
+    ///   user-facing security activity feed. Defaults to `false`.
     /// - `GIT_ARCHIVE_REPO_URL`: HTTPS URL (e.g. `https://github.com/<org>/<repo>.git`) of a git
     ///   repository to mirror the crate index's snapshot branches to. Must be HTTPS because the
     ///   `ArchiveIndexBranch` job authenticates via a GitHub App installation token; SSH remotes
@@ -153,9 +162,10 @@ impl Server {
         let domain_name = dotenvy::var("DOMAIN_NAME").unwrap_or_else(|_| "crates.io".into());
         let trustpub_audience = var("TRUSTPUB_AUDIENCE")?.unwrap_or_else(|| domain_name.clone());
         let disable_token_creation = var("DISABLE_TOKEN_CREATION")?.filter(|s| !s.is_empty());
-        let cli_login_enabled = var_parsed("CLI_LOGIN_ENABLED")?.unwrap_or(true);
+        let cli_login_enabled = var_parsed("CLI_LOGIN_ENABLED")?.unwrap_or(false);
         let api_mfa_enforcement_enabled =
-            var_parsed("API_MFA_ENFORCEMENT_ENABLED")?.unwrap_or(true);
+            var_parsed("API_MFA_ENFORCEMENT_ENABLED")?.unwrap_or(false);
+        let security_activity_enabled = var_parsed("SECURITY_ACTIVITY_ENABLED")?.unwrap_or(false);
         let banner_message = var("BANNER_MESSAGE")?.filter(|s| !s.is_empty());
         let webauthn = WebauthnConfig::from_env(&domain_name)?;
 
@@ -189,6 +199,7 @@ impl Server {
             disable_token_creation,
             cli_login_enabled,
             api_mfa_enforcement_enabled,
+            security_activity_enabled,
             banner_message,
             features,
             fastly: FastlyConfig::from_env()?,

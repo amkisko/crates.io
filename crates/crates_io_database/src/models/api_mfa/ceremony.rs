@@ -74,4 +74,19 @@ impl WebauthnCeremonyState {
         .await
         .optional()
     }
+
+    /// Deletes every in-progress ceremony for `user_id`.
+    ///
+    /// Credential revocation uses this to ensure serialized ceremony state
+    /// cannot outlive the credential set it was created from.
+    pub async fn delete_all_for_user(
+        user_id: i32,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<usize> {
+        diesel::delete(
+            webauthn_ceremony_states::table.filter(webauthn_ceremony_states::user_id.eq(user_id)),
+        )
+        .execute(&mut conn)
+        .await
+    }
 }

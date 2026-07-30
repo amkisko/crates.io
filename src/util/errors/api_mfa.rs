@@ -5,10 +5,12 @@ use chrono::{DateTime, Utc};
 use http::StatusCode;
 use std::fmt;
 
-/// Machine-readable error returned when a dangerous API action needs passkey acknowledgment.
+/// Machine-readable error returned when a dangerous API action needs interactive step-up.
+///
+/// Wire `id` is `step_up_required` (condition, not factor). Product feature remains "API MFA".
 #[derive(Debug, Clone)]
 pub struct ApiMfaRequired {
-    pub operation_id: String,
+    pub challenge_id: String,
     pub operation: String,
     pub operation_summary: String,
     pub crate_name: Option<String>,
@@ -37,8 +39,10 @@ impl AppError for ApiMfaRequired {
         let json = json!({
             "errors": [{
                 "detail": &self.detail,
-                "id": "mfa_required",
-                "operation_id": &self.operation_id,
+                "id": "step_up_required",
+                "protocol_version": 1,
+                "interaction": "browser",
+                "challenge_id": &self.challenge_id,
                 "operation": &self.operation,
                 "operation_summary": &self.operation_summary,
                 "crate": &self.crate_name,

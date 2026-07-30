@@ -280,7 +280,7 @@ pub async fn mint_api_token_for_user(
         None,
         serde_json::json!({ "token_name": name }),
     )
-    .record(conn)
+    .record_if(app.config.security_activity_enabled, conn)
     .await;
 
     Ok(EncodableApiTokenWithToken {
@@ -399,7 +399,7 @@ pub async fn revoke_api_token(
             ip,
             serde_json::json!({ "token_name": token.name }),
         )
-        .record(&mut conn)
+        .record_if(app.config.security_activity_enabled, &mut conn)
         .await;
     }
 
@@ -444,7 +444,7 @@ pub async fn revoke_current_api_token(app: AppState, req: Parts) -> AppResult<Re
         req.extensions.get::<RealIp>().map(|ip| ip.to_string()),
         serde_json::json!({ "token_name": token_name }),
     )
-    .record(&mut conn)
+    .record_if(app.config.security_activity_enabled, &mut conn)
     .await;
 
     Ok(StatusCode::NO_CONTENT.into_response())
