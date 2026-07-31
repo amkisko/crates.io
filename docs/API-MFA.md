@@ -28,15 +28,12 @@ Registry protocol:
   unmet condition without claiming OAuth Bearer compliance or MFA factor counts.
   (A longer self-describing alternative is `additional_authentication_required`;
   this design keeps the shorter id.)
-- Protocol version: `protocol_version: 1`. Cargo handles only version 1 with
-  `interaction: "browser"`; unknown or incomplete contracts remain ordinary
-  registry errors rather than causing Cargo to follow URLs.
+- Protocol version: `protocol_version: 1`. Cargo handles only version 1 with a
+  same-origin `poll_url`; unknown or incomplete contracts remain ordinary
+  registry errors.
 - Authentication challenge — temporary server object under
   `/api/v1/auth/challenges/{challenge_id}` (`stp_…` ids).
 - Browser page: `/verify/{challenge_id}` — capability URL; no crates.io cookie.
-- `interaction: "browser"` — how the human participates. Completion transport is
-  separate (localhost callback or poll). Authentication method stays on the
-  website (passkey today).
 - Step-up completion — browser ceremony finished for this challenge.
 - One-time proof — localhost callback OTP bound to the challenge / mutation;
   consumed on retry (`Cargo-Step-Up-Proof`).
@@ -138,8 +135,10 @@ Additional properties:
   the fragment and constructs callback `state` locally. Callback port
   replacement and proof recovery require the same secret, and Cargo rejects
   callbacks whose state does not match before accepting a proof.
-- `poll_url` and `verification_url` must share the registry API origin; Cargo
-  refuses cross-origin poll URLs and does not follow poll redirects.
+- `poll_url` must share the registry API origin; Cargo refuses cross-origin
+  poll URLs and does not follow poll redirects. `detail` contains the complete
+  verification instructions. For callback state, Cargo only augments a URL in
+  `detail` when that URL shares the registry origin.
 - Cargo allowlists `step_up_required` only; it must not follow arbitrary URLs from
   a generic challenge handler.
 - Non-interactive clients (`CI=true` / non-TTY) fail fast instead of hanging.
@@ -164,11 +163,9 @@ Additional properties:
    - `id` — `step_up_required` (cargo matches this)
    - `protocol_version` — `1`
    - `detail` — leads with "Additional authentication is required"
-   - `interaction` — `browser`
    - `challenge_id` — temporary challenge id (`stp_…`)
    - `operation` / `crate` / `operation_summary` — protected operation context
      (`operation_summary` is safe to display; Cargo may show `operation` + `crate`)
-   - `verification_url` — `/verify/{challenge_id}` (no sign-in)
    - `poll_url` — `GET /api/v1/auth/challenges/{challenge_id}`
    - `expires_at` — short TTL (5 minutes)
    - `recommended_poll_interval_secs` — advisory poll interval (currently `5`)
