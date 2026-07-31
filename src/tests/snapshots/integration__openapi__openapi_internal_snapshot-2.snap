@@ -867,6 +867,7 @@ expression: document
         "type": "object"
       },
       "ListSecurityEventsMeta": {
+        "description": "Pagination metadata for a security activity response.",
         "properties": {
           "next_page": {
             "description": "Query string for the next page, when more results exist.",
@@ -1820,6 +1821,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Request to create a manual API MFA challenge.",
                 "properties": {
                   "crate_name": {
                     "description": "Optional crate name associated with the operation.",
@@ -1836,7 +1838,7 @@ expression: document
                     ]
                   },
                   "port": {
-                    "description": "Optional localhost port (1024–65535) for OTP delivery to the CLI.\n\nRequires a valid `Crates-Step-Up-Callback-Secret` header. Polling remains\navailable as a fallback when callback delivery fails.",
+                    "description": "Optional localhost port (1024–65535) for proof delivery to the CLI.\n\nRequires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains\navailable as a fallback when callback delivery fails.",
                     "format": "int32",
                     "type": [
                       "integer",
@@ -1855,9 +1857,14 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Instructions and timing information for a newly created API MFA challenge.",
                   "properties": {
                     "challenge_id": {
                       "description": "Opaque step-up challenge identifier.",
+                      "type": "string"
+                    },
+                    "detail": {
+                      "description": "Complete human-readable instructions for satisfying the challenge.",
                       "type": "string"
                     },
                     "expires_at": {
@@ -1873,15 +1880,11 @@ expression: document
                       "format": "int64",
                       "minimum": 0,
                       "type": "integer"
-                    },
-                    "verification_url": {
-                      "description": "Browser URL where the user must complete passkey verification.",
-                      "type": "string"
                     }
                   },
                   "required": [
                     "challenge_id",
-                    "verification_url",
+                    "detail",
                     "poll_url",
                     "expires_at",
                     "recommended_poll_interval_secs"
@@ -1924,6 +1927,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Current state and operation details for an API MFA challenge.",
                   "properties": {
                     "acknowledged": {
                       "description": "True once the browser passkey ceremony has acknowledged the operation.",
@@ -2014,6 +2018,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Browser assertion submitted to finish challenge verification.",
                 "properties": {
                   "credential": {}
                 },
@@ -2031,6 +2036,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Proof and fallback grant issued after successful challenge verification.",
                   "properties": {
                     "challenge_id": {
                       "type": "string"
@@ -2048,7 +2054,7 @@ expression: document
                       ]
                     },
                     "otp": {
-                      "description": "One-time password for the CLI to send as `Crates-OTP`.",
+                      "description": "One-time proof for the CLI to send as `Cargo-Step-Up-Proof`.",
                       "type": "string"
                     }
                   },
@@ -2090,6 +2096,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Loopback callback details recovered for an acknowledged challenge.",
                   "properties": {
                     "challenge_id": {
                       "type": "string"
@@ -2136,6 +2143,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Browser options returned when starting challenge passkey verification.",
                   "properties": {
                     "public_key": {}
                   },
@@ -2328,6 +2336,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Request to begin a browser-assisted CLI login ceremony.",
                 "properties": {
                   "localhost_port": {
                     "description": "Optional localhost port the browser may ping (token-free) after approve.",
@@ -2349,6 +2358,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Browser and polling details returned for a new CLI login ceremony.",
                   "properties": {
                     "confirmation_code": {
                       "description": "Short code printed by the CLI; must be typed on the approve page (not returned by meta).",
@@ -2419,6 +2429,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Current CLI login status and an optional one-time token result.",
                   "properties": {
                     "status": {
                       "type": "string"
@@ -2466,6 +2477,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Token settings and step-up proof submitted to approve CLI login.",
                 "properties": {
                   "confirmation_code": {
                     "description": "Confirmation code printed by the CLI after `POST /cli_login` (binds approve to that start).",
@@ -2525,6 +2537,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Token metadata returned after approving CLI login.",
                   "properties": {
                     "api_token_id": {
                       "format": "int32",
@@ -2587,6 +2600,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Browser-visible metadata for a pending CLI login ceremony.",
                   "properties": {
                     "client_ip": {
                       "description": "Client IP that started the ceremony (shown so users can spot phishing).",
@@ -4986,10 +5000,12 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "API MFA enrollment, enforcement, and authorization state for a user.",
                   "properties": {
                     "credentials": {
                       "description": "Registered passkeys.",
                       "items": {
+                        "description": "A registered passkey exposed through the API MFA settings endpoints.",
                         "properties": {
                           "created_at": {
                             "format": "date-time",
@@ -5070,6 +5086,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Request to enable or disable API MFA for the authenticated user.",
                 "properties": {
                   "credential": {
                     "description": "Passkey assertion: required when disabling if no `email_code` is provided.\n\nObtain options from `POST /api/v1/me/mfa/authorize/start` first.",
@@ -5104,6 +5121,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "API MFA state returned after an update.",
                   "properties": {
                     "enabled": {
                       "type": "boolean"
@@ -5137,6 +5155,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Browser assertion submitted to finish passkey authorization.",
                 "properties": {
                   "credential": {
                     "description": "Credential assertion response from the browser."
@@ -5156,6 +5175,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Details of the short-lived grant issued after passkey authorization.",
                   "properties": {
                     "grant_expires_at": {
                       "description": "When the newly issued grant expires.",
@@ -5193,6 +5213,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Browser options returned when starting passkey authorization.",
                   "properties": {
                     "public_key": {
                       "description": "`PublicKeyCredentialRequestOptions` for `navigator.credentials.get()`."
@@ -5228,6 +5249,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Delivery details for a newly issued email OTP.",
                   "properties": {
                     "expires_at": {
                       "description": "When the emailed code expires.",
@@ -5268,6 +5290,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Browser credential and label submitted to finish passkey registration.",
                 "properties": {
                   "credential": {
                     "description": "Credential creation response from the browser."
@@ -5292,8 +5315,10 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Registered passkey returned after successful enrollment.",
                   "properties": {
                     "credential": {
+                      "description": "A registered passkey exposed through the API MFA settings endpoints.",
                       "properties": {
                         "created_at": {
                           "format": "date-time",
@@ -5351,6 +5376,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Step-up credentials used to begin passkey registration.",
                 "properties": {
                   "credential": {
                     "description": "Required when API MFA is enabled and at least one passkey exists: assertion from\n`authorize/start` so a stolen session cookie alone cannot register another passkey."
@@ -5374,6 +5400,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Browser options returned when starting passkey registration.",
                   "properties": {
                     "public_key": {
                       "description": "`PublicKeyCredentialCreationOptions` for `navigator.credentials.create()`."
@@ -5420,6 +5447,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Step-up credentials used to authorize passkey deletion.",
                 "properties": {
                   "credential": {
                     "description": "Passkey assertion from `authorize/start` (preferred when a passkey remains)."
@@ -5512,6 +5540,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Paginated security activity returned for the authenticated user.",
                   "properties": {
                     "meta": {
                       "$ref": "#/components/schemas/ListSecurityEventsMeta"

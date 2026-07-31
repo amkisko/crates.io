@@ -1932,6 +1932,7 @@ export interface components {
              */
             inviter_id: number;
         };
+        /** @description Pagination metadata for a security activity response. */
         ListSecurityEventsMeta: {
             /** @description Query string for the next page, when more results exist. */
             next_page?: string | null;
@@ -2503,9 +2504,9 @@ export interface operations {
                     operation?: string | null;
                     /**
                      * Format: int32
-                     * @description Optional localhost port (1024–65535) for OTP delivery to the CLI.
+                     * @description Optional localhost port (1024–65535) for proof delivery to the CLI.
                      *
-                     *     Requires a valid `Crates-Step-Up-Callback-Secret` header. Polling remains
+                     *     Requires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains
                      *     available as a fallback when callback delivery fails.
                      */
                     port?: number | null;
@@ -2522,6 +2523,8 @@ export interface operations {
                     "application/json": {
                         /** @description Opaque step-up challenge identifier. */
                         challenge_id: string;
+                        /** @description Complete human-readable instructions for satisfying the challenge. */
+                        detail: string;
                         /** Format: date-time */
                         expires_at: string;
                         /** @description URL the CLI should poll until `acknowledged` is true. */
@@ -2531,8 +2534,6 @@ export interface operations {
                          * @description Suggested seconds between CLI polls of `poll_url`.
                          */
                         recommended_poll_interval_secs: number;
-                        /** @description Browser URL where the user must complete passkey verification. */
-                        verification_url: string;
                     };
                 };
             };
@@ -2614,10 +2615,12 @@ export interface operations {
                          * @description Expiry of the exact token-and-operation-scoped polling fallback grant.
                          */
                         grant_expires_at: string;
-                        /** @description Optional loopback URL where the browser can deliver the proof.
+                        /**
+                         * @description Optional loopback URL where the browser can deliver the proof.
                          *
                          *     This URL excludes callback state. The browser adds its fragment-held
-                         *     callback secret locally, so the registry never reflects that secret. */
+                         *     callback secret locally, so the registry never reflects that secret.
+                         */
                         localhost_callback_url?: string | null;
                         /** @description One-time proof for the CLI to send as `Cargo-Step-Up-Proof`. */
                         otp: string;
@@ -4509,6 +4512,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** @description A registered passkey exposed through the API MFA settings endpoints. */
                         credential: {
                             /** Format: date-time */
                             created_at: string;

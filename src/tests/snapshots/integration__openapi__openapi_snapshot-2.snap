@@ -867,6 +867,7 @@ expression: document
         "type": "object"
       },
       "ListSecurityEventsMeta": {
+        "description": "Pagination metadata for a security activity response.",
         "properties": {
           "next_page": {
             "description": "Query string for the next page, when more results exist.",
@@ -1679,6 +1680,7 @@ expression: document
           "content": {
             "application/json": {
               "schema": {
+                "description": "Request to begin a browser-assisted CLI login ceremony.",
                 "properties": {
                   "localhost_port": {
                     "description": "Optional localhost port the browser may ping (token-free) after approve.",
@@ -1700,6 +1702,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Browser and polling details returned for a new CLI login ceremony.",
                   "properties": {
                     "confirmation_code": {
                       "description": "Short code printed by the CLI; must be typed on the approve page (not returned by meta).",
@@ -1770,6 +1773,7 @@ expression: document
             "content": {
               "application/json": {
                 "schema": {
+                  "description": "Current CLI login status and an optional one-time token result.",
                   "properties": {
                     "status": {
                       "type": "string"

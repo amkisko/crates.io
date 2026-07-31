@@ -539,15 +539,10 @@ async fn explicit_callback_challenge_requires_and_binds_secret() {
         .await
         .good();
     assert!(response.get("verification_url").is_none());
-    assert!(
-        response["detail"]
-            .as_str()
-            .unwrap()
-            .contains(&format!(
-                "/verify/{}",
-                response["challenge_id"].as_str().unwrap()
-            ))
-    );
+    assert!(response["detail"].as_str().unwrap().contains(&format!(
+        "/verify/{}",
+        response["challenge_id"].as_str().unwrap()
+    )));
     assert!(!response.to_string().contains(callback_secret));
     assert!(response["poll_url"].is_string());
 }
