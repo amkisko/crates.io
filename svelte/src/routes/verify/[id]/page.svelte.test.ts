@@ -11,10 +11,14 @@ import PageTestWrapper from './PageTestWrapper.svelte';
 const callback = vi.hoisted(() => vi.fn());
 
 vi.mock('$app/state', () => ({
-  page: { params: { id: 'stp_test' }, url: new URL('https://crates.io/verify/stp_test') },
+  page: {
+    params: { id: 'stp_test' },
+    url: new URL('https://crates.io/verify/stp_test#callback_secret=0123456789abcdef0123456789abcdef'),
+  },
 }));
 
-vi.mock('./localhost-callback', () => ({
+vi.mock('./localhost-callback', async importOriginal => ({
+  ...(await importOriginal<typeof import('./localhost-callback')>()),
   deliverLocalhostCallback: callback,
 }));
 
@@ -45,7 +49,7 @@ function installApiHandlers(worker: SetupWorker) {
     http.post('/api/v1/auth/challenges/stp_test/finish', () =>
       HttpResponse.json({
         otp: 'TestOtp1',
-        localhost_callback_url: callbackUrl,
+        localhost_callback_url: 'http://127.0.0.1:34567/?code=TestOtp1',
         grant_expires_at: '2099-01-01T00:00:00Z',
       }),
     ),

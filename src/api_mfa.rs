@@ -448,7 +448,6 @@ async fn ensure_api_mfa_inner(
         deps.webauthn,
         &challenge,
         operation,
-        localhost_callback_secret.as_deref(),
     )))
 }
 
@@ -611,17 +610,8 @@ fn step_up_required_error(
     webauthn: &WebauthnConfig,
     challenge: &ApiMfaChallenge,
     operation: &ApiMfaOperation,
-    localhost_callback_secret: Option<&str>,
 ) -> BoxedAppError {
-    let (mut verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
-    if challenge.localhost_port.is_some()
-        && let Some(secret) = localhost_callback_secret
-        && challenge.localhost_callback_secret_matches(secret)
-    {
-        // URL fragments are not sent in HTTP requests or server access logs.
-        verification_url.push_str("#callback_secret=");
-        verification_url.push_str(secret);
-    }
+    let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
 
     let detail = format!(
         "Additional authentication is required. Open this link to verify with your passkey:\n\n\

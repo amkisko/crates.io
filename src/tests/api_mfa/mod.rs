@@ -29,6 +29,7 @@ async fn publish_returns_operation_challenge_link() {
     let crate_to_publish = PublishBuilder::new("foo_api_mfa", "1.0.0");
     let response = token.publish_crate(crate_to_publish).await;
     assert_snapshot!(response.status(), @"403 Forbidden");
+    response.assert_cache_control("no-store");
 
     let body: Value = response.json();
     let error = &body["errors"][0];
@@ -542,12 +543,14 @@ async fn explicit_callback_challenge_requires_and_binds_secret() {
         )
         .await
         .good();
-    assert!(
-        response["verification_url"]
-            .as_str()
-            .unwrap()
-            .ends_with(&format!("#callback_secret={callback_secret}"))
+    assert_eq!(
+        response["verification_url"],
+        format!(
+            "http://localhost:8888/verify/{}",
+            response["challenge_id"].as_str().unwrap()
+        )
     );
+    assert!(!response.to_string().contains(callback_secret));
     assert!(response["poll_url"].is_string());
 }
 

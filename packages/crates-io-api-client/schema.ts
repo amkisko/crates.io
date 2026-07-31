@@ -2614,9 +2614,12 @@ export interface operations {
                          * @description Expiry of the exact token-and-operation-scoped polling fallback grant.
                          */
                         grant_expires_at: string;
-                        /** @description Optional URL the browser can hit to deliver the OTP to a local CLI listener. */
+                        /** @description Optional loopback URL where the browser can deliver the proof.
+                         *
+                         *     This URL excludes callback state. The browser adds its fragment-held
+                         *     callback secret locally, so the registry never reflects that secret. */
                         localhost_callback_url?: string | null;
-                        /** @description One-time password for the CLI to send as `Crates-OTP`. */
+                        /** @description One-time proof for the CLI to send as `Cargo-Step-Up-Proof`. */
                         otp: string;
                     };
                 };
@@ -2643,7 +2646,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         challenge_id: string;
-                        /** @description URL for the browser to retry against the waiting loopback listener. */
+                        /** @description Loopback URL without callback state. The browser adds state locally. */
                         localhost_callback_url: string;
                     };
                 };

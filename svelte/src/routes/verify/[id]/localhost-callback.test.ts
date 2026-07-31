@@ -1,13 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { deliverLocalhostCallback, recoverLocalhostCallbackUrl } from './localhost-callback';
+import { addLocalhostCallbackState, deliverLocalhostCallback, recoverLocalhostCallbackUrl } from './localhost-callback';
+
+describe('addLocalhostCallbackState', () => {
+  it('constructs callback state without a registry round trip', () => {
+    expect(addLocalhostCallbackState('http://127.0.0.1:34567/?code=TestOtp1', 'callback-secret')).toBe(
+      'http://127.0.0.1:34567/?code=TestOtp1&state=callback-secret',
+    );
+  });
+
+  it.each([
+    'https://127.0.0.1:34567/?code=TestOtp1',
+    'http://localhost:34567/?code=TestOtp1',
+    'http://127.0.0.1:80/?code=TestOtp1',
+    'http://127.0.0.1:34567/other?code=TestOtp1',
+    'http://127.0.0.1:34567/',
+    'http://127.0.0.1:34567/?code=TestOtp1&state=server-state',
+  ])('rejects an unsafe callback URL: %s', callbackUrl => {
+    expect(() => addLocalhostCallbackState(callbackUrl, 'callback-secret')).toThrow('Invalid Cargo callback URL');
+  });
+});
 
 describe('recoverLocalhostCallbackUrl', () => {
   it('recovers a lost finish response with the fragment-held secret', async () => {
     let fetchMock = vi.fn().mockResolvedValue(
       Response.json(
         {
-          localhost_callback_url: 'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef',
+          localhost_callback_url: 'http://127.0.0.1:34567/?code=TestOtp1',
         },
         {
           status: 200,
@@ -16,11 +35,11 @@ describe('recoverLocalhostCallbackUrl', () => {
     );
 
     await expect(recoverLocalhostCallbackUrl('stp_test', 'callback-secret', fetchMock)).resolves.toBe(
-      'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef',
+      'http://127.0.0.1:34567/?code=TestOtp1&state=callback-secret',
     );
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/auth/challenges/stp_test/recover', {
       method: 'POST',
-      headers: { 'Crates-Step-Up-Callback-Secret': 'callback-secret' },
+      headers: { 'Cargo-Step-Up-Callback-Secret': 'callback-secret' },
     });
   });
 

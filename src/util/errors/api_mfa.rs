@@ -2,7 +2,7 @@ use super::{AppError, BoxedAppError};
 use axum::response::{IntoResponse, Response};
 use axum_extra::json;
 use chrono::{DateTime, Utc};
-use http::StatusCode;
+use http::{HeaderValue, StatusCode, header};
 use std::fmt;
 
 /// Machine-readable error returned when a dangerous API action needs interactive step-up.
@@ -52,6 +52,34 @@ impl AppError for ApiMfaRequired {
                 "recommended_poll_interval_secs": self.recommended_poll_interval_secs,
             }]
         });
-        (StatusCode::FORBIDDEN, json).into_response()
+        let mut response = (StatusCode::FORBIDDEN, json).into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_up_required_response_is_not_cacheable() {
+        let response = ApiMfaRequired {
+            challenge_id: "stp_test".into(),
+            operation: "publish".into(),
+            operation_summary: "Publish example 1.0.0".into(),
+            crate_name: Some("example".into()),
+            verification_url: "https://registry.example/verify/stp_test".into(),
+            poll_url: "https://registry.example/api/v1/auth/challenges/stp_test".into(),
+            expires_at: Utc::now(),
+            recommended_poll_interval_secs: 5,
+            detail: "Additional authentication is required".into(),
+        }
+        .response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     }
 }

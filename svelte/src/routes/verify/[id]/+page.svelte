@@ -8,7 +8,7 @@
   import PageTitle from '$lib/components/PageTitle.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
   import { revivePublicKeyRequest, serializeAssertion } from '$lib/utils/webauthn';
-  import { deliverLocalhostCallback } from './localhost-callback';
+  import { addLocalhostCallbackState, deliverLocalhostCallback } from './localhost-callback';
 
   type ChallengeMeta = operations['get_api_mfa_challenge']['responses'][200]['content']['application/json'];
 
@@ -88,7 +88,7 @@
       }
 
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (callbackSecret) headers['Crates-Step-Up-Callback-Secret'] = callbackSecret;
+      if (callbackSecret) headers['Cargo-Step-Up-Callback-Secret'] = callbackSecret;
       let finish = await fetch(`/api/v1/auth/challenges/${challengeId}/finish`, {
         method: 'POST',
         headers,
@@ -100,7 +100,10 @@
       }
 
       let result = await finish.json();
-      localhostCallbackUrl = result.localhost_callback_url ?? null;
+      localhostCallbackUrl =
+        result.localhost_callback_url && callbackSecret
+          ? addLocalhostCallbackState(result.localhost_callback_url, callbackSecret)
+          : null;
       done = true;
 
       if (localhostCallbackUrl && !(await sendLocalhostCallback())) {
@@ -118,7 +121,7 @@
   async function recoverLocalhostCallback() {
     let recovery = await fetch(`/api/v1/auth/challenges/${challengeId}/recover`, {
       method: 'POST',
-      headers: { 'Crates-Step-Up-Callback-Secret': callbackSecret! },
+      headers: { 'Cargo-Step-Up-Callback-Secret': callbackSecret! },
     });
     if (!recovery.ok) {
       // A consumed OTP means Cargo already completed the original mutation.
@@ -127,7 +130,7 @@
       throw new Error(body?.errors?.[0]?.detail ?? 'Failed to recover Cargo callback');
     }
     let result = await recovery.json();
-    localhostCallbackUrl = result.localhost_callback_url;
+    localhostCallbackUrl = addLocalhostCallbackState(result.localhost_callback_url, callbackSecret!);
     await sendLocalhostCallback();
   }
 

@@ -144,11 +144,7 @@ pub async fn create_api_mfa_challenge(
         .await?;
         return Ok((
             no_store(),
-            Json(challenge_created_response(
-                &app.config.webauthn,
-                &existing,
-                callback_secret.as_deref(),
-            )),
+            Json(challenge_created_response(&app.config.webauthn, &existing)),
         ));
     }
 
@@ -191,27 +187,15 @@ pub async fn create_api_mfa_challenge(
 
     Ok((
         no_store(),
-        Json(challenge_created_response(
-            &app.config.webauthn,
-            &challenge,
-            callback_secret.as_deref(),
-        )),
+        Json(challenge_created_response(&app.config.webauthn, &challenge)),
     ))
 }
 
 fn challenge_created_response(
     webauthn: &crate::config::WebauthnConfig,
     challenge: &ApiMfaChallenge,
-    callback_secret: Option<&str>,
 ) -> CreateChallengeResponse {
-    let (mut verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
-    if challenge.localhost_port.is_some()
-        && let Some(secret) = callback_secret
-        && challenge.localhost_callback_secret_matches(secret)
-    {
-        verification_url.push_str("#callback_secret=");
-        verification_url.push_str(secret);
-    }
+    let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
     CreateChallengeResponse {
         challenge_id: challenge.id.clone(),
         verification_url,
@@ -439,7 +423,10 @@ pub struct FinishChallengeAuthRequest {
 pub struct FinishChallengeAuthResponse {
     /// One-time proof for the CLI to send as `Cargo-Step-Up-Proof`.
     pub otp: String,
-    /// Optional URL the browser can hit to deliver the proof to a local CLI listener.
+    /// Optional loopback URL where the browser can deliver the proof.
+    ///
+    /// This URL excludes callback state. The browser adds its fragment-held
+    /// callback secret locally, so the registry never reflects that secret.
     pub localhost_callback_url: Option<String>,
     /// Expiry of the exact token-and-operation-scoped polling fallback grant.
     pub grant_expires_at: DateTime<Utc>,
@@ -538,17 +525,9 @@ pub async fn finish_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     };
 
-    let localhost_callback_url = match (challenge.localhost_port, callback_secret.as_deref()) {
-        (Some(port), Some(secret)) => Some(format!(
-            "http://127.0.0.1:{port}/?code={otp}&state={secret}"
-        )),
-        (Some(_), None) => {
-            return Err(server_error(
-                "validated callback challenge is missing its callback secret",
-            ));
-        }
-        (None, _) => None,
-    };
+    let localhost_callback_url = challenge
+        .localhost_port
+        .map(|port| format!("http://127.0.0.1:{port}/?code={otp}"));
 
     use crate::models::{NewUserSecurityEvent, SecurityEventType};
     NewUserSecurityEvent::new(
@@ -579,7 +558,7 @@ pub async fn finish_api_mfa_challenge(
 /// Loopback callback details recovered for an acknowledged challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RecoverChallengeCallbackResponse {
-    /// URL for the browser to retry against the waiting loopback listener.
+    /// Loopback URL without callback state. The browser adds state locally.
     pub localhost_callback_url: String,
     pub challenge_id: String,
 }
@@ -635,7 +614,7 @@ pub async fn recover_api_mfa_challenge_callback(
     Ok((
         no_store(),
         Json(RecoverChallengeCallbackResponse {
-            localhost_callback_url: format!("http://127.0.0.1:{port}/?code={otp}&state={secret}"),
+            localhost_callback_url: format!("http://127.0.0.1:{port}/?code={otp}"),
             challenge_id: challenge.id,
         }),
     ))

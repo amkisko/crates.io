@@ -132,11 +132,12 @@ Completion for one request must not authorize a modified publication or a differ
 Additional properties:
 
 - Challenge ids (`stp_…`) are unguessable, short-lived, and request-bound.
-- The localhost callback secret is hashed at rest; the plaintext is carried in the
-  verification URL fragment (not sent to crates.io as a query/path) so ordinary
-  HTTP access logs do not record it. Callback port replacement requires that
-  secret. The server includes it as callback `state`, and Cargo rejects
-  callbacks whose state does not match before accepting an OTP.
+- The localhost callback secret is hashed at rest. Cargo adds the plaintext to
+  the verification URL fragment locally, so it never appears in a registry
+  response or a request URL sent to the registry. The verification page reads
+  the fragment and constructs callback `state` locally. Callback port
+  replacement and proof recovery require the same secret, and Cargo rejects
+  callbacks whose state does not match before accepting a proof.
 - `poll_url` and `verification_url` must share the registry API origin; Cargo
   refuses cross-origin poll URLs and does not follow poll redirects.
 - Cargo allowlists `step_up_required` only; it must not follow arbitrary URLs from
@@ -175,8 +176,10 @@ Additional properties:
    require a crates.io cookie; the opaque `challenge_id` is the capability, and
    the passkey proves control of the account that owns the token.
 7. CLI retries the original request (idempotent):
-   - With `Cargo-Step-Up-Port`: finish returns `localhost_callback_url` plus a
-     one-time proof; retry with `Cargo-Step-Up-Proof` when callback wins.
+   - With `Cargo-Step-Up-Port`: finish returns a loopback URL containing the
+     stored port and one-time proof, but no callback state. The verification
+     page adds its fragment-held secret and contacts Cargo; retry with
+     `Cargo-Step-Up-Proof` when callback wins.
    - Finish always issues a scoped grant bound to the same API token, operation,
      crate, and fingerprint. If polling observes acknowledgment first, Cargo
      retries without OTP and uses that grant.

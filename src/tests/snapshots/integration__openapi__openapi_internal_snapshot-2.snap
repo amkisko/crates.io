@@ -2041,7 +2041,7 @@ expression: document
                       "type": "string"
                     },
                     "localhost_callback_url": {
-                      "description": "Optional URL the browser can hit to deliver the OTP to a local CLI listener.",
+                      "description": "Optional loopback URL where the browser can deliver the proof.\n\nThis URL excludes callback state. The browser adds its fragment-held\ncallback secret locally, so the registry never reflects that secret.",
                       "type": [
                         "string",
                         "null"
@@ -2095,7 +2095,7 @@ expression: document
                       "type": "string"
                     },
                     "localhost_callback_url": {
-                      "description": "URL for the browser to retry against the waiting loopback listener.",
+                      "description": "Loopback URL without callback state. The browser adds state locally.",
                       "type": "string"
                     }
                   },
