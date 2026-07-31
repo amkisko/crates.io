@@ -45,13 +45,13 @@ pub struct CreateChallengeRequest {
     pub port: Option<i32>,
 }
 
-/// URLs and timing information for a newly created API MFA challenge.
+/// Instructions and timing information for a newly created API MFA challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CreateChallengeResponse {
     /// Opaque step-up challenge identifier.
     pub challenge_id: String,
-    /// Browser URL where the user must complete passkey verification.
-    pub verification_url: String,
+    /// Complete human-readable instructions for satisfying the challenge.
+    pub detail: String,
     /// URL the CLI should poll until `acknowledged` is true.
     pub poll_url: String,
     pub expires_at: DateTime<Utc>,
@@ -198,7 +198,10 @@ fn challenge_created_response(
     let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
     CreateChallengeResponse {
         challenge_id: challenge.id.clone(),
-        verification_url,
+        detail: format!(
+            "Additional authentication is required. Open this link to verify with your passkey:\n\n\
+             {verification_url}\n\nAfter verification, retry the request."
+        ),
         poll_url,
         expires_at: challenge.expires_at,
         recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,

@@ -623,7 +623,6 @@ fn step_up_required_error(
         operation: operation.kind.to_string(),
         operation_summary: operation.summary.clone(),
         crate_name: operation.crate_name.clone(),
-        verification_url,
         poll_url,
         expires_at: challenge.expires_at,
         recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,

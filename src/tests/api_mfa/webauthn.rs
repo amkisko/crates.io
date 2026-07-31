@@ -164,10 +164,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
     blocked.assert_cache_control("no-store");
     let blocked_body = blocked.json();
     assert!(!blocked_body.to_string().contains(callback_secret));
-    assert!(!blocked_body["errors"][0]["verification_url"]
-        .as_str()
-        .unwrap()
-        .contains('#'));
+    assert!(blocked_body["errors"][0].get("verification_url").is_none());
     let challenge_id = blocked_body["errors"][0]["challenge_id"]
         .as_str()
         .unwrap()

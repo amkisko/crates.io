@@ -35,18 +35,13 @@ async fn publish_returns_operation_challenge_link() {
     let error = &body["errors"][0];
     assert_eq!(error["id"], "step_up_required");
     assert_eq!(error["protocol_version"], 1);
-    assert_eq!(error["interaction"], "browser");
+    assert!(error.get("interaction").is_none());
     assert_eq!(error["operation"], "publish");
     assert_eq!(error["crate"], "foo_api_mfa");
 
     let challenge_id = error["challenge_id"].as_str().unwrap();
     assert!(challenge_id.starts_with("stp_"));
-    assert!(
-        error["verification_url"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("/verify/{challenge_id}"))
-    );
+    assert!(error.get("verification_url").is_none());
     assert!(
         error["poll_url"]
             .as_str()
@@ -543,12 +538,15 @@ async fn explicit_callback_challenge_requires_and_binds_secret() {
         )
         .await
         .good();
-    assert_eq!(
-        response["verification_url"],
-        format!(
-            "http://localhost:8888/verify/{}",
-            response["challenge_id"].as_str().unwrap()
-        )
+    assert!(response.get("verification_url").is_none());
+    assert!(
+        response["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&format!(
+                "/verify/{}",
+                response["challenge_id"].as_str().unwrap()
+            ))
     );
     assert!(!response.to_string().contains(callback_secret));
     assert!(response["poll_url"].is_string());
