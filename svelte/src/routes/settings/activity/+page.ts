@@ -1,21 +1,29 @@
+import { createClient } from '@crates-io/api-client';
 import { error } from '@sveltejs/kit';
 
 export async function load({ fetch }) {
+  let client = createClient({ fetch });
   let response;
   try {
-    response = await fetch('/api/v1/me/security_events?per_page=50');
+    response = await client.GET('/api/v1/me/security_events', {
+      params: { query: { per_page: 50 } },
+    });
   } catch {
     loadError(504);
   }
 
-  if (!response.ok) {
-    loadError(response.status);
+  if (!response.data) {
+    loadError(response.response.status);
   }
 
-  let body = await response.json();
   return {
-    securityEvents: body.security_events ?? [],
-    meta: body.meta ?? { total: 0 },
+    securityEvents: response.data.security_events.map(event => ({
+      ...event,
+      api_token_id: event.api_token_id ?? null,
+      ip: event.ip ?? null,
+      metadata: event.metadata as Record<string, string | null>,
+    })),
+    meta: response.data.meta,
   };
 }
 

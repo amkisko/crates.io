@@ -1,5 +1,8 @@
 <script lang="ts">
+  import type { operations } from '@crates-io/api-client';
+
   import { page } from '$app/state';
+  import { createClient } from '@crates-io/api-client';
 
   import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
   import PageTitle from '$lib/components/PageTitle.svelte';
@@ -7,18 +10,10 @@
   import { revivePublicKeyRequest, serializeAssertion } from '$lib/utils/webauthn';
   import { deliverLocalhostCallback } from './localhost-callback';
 
-  interface ChallengeMeta {
-    challenge_id: string;
-    status: string;
-    acknowledged: boolean;
-    operation: string;
-    operation_summary: string;
-    crate_name: string | null;
-    expires_at: string;
-    localhost_port: number | null;
-  }
+  type ChallengeMeta = operations['get_api_mfa_challenge']['responses'][200]['content']['application/json'];
 
   let notifications = getNotifications();
+  let client = createClient({ fetch });
 
   let busy = $state(false);
   let loading = $state(true);
@@ -34,16 +29,20 @@
   let callbackSecret = $derived(new URLSearchParams(page.url.hash.slice(1)).get('callback_secret'));
 
   async function loadMeta() {
+    let id = challengeId;
+    if (!id) return;
+
     loading = true;
     loadError = null;
     missingCallbackSecret = false;
     try {
-      let response = await fetch(`/api/v1/auth/challenges/${challengeId}`);
-      if (!response.ok) {
-        let body = await response.json().catch(() => null);
-        throw new Error(body?.errors?.[0]?.detail ?? 'Challenge not found or expired');
+      let response = await client.GET('/api/v1/auth/challenges/{id}', {
+        params: { path: { id } },
+      });
+      if (!response.data) {
+        throw new Error('Challenge not found or expired');
       }
-      meta = await response.json();
+      meta = response.data;
       if (meta?.acknowledged) {
         done = true;
         if (meta.localhost_port && callbackSecret) {

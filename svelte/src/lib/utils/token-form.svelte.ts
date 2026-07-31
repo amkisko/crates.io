@@ -1,3 +1,5 @@
+import { SvelteDate } from 'svelte/reactivity';
+
 /** Endpoint scopes supported by crates.io API tokens. */
 export const TOKEN_ENDPOINT_SCOPES = ['change-owners', 'publish-new', 'publish-update', 'trusted-publishing', 'yank'];
 
@@ -39,19 +41,19 @@ export class TokenFormState {
   }
 
   get today(): string {
-    return new Date().toISOString().slice(0, 10);
+    return new SvelteDate().toISOString().slice(0, 10);
   }
 
   get expiryDate(): Date | null {
     if (this.expirySelection === 'none') return null;
 
-    let now = new Date();
+    let now = new SvelteDate();
     if (this.expirySelection === 'custom') {
       if (!this.expiryDateInput) return null;
-      return new Date(this.expiryDateInput + now.toISOString().slice(10));
+      return new SvelteDate(this.expiryDateInput + now.toISOString().slice(10));
     }
 
-    return new Date(
+    return new SvelteDate(
       now.getFullYear(),
       now.getMonth(),
       now.getDate() + Number(this.expirySelection),

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 
-import { test } from '../../../../test/msw';
+import { test } from '../../../test/msw';
 import PageTestWrapper from './PageTestWrapper.svelte';
 
 const callback = vi.hoisted(() => vi.fn());

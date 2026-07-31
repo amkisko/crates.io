@@ -1,5 +1,8 @@
 <script lang="ts">
+  import type { operations } from '@crates-io/api-client';
+
   import { page } from '$app/state';
+  import { createClient } from '@crates-io/api-client';
 
   import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -11,18 +14,11 @@
   import { TokenFormState } from '$lib/utils/token-form.svelte';
   import { revivePublicKeyRequest, serializeAssertion } from '$lib/utils/webauthn';
 
-  interface CliLoginMeta {
-    login_id: string;
-    status: string;
-    expires_at: string;
-    localhost_port: number | null;
-    client_ip?: string | null;
-    mfa_required: boolean;
-    mfa_email_otp_allowed: boolean;
-  }
+  type CliLoginMeta = operations['get_cli_login_meta']['responses'][200]['content']['application/json'];
 
   let session = getSession();
   let notifications = getNotifications();
+  let client = createClient({ fetch });
   let id = $props.id();
 
   let loginId = $derived(page.params.id);
@@ -48,14 +44,18 @@
   }
 
   async function loadMeta() {
+    let id = loginId;
+    if (!id) return;
+
     loading = true;
     try {
-      let response = await fetch(`/api/v1/cli_login/${loginId}/meta`);
-      if (!response.ok) {
-        let body = await response.json().catch(() => null);
-        throw new Error(body?.errors?.[0]?.detail ?? 'CLI login session not found or expired');
+      let response = await client.GET('/api/v1/cli_login/{id}/meta', {
+        params: { path: { id } },
+      });
+      if (!response.data) {
+        throw new Error('CLI login session not found or expired');
       }
-      meta = await response.json();
+      meta = response.data;
       if (meta?.status && meta.status !== 'pending') {
         done = true;
       }
@@ -312,39 +312,12 @@
     margin: var(--space-m) 0;
   }
 
-  .email-otp-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2xs);
-    align-items: center;
-  }
-
-  .select-group {
-    display: flex;
-    align-content: center;
-    align-items: center;
-  }
-
-  .help-link {
-    flex-shrink: 0;
-    color: light-dark(var(--grey600), var(--grey700));
-    padding: var(--space-3xs);
-    margin: calc(-1 * var(--space-3xs));
-    --icon-size: 1.25em;
-
-    &:hover {
-      color: light-dark(var(--grey700), var(--grey600));
-    }
-
-    :global(.icon) {
-      margin: -0.125em;
-    }
-  }
-
+  .email-otp-row,
   .buttons {
     display: flex;
-    gap: var(--space-2xs);
     flex-wrap: wrap;
+    gap: var(--space-2xs);
+    align-items: center;
   }
 
   .name-input {
@@ -352,169 +325,11 @@
     width: 100%;
   }
 
-  .expiry-select {
-    --dropdown-icon-light: icon('i-mdi:menu-down', 'black');
-    --dropdown-icon-dark: icon('i-mdi:menu-down', 'white');
-
-    padding-right: var(--space-m);
-    background-image: var(--dropdown-icon-light);
-    background-repeat: no-repeat;
-    background-position: calc(100% - var(--space-3xs)) center;
-    background-size: 20px;
-    appearance: none;
-
-    :global([data-color-scheme='system']) & {
-      @media (prefers-color-scheme: dark) {
-        background-image: var(--dropdown-icon-dark);
-      }
-    }
-
-    :global([data-color-scheme='dark']) & {
-      background-image: var(--dropdown-icon-dark);
-    }
-  }
-
-  .expiry-date-input {
-    margin-left: var(--space-2xs);
-  }
-
-  .expiry-description {
-    margin-left: var(--space-2xs);
-    font-size: 0.9em;
-  }
-
-  .scopes-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    background-color: light-dark(white, #141413);
-    border: 1px solid var(--gray-border);
-    border-radius: var(--space-3xs);
-
-    &.invalid {
-      background: light-dark(#fff2f2, #170808);
-      border-color: red;
-    }
-
-    > li + li {
-      border-top: inherit;
-    }
-
-    label {
-      padding: var(--space-xs) var(--space-s);
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--space-xs);
-      font-size: 0.9em;
-    }
-  }
-
-  .scope-id {
-    display: inline-block;
-    max-width: 170px;
-    flex-grow: 1;
-    font-weight: bold;
-  }
-
-  .scope-description {
-    display: inline-block;
-  }
-
-  .crates-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    background-color: light-dark(white, #141413);
-    border: 1px solid var(--gray-border);
-    border-radius: var(--space-3xs);
-
-    > li + li {
-      border-top: inherit;
-    }
-  }
-
-  .crates-unrestricted {
-    padding: var(--space-xs) var(--space-s);
-    font-size: 0.9em;
-  }
-
-  .crates-scope {
-    display: flex;
-
-    > div {
-      padding: var(--space-xs) var(--space-s);
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--space-xs);
-      font-size: 0.9em;
-      flex-grow: 1;
-    }
-
-    input {
-      margin: calc(-1 * var(--space-4xs)) 0;
-      padding: var(--space-3xs) var(--space-2xs);
-      border: 1px solid var(--gray-border);
-      border-radius: var(--space-3xs);
-    }
-
-    &.invalid input {
-      background: light-dark(#fff2f2, #170808);
-      border-color: red;
-    }
-
-    > button {
-      margin: 0;
-      padding: 0 var(--space-xs);
-      border: none;
-      background: none;
-      cursor: pointer;
-      color: var(--grey700);
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      --icon-size: 1.5em;
-
-      &:hover {
-        background: light-dark(var(--grey200), #333333);
-        color: light-dark(var(--grey900), white);
-      }
-    }
-
-    &:first-child button {
-      border-top-right-radius: var(--space-3xs);
-    }
-  }
-
-  .pattern-description {
-    flex-grow: 1;
-    align-self: center;
-
-    .invalid & {
-      color: red;
-    }
-  }
-
-  .crates-pattern-button button {
-    padding: var(--space-xs) var(--space-s);
-    font-size: 0.9em;
-    width: 100%;
-    border: none;
-    background: none;
-    border-bottom-left-radius: var(--space-3xs);
-    border-bottom-right-radius: var(--space-3xs);
-    cursor: pointer;
-    font-weight: bold;
-
-    &:hover {
-      background: light-dark(var(--grey200), #333333);
-    }
-  }
-
   .generate-button {
     border-radius: 4px;
+  }
 
-    :global(.spinner) {
-      margin-left: var(--space-2xs);
-    }
+  .generate-button :global(.spinner) {
+    margin-left: var(--space-2xs);
   }
 </style>

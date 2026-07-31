@@ -1,5 +1,8 @@
 <script lang="ts">
+  import type { operations } from '@crates-io/api-client';
+
   import { resolve } from '$app/paths';
+  import { createClient } from '@crates-io/api-client';
 
   import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -14,23 +17,11 @@
     serializeAttestation,
   } from '$lib/utils/webauthn';
 
-  interface Credential {
-    id: number;
-    name: string;
-    created_at: string;
-    last_used_at: string | null;
-  }
-
-  interface ApiMfaStatus {
-    enabled: boolean;
-    enforcement_active: boolean;
-    credentials: Credential[];
-    grant_expires_at: string | null;
-    has_verified_email: boolean;
-  }
+  type ApiMfaStatus = operations['get_api_mfa_status']['responses'][200]['content']['application/json'];
 
   let session = getSession();
   let notifications = getNotifications();
+  let client = createClient({ fetch });
 
   let status = $state<ApiMfaStatus | null>(null);
   let loading = $state(true);
@@ -43,11 +34,11 @@
   async function loadStatus() {
     loading = true;
     try {
-      let response = await fetch('/api/v1/me/mfa');
-      if (!response.ok) {
+      let response = await client.GET('/api/v1/me/mfa');
+      if (!response.data) {
         throw new Error('Failed to load API MFA status');
       }
-      status = await response.json();
+      status = response.data;
     } catch {
       notifications.error('Failed to load API MFA settings.');
     } finally {
