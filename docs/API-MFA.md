@@ -352,11 +352,6 @@ keeps the existing API token and records a request-bound challenge completion.
 Authentication-method vocabulary follows
 [NIST SP 800-63B](https://pages.nist.gov/800-63-4/sp800-63b.html).
 
-Stable prior art for package-registry CLI MFA / WebAuthn flows:
-
-- [RubyGems: Using WebAuthn MFA in the command line](https://guides.rubygems.org/using-webauthn-mfa-in-command-line/)
-- [npm: Requiring 2FA for package publishing](https://docs.npmjs.com/requiring-2fa-for-package-publishing-and-settings-modification/)
-
 Complementary Cargo documentation (credential storage and providers, not this
 mutate handshake):
 

@@ -17,11 +17,13 @@ use http::request::Parts;
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
-/// Header carrying a one-time OTP after passkey verification (RubyGems-compatible alias: `OTP`).
+/// Header carrying a one-time OTP after passkey verification.
+///
+/// Clients may use the shorter `OTP` alias for compatibility.
 pub const CRATES_OTP_HEADER: &str = "crates-otp";
 const OTP_HEADER: &str = "otp";
 
-/// Optional localhost callback port for RubyGems-style OTP delivery.
+/// Optional localhost callback port for OTP delivery.
 pub const CRATES_STEP_UP_PORT_HEADER: &str = "crates-step-up-port";
 
 /// Client-held secret authorizing localhost callback port refreshes.
@@ -456,8 +458,7 @@ async fn ensure_api_mfa_inner(
 
 /// Builds absolute verification and poll URLs from the `WebAuthn` RP origin.
 ///
-/// The verify page is a top-level capability URL (no crates.io cookie), modeled
-/// after the `RubyGems` `/webauthn_verification/…` pattern.
+/// The verify page is a top-level capability URL and does not require a crates.io cookie.
 pub fn public_mfa_urls(webauthn: &WebauthnConfig, challenge_id: &str) -> (String, String) {
     let base = webauthn.rp_origin.as_str().trim_end_matches('/');
     (

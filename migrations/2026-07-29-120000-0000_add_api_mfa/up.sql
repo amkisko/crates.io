@@ -54,7 +54,7 @@ COMMENT ON COLUMN api_mfa_grants.operation IS
 COMMENT ON COLUMN api_mfa_grants.crate_name IS
     'When set with operation, grant only covers this crate; NULL with operation is unused';
 
--- CLI challenge flow (RubyGems-style): create challenge → verify passkey in browser → OTP.
+-- CLI challenge flow: create challenge → verify passkey in browser → OTP.
 CREATE TABLE IF NOT EXISTS api_mfa_challenges (
     -- Public opaque token used in verification URLs
     id VARCHAR PRIMARY KEY,
