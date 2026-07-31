@@ -19,6 +19,7 @@ use axum::Json;
 use axum::extract::Path;
 use axum_extra::TypedHeader;
 use axum_extra::headers::CacheControl;
+use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::*;
@@ -193,15 +194,13 @@ pub async fn finish_webauthn_registration(
     }
     .insert(&conn)
     .await
-    .map_err(|err| {
-        if err
-            .to_string()
-            .contains("webauthn_credentials_credential_id")
+    .map_err(|err| match err {
+        DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, ref info)
+            if info.constraint_name() == Some("webauthn_credentials_credential_id_idx") =>
         {
             bad_request("this passkey is already registered")
-        } else {
-            server_error(format!("failed to store passkey: {err}"))
         }
+        err => server_error(format!("failed to store passkey: {err}")),
     })?;
 
     NewUserSecurityEvent::new(

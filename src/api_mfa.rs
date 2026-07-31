@@ -17,24 +17,21 @@ use http::request::Parts;
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
-/// Header carrying a one-time OTP after passkey verification.
+/// Header carrying a one-time proof after passkey verification.
 ///
 /// Clients may use the shorter `OTP` alias for compatibility.
-pub const CRATES_OTP_HEADER: &str = "crates-otp";
+pub const CARGO_STEP_UP_PROOF_HEADER: &str = "cargo-step-up-proof";
 const OTP_HEADER: &str = "otp";
 
-/// Optional localhost callback port for OTP delivery.
-pub const CRATES_STEP_UP_PORT_HEADER: &str = "crates-step-up-port";
+/// Optional localhost callback port for proof delivery.
+pub const CARGO_STEP_UP_PORT_HEADER: &str = "cargo-step-up-port";
 
 /// Client-held secret authorizing localhost callback port refreshes.
-pub const CRATES_STEP_UP_CALLBACK_SECRET_HEADER: &str = "crates-step-up-callback-secret";
-
-/// Optional client-supplied challenge id for idempotent handshake reuse.
-pub const CRATES_STEP_UP_CHALLENGE_ID_HEADER: &str = "crates-step-up-challenge-id";
+pub const CARGO_STEP_UP_CALLBACK_SECRET_HEADER: &str = "cargo-step-up-callback-secret";
 
 /// Recommended CLI poll interval for challenge acknowledgment (seconds).
 ///
-/// This is a minimum interval (RFC 8628-style): clients must not poll faster.
+/// Clients treat this as an advisory interval.
 pub const RECOMMENDED_POLL_INTERVAL_SECS: u64 = 5;
 
 /// Optional loopback delivery details supplied by a Cargo client.
@@ -283,7 +280,7 @@ enum EnsureOutcome {
 ///
 /// Acceptance when MFA is enabled:
 /// 1. A non-expired [`ApiMfaGrant`] covering this operation/crate, or
-/// 2. A valid unused OTP for this operation/crate in `Crates-OTP` / `OTP` (token clients), or
+/// 2. A valid unused proof for this operation/crate in `Cargo-Step-Up-Proof` (token clients), or
 /// 3. For API tokens only: create/reuse a short-lived operation challenge (`403` handshake).
 ///
 /// Cookie sessions without a grant are told to use Settings → API MFA → Authorize for 15 minutes.
@@ -425,9 +422,9 @@ async fn ensure_api_mfa_inner(
 
     let localhost_port = mfa_port_from_headers(parts)?;
     let localhost_callback_secret = mfa_callback_secret_from_headers(parts)?;
-    if localhost_port.is_none() && localhost_callback_secret.is_some() {
+    if localhost_port.is_some() != localhost_callback_secret.is_some() {
         return Err(bad_request(
-            "Crates-Step-Up-Callback-Secret requires Crates-Step-Up-Port",
+            "Cargo-Step-Up-Port and Cargo-Step-Up-Callback-Secret must be supplied together",
         ));
     }
     let challenge = resolve_or_create_challenge(
@@ -438,7 +435,6 @@ async fn ensure_api_mfa_inner(
             port: localhost_port,
             secret: localhost_callback_secret.as_deref(),
         },
-        parts,
         conn,
         deps,
     )
@@ -472,23 +468,9 @@ async fn resolve_or_create_challenge(
     api_token_id: i32,
     operation: &ApiMfaOperation,
     callback: ApiMfaCallback<'_>,
-    parts: &Parts,
     conn: &mut AsyncPgConnection,
     deps: &ApiMfaEnsureDeps<'_>,
 ) -> AppResult<ApiMfaChallenge> {
-    // Explicit operation id from a previous 403 makes retries idempotent.
-    if let Some(challenge_id) = challenge_id_from_headers(parts)
-        && let Some(existing) = ApiMfaChallenge::find_active(&challenge_id, conn).await?
-        && existing.user_id == user_id
-        && existing.api_token_id == Some(api_token_id)
-        && existing.operation == operation.kind
-        && existing.crate_name.as_deref() == operation.crate_name.as_deref()
-        && existing.mutation_fingerprint == operation.mutation_fingerprint
-        && !existing.is_acknowledged()
-    {
-        return refresh_challenge_localhost_callback(existing, callback, conn).await;
-    }
-
     // Reuse an in-flight pending challenge for the same token + operation.
     if let Some(existing) = ApiMfaChallenge::find_pending_for_operation(
         user_id,
@@ -536,7 +518,7 @@ async fn resolve_or_create_challenge(
 
 /// Refreshes a pending challenge's localhost callback without allowing downgrade.
 ///
-/// Once callback mode is active, omitting `Crates-Step-Up-Port` cannot switch the
+/// Once callback mode is active, omitting `Cargo-Step-Up-Port` cannot switch the
 /// challenge to the broader polling-grant flow. Replacing an existing port
 /// requires the client-held secret that was stored when the challenge was
 /// created.
@@ -663,18 +645,8 @@ fn step_up_required_error(
 fn otp_from_headers(parts: &Parts) -> Option<String> {
     parts
         .headers
-        .get(CRATES_OTP_HEADER)
+        .get(CARGO_STEP_UP_PROOF_HEADER)
         .or_else(|| parts.headers.get(OTP_HEADER))
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
-fn challenge_id_from_headers(parts: &Parts) -> Option<String> {
-    parts
-        .headers
-        .get(CRATES_STEP_UP_CHALLENGE_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -684,7 +656,7 @@ fn challenge_id_from_headers(parts: &Parts) -> Option<String> {
 fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
     let Some(raw) = parts
         .headers
-        .get(CRATES_STEP_UP_PORT_HEADER)
+        .get(CARGO_STEP_UP_PORT_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -692,12 +664,12 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
         return Ok(None);
     };
 
-    let port: i32 = raw.parse().map_err(|_| {
-        bad_request("Crates-Step-Up-Port must be an integer between 1024 and 65535")
-    })?;
+    let port: i32 = raw
+        .parse()
+        .map_err(|_| bad_request("Cargo-Step-Up-Port must be an integer between 1024 and 65535"))?;
     if !(1024..=65535).contains(&port) {
         return Err(bad_request(
-            "Crates-Step-Up-Port must be an integer between 1024 and 65535",
+            "Cargo-Step-Up-Port must be an integer between 1024 and 65535",
         ));
     }
     Ok(Some(port))
@@ -707,7 +679,7 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
 pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Option<String>> {
     let Some(secret) = parts
         .headers
-        .get(CRATES_STEP_UP_CALLBACK_SECRET_HEADER)
+        .get(CARGO_STEP_UP_CALLBACK_SECRET_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -721,7 +693,7 @@ pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Optio
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
     if !valid_length || !valid_characters {
         return Err(bad_request(
-            "Crates-Step-Up-Callback-Secret must be 32 to 128 URL-safe characters",
+            "Cargo-Step-Up-Callback-Secret must be 32 to 128 URL-safe characters",
         ));
     }
     Ok(Some(secret.to_owned()))

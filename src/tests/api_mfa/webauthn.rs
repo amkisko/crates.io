@@ -107,7 +107,7 @@ async fn challenge_ack_with_soft_passkey_allows_scoped_retry() {
         )
         .await
         .good();
-    assert!(finish["otp"].as_str().unwrap().len() >= 8);
+    assert!(finish["otp"].as_str().unwrap().len() >= 32);
     assert_eq!(finish["challenge_id"], challenge_id);
     assert!(
         finish["grant_expires_at"].is_string(),
@@ -145,9 +145,20 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
 
     let body = PublishBuilder::new("foo_soft_localhost", "1.0.0").body();
     let callback_secret = "0123456789abcdef0123456789abcdef";
+
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-Step-Up-Port", "34567");
-    request.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    request.header("Cargo-Step-Up-Port", "34567");
+    let missing_secret = token.run::<Value>(request.with_body(body.clone())).await;
+    assert_eq!(missing_secret.status(), 400);
+
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
+    let missing_port = token.run::<Value>(request.with_body(body.clone())).await;
+    assert_eq!(missing_port.status(), 400);
+
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Cargo-Step-Up-Port", "34567");
+    request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
     let blocked = token.run::<Value>(request.with_body(body.clone())).await;
     assert_eq!(blocked.status(), 403);
     let challenge_id = blocked.json()["errors"][0]["challenge_id"]
@@ -157,8 +168,8 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
 
     // A later retry can refresh the stored localhost port on the pending challenge.
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-Step-Up-Port", "34568");
-    request.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    request.header("Cargo-Step-Up-Port", "34568");
+    request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
     let blocked_again = token.run::<Value>(request.with_body(body.clone())).await;
     assert_eq!(blocked_again.status(), 403);
     assert_eq!(
@@ -179,9 +190,9 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
 
     // A different callback secret cannot replace the bound port.
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-Step-Up-Port", "34569");
+    request.header("Cargo-Step-Up-Port", "34569");
     request.header(
-        "Crates-Step-Up-Callback-Secret",
+        "Cargo-Step-Up-Callback-Secret",
         "abcdef0123456789abcdef0123456789",
     );
     let wrong_secret = token.run::<Value>(request.with_body(body)).await;
@@ -207,7 +218,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         Method::POST,
         &format!("/api/v1/auth/challenges/{challenge_id}/finish"),
     );
-    finish_request.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    finish_request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
     let finish = anon
         .run::<Value>(
             finish_request.with_body(json!({ "credential": assertion }).to_string().into()),
@@ -215,7 +226,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         .await
         .good();
     let otp = finish["otp"].as_str().unwrap().to_owned();
-    assert!(otp.len() >= 8);
+    assert!(otp.len() >= 32);
     assert_eq!(
         finish["localhost_callback_url"],
         format!("http://127.0.0.1:34568/?code={otp}&state={callback_secret}")
@@ -237,7 +248,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         Method::POST,
         &format!("/api/v1/auth/challenges/{challenge_id}/recover"),
     );
-    recovery_request.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    recovery_request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
     let recovered = anon.run::<Value>(recovery_request).await.good();
     assert_eq!(
         recovered["localhost_callback_url"],
@@ -255,7 +266,7 @@ async fn localhost_port_finish_returns_callback_url_and_otp_retry() {
         Method::POST,
         &format!("/api/v1/auth/challenges/{challenge_id}/recover"),
     );
-    consumed_recovery.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    consumed_recovery.header("Cargo-Step-Up-Callback-Secret", callback_secret);
     let consumed_recovery = anon.run::<Value>(consumed_recovery).await;
     assert_eq!(consumed_recovery.status(), 400);
 

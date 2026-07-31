@@ -7,6 +7,12 @@
   import SettingsPage from '$lib/components/SettingsPage.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
   import { getSession } from '$lib/utils/session.svelte';
+  import {
+    revivePublicKeyCreation,
+    revivePublicKeyRequest,
+    serializeAssertion,
+    serializeAttestation,
+  } from '$lib/utils/webauthn';
 
   interface Credential {
     id: number;
@@ -102,7 +108,7 @@
           if (!credential) {
             throw new Error('Passkey verification was cancelled');
           }
-          payload.credential = serializeCredential(credential);
+          payload.credential = serializeAssertion(credential);
         }
       }
 
@@ -152,7 +158,7 @@
         if (!assertion) {
           throw new Error('Passkey verification was cancelled');
         }
-        startBody.credential = serializeCredential(assertion);
+        startBody.credential = serializeAssertion(assertion);
       } else {
         let otp = emailOtp.trim();
         if (!otp) {
@@ -183,7 +189,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newPasskeyName.trim() || 'Passkey',
-          credential: serializeCredential(credential),
+          credential: serializeAttestation(credential),
         }),
       });
       if (!finish.ok) {
@@ -229,7 +235,7 @@
           if (!credential) {
             throw new Error('Passkey verification was cancelled');
           }
-          payload.credential = serializeCredential(credential);
+          payload.credential = serializeAssertion(credential);
         }
       }
 
@@ -276,7 +282,7 @@
       let finish = await fetch('/api/v1/me/mfa/authorize/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credential: serializeCredential(credential) }),
+        body: JSON.stringify({ credential: serializeAssertion(credential) }),
       });
       if (!finish.ok) {
         let body = await finish.json().catch(() => null);
@@ -290,77 +296,6 @@
     } finally {
       busy = false;
     }
-  }
-
-  function b64urlToBuffer(value: string): ArrayBuffer {
-    let padded = value.replaceAll('-', '+').replaceAll('_', '/');
-    while (padded.length % 4) padded += '=';
-    let binary = atob(padded);
-    let bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i)!;
-    return bytes.buffer;
-  }
-
-  function bufferToB64url(buffer: ArrayBuffer): string {
-    let bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let byte of bytes) binary += String.fromCodePoint(byte);
-    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll(/=+$/g, '');
-  }
-
-  function revivePublicKeyCreation(options: Record<string, unknown>): PublicKeyCredentialCreationOptions {
-    let user = options.user as Record<string, unknown>;
-    return {
-      ...(options as unknown as PublicKeyCredentialCreationOptions),
-      challenge: b64urlToBuffer(options.challenge as string),
-      user: {
-        ...(user as unknown as PublicKeyCredentialUserEntity),
-        id: b64urlToBuffer(user.id as string),
-      },
-      excludeCredentials: ((options.excludeCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as unknown as PublicKeyCredentialDescriptor),
-        id: b64urlToBuffer(cred.id as string),
-      })),
-    };
-  }
-
-  function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
-    return {
-      ...(options as unknown as PublicKeyCredentialRequestOptions),
-      challenge: b64urlToBuffer(options.challenge as string),
-      allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as unknown as PublicKeyCredentialDescriptor),
-        id: b64urlToBuffer(cred.id as string),
-      })),
-    };
-  }
-
-  function serializeCredential(credential: PublicKeyCredential) {
-    let response = credential.response;
-    if (response instanceof AuthenticatorAttestationResponse) {
-      return {
-        id: credential.id,
-        rawId: bufferToB64url(credential.rawId),
-        type: credential.type,
-        response: {
-          clientDataJSON: bufferToB64url(response.clientDataJSON),
-          attestationObject: bufferToB64url(response.attestationObject),
-        },
-      };
-    }
-
-    let assertion = response as AuthenticatorAssertionResponse;
-    return {
-      id: credential.id,
-      rawId: bufferToB64url(credential.rawId),
-      type: credential.type,
-      response: {
-        clientDataJSON: bufferToB64url(assertion.clientDataJSON),
-        authenticatorData: bufferToB64url(assertion.authenticatorData),
-        signature: bufferToB64url(assertion.signature),
-        userHandle: assertion.userHandle ? bufferToB64url(assertion.userHandle) : null,
-      },
-    };
   }
 
   let enableNote = $derived.by(() => {

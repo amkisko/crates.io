@@ -38,9 +38,9 @@ pub struct CreateChallengeRequest {
     pub operation: Option<String>,
     /// Optional crate name associated with the operation.
     pub crate_name: Option<String>,
-    /// Optional localhost port (1024–65535) for OTP delivery to the CLI.
+    /// Optional localhost port (1024–65535) for proof delivery to the CLI.
     ///
-    /// Requires a valid `Crates-Step-Up-Callback-Secret` header. Polling remains
+    /// Requires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains
     /// available as a fallback when callback delivery fails.
     pub port: Option<i32>,
 }
@@ -105,11 +105,11 @@ pub async fn create_api_mfa_challenge(
     match (body.port, callback_secret.as_deref()) {
         (Some(_), None) => {
             return Err(bad_request(
-                "Crates-Step-Up-Callback-Secret is required when port is set",
+                "Cargo-Step-Up-Callback-Secret is required when port is set",
             ));
         }
         (None, Some(_)) => {
-            return Err(bad_request("Crates-Step-Up-Callback-Secret requires port"));
+            return Err(bad_request("Cargo-Step-Up-Callback-Secret requires port"));
         }
         _ => {}
     }
@@ -434,12 +434,12 @@ pub struct FinishChallengeAuthRequest {
     pub credential: serde_json::Value,
 }
 
-/// OTP and fallback grant issued after successful challenge verification.
+/// Proof and fallback grant issued after successful challenge verification.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FinishChallengeAuthResponse {
-    /// One-time password for the CLI to send as `Crates-OTP`.
+    /// One-time proof for the CLI to send as `Cargo-Step-Up-Proof`.
     pub otp: String,
-    /// Optional URL the browser can hit to deliver the OTP to a local CLI listener.
+    /// Optional URL the browser can hit to deliver the proof to a local CLI listener.
     pub localhost_callback_url: Option<String>,
     /// Expiry of the exact token-and-operation-scoped polling fallback grant.
     pub grant_expires_at: DateTime<Utc>,

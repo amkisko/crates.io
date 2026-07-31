@@ -41,15 +41,22 @@ pub async fn notify_api_mfa_settings_changed(
     ) {
         Ok(email) => email,
         Err(err) => {
-            error!("Failed to render API MFA settings email ({action}): {err}");
+            error!(
+                api_mfa.action = action,
+                error = %err,
+                "Failed to render API MFA settings email ({action}): {err}",
+            );
             return;
         }
     };
 
     if let Err(err) = app.emails.send(&recipient, email).await {
         error!(
-            "Failed to send API MFA settings email ({action}) to user {}: {err}",
-            user.id
+            user.id = user.id,
+            api_mfa.action = action,
+            error = %err,
+            "Failed to send API MFA settings email ({action}) to user `{}`: {err}",
+            user.id,
         );
     }
 }

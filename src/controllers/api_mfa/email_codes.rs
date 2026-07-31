@@ -69,7 +69,7 @@ pub async fn send_api_mfa_email_code(
         },
     )
     .map_err(|err| {
-        warn!("Failed to render API MFA email OTP template: {err}");
+        warn!(error = %err, "Failed to render API MFA email OTP template: {err}");
         server_error("failed to send email code")
     })?;
 
@@ -78,8 +78,10 @@ pub async fn send_api_mfa_email_code(
         .await
         .map_err(|err| {
             warn!(
-                "Failed to send API MFA email OTP to user {}: {err}",
-                user.id
+                user.id = user.id,
+                error = %err,
+                "Failed to send API MFA email OTP to user `{}`: {err}",
+                user.id,
             );
             server_error("failed to send email code")
         })?;

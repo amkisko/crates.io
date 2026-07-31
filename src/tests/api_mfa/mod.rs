@@ -321,14 +321,14 @@ async fn publish_allowed_with_otp_header() {
         .unwrap();
 
     let mut wrong_request = other_token.request_builder(Method::PUT, "/api/v1/crates/new");
-    wrong_request.header("Crates-OTP", &otp);
+    wrong_request.header("Cargo-Step-Up-Proof", &otp);
     let wrong_token = other_token
         .run::<Value>(wrong_request.with_body(body.clone()))
         .await;
     assert_snapshot!(wrong_token.status(), @"403 Forbidden");
 
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-OTP", &otp);
+    request.header("Cargo-Step-Up-Proof", &otp);
     let request = request.with_body(body);
     let response = token.run::<crates_io::views::GoodCrate>(request).await;
     token.app().run_pending_background_jobs().await;
@@ -385,7 +385,7 @@ async fn otp_from_revoked_token_challenge_is_rejected() {
     );
 
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-OTP", &otp);
+    request.header("Cargo-Step-Up-Proof", &otp);
     let response = token.run::<Value>(request.with_body(body)).await;
 
     assert_snapshot!(response.status(), @"403 Forbidden");
@@ -426,7 +426,7 @@ async fn otp_for_other_crate_is_rejected() {
 
     let body = PublishBuilder::new("foo_api_mfa_otp_wrong", "1.0.0").body();
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Crates-OTP", &otp);
+    request.header("Cargo-Step-Up-Proof", &otp);
     let request = request.with_body(body);
     let response = token.run::<Value>(request).await;
 
@@ -531,7 +531,7 @@ async fn explicit_callback_challenge_requires_and_binds_secret() {
 
     let callback_secret = "0123456789abcdef0123456789abcdef";
     let mut request = token.request_builder(Method::POST, "/api/v1/auth/challenges");
-    request.header("Crates-Step-Up-Callback-Secret", callback_secret);
+    request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
     let response = token
         .run::<Value>(
             request.with_body(

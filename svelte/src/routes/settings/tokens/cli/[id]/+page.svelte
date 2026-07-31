@@ -1,17 +1,15 @@
 <script lang="ts">
   import { page } from '$app/state';
 
-  import Icon from '$lib/components/Icon.svelte';
   import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import PageTitle from '$lib/components/PageTitle.svelte';
-  import PatternDescription from '$lib/components/PatternDescription.svelte';
   import SettingsPage from '$lib/components/SettingsPage.svelte';
+  import TokenDetailsFields from '$lib/components/TokenDetailsFields.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
   import { getSession } from '$lib/utils/session.svelte';
-  import { scopeDescription } from '$lib/utils/token-scopes';
-
-  const ENDPOINT_SCOPES = ['change-owners', 'publish-new', 'publish-update', 'trusted-publishing', 'yank'];
+  import { TokenFormState } from '$lib/utils/token-form.svelte';
+  import { revivePublicKeyRequest, serializeAssertion } from '$lib/utils/webauthn';
 
   interface CliLoginMeta {
     login_id: string;
@@ -29,122 +27,24 @@
 
   let loginId = $derived(page.params.id);
 
-  class CratePattern {
-    pattern = $state('');
-    showAsInvalid = $state(false);
-
-    constructor(pattern: string) {
-      this.pattern = pattern;
-    }
-
-    get isValid(): boolean {
-      return isValidPattern(this.pattern);
-    }
-  }
-
-  function isValidPattern(pattern: string): boolean {
-    if (!pattern) return false;
-    if (pattern === '*') return true;
-
-    if (pattern.endsWith('*')) {
-      pattern = pattern.slice(0, -1);
-    }
-
-    return isValidIdent(pattern);
-  }
-
-  function isValidIdent(pattern: string): boolean {
-    return (
-      [...pattern].every(c => isAsciiAlphanumeric(c) || c === '_' || c === '-') &&
-      pattern[0] !== '_' &&
-      pattern[0] !== '-'
-    );
-  }
-
-  function isAsciiAlphanumeric(c: string): boolean {
-    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-  }
-
   let meta = $state<CliLoginMeta | null>(null);
   let loading = $state(true);
   let isSaving = $state(false);
   let done = $state(false);
 
-  let name = $state('cargo login');
-  let nameInvalid = $state(false);
+  let tokenForm = new TokenFormState({
+    name: 'cargo login',
+    endpointScopes: ['publish-update', 'publish-new', 'yank'],
+  });
   let confirmationCode = $state('');
   let confirmationCodeInvalid = $state(false);
   let emailOtp = $state('');
   let emailOtpHint = $state<string | null>(null);
-  let expirySelection = $state('90');
-  let expiryDateInput = $state('');
-  let expiryDateInvalid = $state(false);
-  let scopes = $state<string[]>(['publish-update', 'publish-new', 'yank']);
-  let scopesInvalid = $state(false);
-  let crateScopes = $state<CratePattern[]>([]);
-
-  let today = $derived(new Date().toISOString().slice(0, 10));
-
-  let expiryDate = $derived.by(() => {
-    if (expirySelection === 'none') return null;
-
-    let now = new Date();
-
-    if (expirySelection === 'custom') {
-      if (!expiryDateInput) return null;
-
-      let timeSuffix = now.toISOString().slice(10);
-      return new Date(expiryDateInput + timeSuffix);
-    }
-
-    return new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() + Number(expirySelection),
-      now.getHours(),
-      now.getMinutes(),
-      now.getSeconds(),
-    );
-  });
-
-  let expiryDescription = $derived(
-    expirySelection === 'none'
-      ? 'The token will never expire'
-      : `The token will expire on ${expiryDate?.toLocaleDateString(undefined, { dateStyle: 'long' })}`,
-  );
-
-  function toggleScope(scope: string): void {
-    scopes = scopes.includes(scope) ? scopes.filter(it => it !== scope) : [...scopes, scope];
-    scopesInvalid = false;
-  }
-
-  function updateExpirySelection(event: Event): void {
-    expiryDateInput = expiryDate?.toISOString().slice(0, 10) ?? '';
-    expirySelection = (event.target as HTMLSelectElement).value;
-  }
-
-  function addCratePattern(): void {
-    crateScopes = [...crateScopes, new CratePattern('')];
-  }
-
-  function removeCrateScope(index: number): void {
-    crateScopes = crateScopes.filter((_, i) => i !== index);
-  }
 
   function validate(): boolean {
-    nameInvalid = !name;
+    let tokenFieldsValid = tokenForm.validate();
     confirmationCodeInvalid = confirmationCode.replaceAll(/[^A-Za-z0-9]/g, '').length < 8;
-    expiryDateInvalid = expirySelection === 'custom' && !expiryDateInput;
-    scopesInvalid = scopes.length === 0;
-    let crateScopesValid = crateScopes
-      .map(pattern => {
-        let valid = isValidPattern(pattern.pattern);
-        pattern.showAsInvalid = !valid;
-        return valid;
-      })
-      .every(Boolean);
-
-    return !nameInvalid && !confirmationCodeInvalid && !expiryDateInvalid && !scopesInvalid && crateScopesValid;
+    return tokenFieldsValid && !confirmationCodeInvalid;
   }
 
   async function loadMeta() {
@@ -206,7 +106,7 @@
 
     isSaving = true;
     try {
-      let crateScopePatterns: string[] | null = crateScopes.map(it => it.pattern);
+      let crateScopePatterns: string[] | null = tokenForm.crateScopes.map(it => it.pattern);
       if (crateScopePatterns.length === 0) {
         crateScopePatterns = null;
       }
@@ -221,10 +121,10 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name,
-          endpoint_scopes: scopes,
+          name: tokenForm.name,
+          endpoint_scopes: tokenForm.scopes,
           crate_scopes: crateScopePatterns,
-          expired_at: expiryDate?.toISOString() ?? null,
+          expired_at: tokenForm.expiryDate?.toISOString() ?? null,
           confirmation_code: confirmationCode,
           credential,
           email_code,
@@ -243,7 +143,7 @@
       let port = result.localhost_port ?? meta?.localhost_port;
       if (typeof port === 'number' && port >= 1024 && port <= 65_535) {
         try {
-          await fetch(`http://localhost:${port}/`, { mode: 'no-cors' });
+          await fetch(`http://127.0.0.1:${port}/`, { mode: 'no-cors' });
         } catch {
           // Ignore; CLI can poll for the token instead.
         }
@@ -255,48 +155,6 @@
     } finally {
       isSaving = false;
     }
-  }
-
-  function b64urlToBuffer(value: string): ArrayBuffer {
-    let padded = value.replaceAll('-', '+').replaceAll('_', '/');
-    while (padded.length % 4) padded += '=';
-    let binary = atob(padded);
-    let bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i)!;
-    return bytes.buffer;
-  }
-
-  function bufferToB64url(buffer: ArrayBuffer): string {
-    let bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let byte of bytes) binary += String.fromCodePoint(byte);
-    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll(/=+$/g, '');
-  }
-
-  function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
-    return {
-      ...(options as unknown as PublicKeyCredentialRequestOptions),
-      challenge: b64urlToBuffer(options.challenge as string),
-      allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as unknown as PublicKeyCredentialDescriptor),
-        id: b64urlToBuffer(cred.id as string),
-      })),
-    };
-  }
-
-  function serializeAssertion(credential: PublicKeyCredential) {
-    let assertion = credential.response as AuthenticatorAssertionResponse;
-    return {
-      id: credential.id,
-      rawId: bufferToB64url(credential.rawId),
-      type: credential.type,
-      response: {
-        clientDataJSON: bufferToB64url(assertion.clientDataJSON),
-        authenticatorData: bufferToB64url(assertion.authenticatorData),
-        signature: bufferToB64url(assertion.signature),
-        userHandle: assertion.userHandle ? bufferToB64url(assertion.userHandle) : null,
-      },
-    };
   }
 
   $effect(() => {
@@ -373,6 +231,7 @@
               bind:value={emailOtp}
               disabled={isSaving}
               autocomplete="one-time-code"
+              inputmode="numeric"
               spellcheck="false"
               class="name-input base-input"
               data-test-cli-login-email-otp
@@ -418,162 +277,7 @@
         {/if}
       </div>
 
-      <div class="form-group" data-test-name-group>
-        <label for="{id}-name" class="form-group-name">Name</label>
-
-        <input
-          id="{id}-name"
-          type="text"
-          bind:value={name}
-          disabled={isSaving}
-          autocomplete="off"
-          aria-required="true"
-          aria-invalid={nameInvalid}
-          class="name-input base-input"
-          data-test-name
-          oninput={() => (nameInvalid = false)}
-        />
-
-        {#if nameInvalid}
-          <div class="form-group-error" data-test-error>Please enter a name for this token.</div>
-        {/if}
-      </div>
-
-      <div class="form-group" data-test-expiry-group>
-        <label for="{id}-expiry" class="form-group-name">Expiration</label>
-
-        <div class="select-group">
-          <select
-            id="{id}-expiry"
-            disabled={isSaving}
-            class="expiry-select base-input"
-            data-test-expiry
-            onchange={updateExpirySelection}
-          >
-            <option value="none">No expiration</option>
-            <option value="7">7 days</option>
-            <option value="30">30 days</option>
-            <option value="60">60 days</option>
-            <option value="90" selected>90 days</option>
-            <option value="365">365 days</option>
-            <option value="custom">Custom...</option>
-          </select>
-
-          {#if expirySelection === 'custom'}
-            <input
-              type="date"
-              bind:value={expiryDateInput}
-              min={today}
-              disabled={isSaving}
-              aria-invalid={expiryDateInvalid}
-              aria-label="Custom expiration date"
-              class="expiry-date-input base-input"
-              data-test-expiry-date
-              oninput={() => (expiryDateInvalid = false)}
-            />
-          {:else}
-            <span class="expiry-description" data-test-expiry-description>
-              {expiryDescription}
-            </span>
-          {/if}
-        </div>
-      </div>
-
-      <div class="form-group" data-test-scopes-group>
-        <div class="form-group-name">
-          Scopes
-
-          <a
-            href="https://rust-lang.github.io/rfcs/2947-crates-io-token-scopes.html"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="help-link"
-          >
-            <span class="sr-only">Help</span>
-            <Icon class="i-mdi:help-circle-outline" />
-          </a>
-        </div>
-
-        <ul role="list" class="scopes-list" class:invalid={scopesInvalid}>
-          {#each ENDPOINT_SCOPES as scope (scope)}
-            <li>
-              <label data-test-scope={scope}>
-                <input
-                  type="checkbox"
-                  checked={scopes.includes(scope)}
-                  disabled={isSaving}
-                  onchange={() => toggleScope(scope)}
-                />
-
-                <span class="scope-id">{scope}</span>
-                <span class="scope-description">{scopeDescription(scope)}</span>
-              </label>
-            </li>
-          {/each}
-        </ul>
-
-        {#if scopesInvalid}
-          <div class="form-group-error" data-test-error>Please select at least one token scope.</div>
-        {/if}
-      </div>
-
-      <div class="form-group" data-test-scopes-group>
-        <div class="form-group-name">
-          Crates
-
-          <a
-            href="https://rust-lang.github.io/rfcs/2947-crates-io-token-scopes.html"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="help-link"
-          >
-            <span class="sr-only">Help</span>
-            <Icon class="i-mdi:help-circle-outline" />
-          </a>
-        </div>
-
-        <ul role="list" class="crates-list">
-          {#each crateScopes as pattern, index (pattern)}
-            <li class="crates-scope" class:invalid={pattern.showAsInvalid} data-test-crate-pattern={index}>
-              <div>
-                <input
-                  bind:value={pattern.pattern}
-                  aria-label="Crate name pattern"
-                  oninput={() => (pattern.showAsInvalid = false)}
-                  onblur={() => {
-                    let valid = pattern.isValid || pattern.pattern === '';
-                    pattern.showAsInvalid = !valid;
-                  }}
-                />
-
-                <span class="pattern-description" data-test-description>
-                  {#if !pattern.pattern}
-                    Please enter a crate name pattern
-                  {:else if pattern.isValid}
-                    <PatternDescription pattern={pattern.pattern} />
-                  {:else}
-                    Invalid crate name pattern
-                  {/if}
-                </span>
-              </div>
-
-              <button type="button" data-test-remove onclick={() => removeCrateScope(index)}>
-                <span class="sr-only">Remove pattern</span>
-                <Icon class="i-mdi:trash-can-outline" />
-              </button>
-            </li>
-          {:else}
-            <li class="crates-unrestricted" data-test-crates-unrestricted>
-              <strong>Unrestricted</strong>
-              – This token can be used for all of your crates.
-            </li>
-          {/each}
-
-          <li class="crates-pattern-button">
-            <button type="button" data-test-add-crate-pattern onclick={addCratePattern}> Add pattern </button>
-          </li>
-        </ul>
-      </div>
+      <TokenDetailsFields {id} state={tokenForm} disabled={isSaving} />
 
       <div class="buttons">
         <button type="submit" class="generate-button button button--small" disabled={isSaving} data-test-approve>

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use diesel::dsl::now;
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use rand::distr::{Alphanumeric, SampleString};
+use rand::RngExt as _;
 use sha2::{Digest, Sha256};
 
 use crate::schema::api_mfa_email_otps;
@@ -27,7 +27,10 @@ pub struct ApiMfaEmailOtp {
 impl ApiMfaEmailOtp {
     /// Generates a plaintext one-time password for email delivery.
     pub fn generate_otp() -> String {
-        Alphanumeric.sample_string(&mut rand::rng(), OTP_LENGTH)
+        let mut rng = rand::rng();
+        (0..OTP_LENGTH)
+            .map(|_| char::from(b'0' + rng.random_range(0..10)))
+            .collect()
     }
 
     /// Hashes a plaintext OTP for storage / comparison.
@@ -98,5 +101,18 @@ impl ApiMfaEmailOtp {
         )
         .execute(&mut conn)
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_otp_is_fixed_length_and_numeric() {
+        let otp = ApiMfaEmailOtp::generate_otp();
+
+        assert_eq!(otp.len(), OTP_LENGTH);
+        assert!(otp.bytes().all(|byte| byte.is_ascii_digit()));
     }
 }

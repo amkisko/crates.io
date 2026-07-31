@@ -13,6 +13,7 @@
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
   import { getSession } from '$lib/utils/session.svelte';
+  import { revivePublicKeyRequest, serializeAssertion } from '$lib/utils/webauthn';
 
   type Owner = components['schemas']['Owner'];
   type GitHubConfig = components['schemas']['GitHubConfig'];
@@ -155,48 +156,6 @@
       }
       notifications.error(message);
     }
-  }
-
-  function b64urlToBuffer(value: string): ArrayBuffer {
-    let padded = value.replaceAll('-', '+').replaceAll('_', '/');
-    while (padded.length % 4) padded += '=';
-    let binary = atob(padded);
-    let bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i)!;
-    return bytes.buffer;
-  }
-
-  function bufferToB64url(buffer: ArrayBuffer): string {
-    let bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let byte of bytes) binary += String.fromCodePoint(byte);
-    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll(/=+$/g, '');
-  }
-
-  function revivePublicKeyRequest(options: Record<string, unknown>): PublicKeyCredentialRequestOptions {
-    return {
-      ...(options as unknown as PublicKeyCredentialRequestOptions),
-      challenge: b64urlToBuffer(options.challenge as string),
-      allowCredentials: ((options.allowCredentials as Array<Record<string, unknown>>) ?? []).map(cred => ({
-        ...(cred as unknown as PublicKeyCredentialDescriptor),
-        id: b64urlToBuffer(cred.id as string),
-      })),
-    };
-  }
-
-  function serializeAssertion(credential: PublicKeyCredential) {
-    let assertion = credential.response as AuthenticatorAssertionResponse;
-    return {
-      id: credential.id,
-      rawId: bufferToB64url(credential.rawId),
-      type: credential.type,
-      response: {
-        clientDataJSON: bufferToB64url(assertion.clientDataJSON),
-        authenticatorData: bufferToB64url(assertion.authenticatorData),
-        signature: bufferToB64url(assertion.signature),
-        userHandle: assertion.userHandle ? bufferToB64url(assertion.userHandle) : null,
-      },
-    };
   }
 
   /** Issue a short-lived wildcard API MFA grant via passkey (cookie session). */

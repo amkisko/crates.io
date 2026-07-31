@@ -16,7 +16,7 @@ pub const MAX_PENDING_CHALLENGES_PER_USER: i64 = 10;
 
 const CHALLENGE_ID_PREFIX: &str = "stp_";
 const CHALLENGE_ID_LENGTH: usize = 32;
-const OTP_LENGTH: usize = 8;
+const OTP_LENGTH: usize = 32;
 
 /// A pending or acknowledged API MFA operation challenge for CLI clients.
 #[derive(Clone, Debug, Queryable, Selectable, Identifiable)]

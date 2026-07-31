@@ -39,7 +39,7 @@ Registry protocol:
   website (passkey today).
 - Step-up completion — browser ceremony finished for this challenge.
 - One-time proof — localhost callback OTP bound to the challenge / mutation;
-  consumed on retry (`Crates-OTP`).
+  consumed on retry (`Cargo-Step-Up-Proof`).
 - Scoped step-up grant — server-side authorization for the poll/retry path,
   bound to token + operation + crate (+ mutation fingerprint). Not a synonym
   for the one-time proof.
@@ -151,11 +151,11 @@ Additional properties:
 1. Register a passkey under Settings → API MFA and enable enforcement.
 2. CLI performs a dangerous action (`cargo publish`, yank, change owners) with an API token.
 3. Preferred (localhost OTP / one-time proof): CLI binds `127.0.0.1`, sends
-   `Crates-Step-Up-Port` plus a client-held `Crates-Step-Up-Callback-Secret`, and
+   `Cargo-Step-Up-Port` plus a client-held `Cargo-Step-Up-Callback-Secret`, and
    waits for the verify page to
    `GET http://127.0.0.1:{port}/?code={otp}&state={callback_secret}` while also
    polling the challenge as a fallback.
-4. Remote/SSH users select polling with `CARGO_STEP_UP_CHANNEL=poll`. Automatic
+4. Remote/SSH users select polling with `CARGO_REGISTRY_STEP_UP_CHANNEL=poll`. Automatic
    mode uses localhost on an interactive TTY and falls back to polling after a
    bind failure. A callback-enabled challenge remains pollable, so delivery
    failure does not strand the mutation.
@@ -170,26 +170,24 @@ Additional properties:
    - `verification_url` — `/verify/{challenge_id}` (no sign-in)
    - `poll_url` — `GET /api/v1/auth/challenges/{challenge_id}`
    - `expires_at` — short TTL (5 minutes)
-   - `recommended_poll_interval_secs` — minimum poll interval (currently `5`)
+   - `recommended_poll_interval_secs` — advisory poll interval (currently `5`)
 6. User opens the link and completes passkey check. The verify page does not
    require a crates.io cookie; the opaque `challenge_id` is the capability, and
    the passkey proves control of the account that owns the token.
 7. CLI retries the original request (idempotent):
-   - With `Crates-Step-Up-Port`: finish returns `localhost_callback_url` + OTP
-     (one-time proof); retry with `Crates-OTP` / `OTP` when callback wins.
+   - With `Cargo-Step-Up-Port`: finish returns `localhost_callback_url` plus a
+     one-time proof; retry with `Cargo-Step-Up-Proof` when callback wins.
    - Finish always issues a scoped grant bound to the same API token, operation,
      crate, and fingerprint. If polling observes acknowledgment first, Cargo
      retries without OTP and uses that grant.
 
 Optional headers on the dangerous request:
 
-- `Crates-Step-Up-Port` — localhost port for OTP callback after verification
-- `Crates-Step-Up-Callback-Secret` — URL-safe client secret authorizing callback
+- `Cargo-Step-Up-Port` — localhost port for proof callback after verification
+- `Cargo-Step-Up-Callback-Secret` — URL-safe client secret authorizing callback
   port refreshes and authenticating listener callback state; required with the
   port
-- `Crates-Step-Up-Challenge-Id` — reuse a previous `challenge_id` for an
-  idempotent handshake
-- `Crates-OTP` / `OTP` — one-time proof after verification (localhost path)
+- `Cargo-Step-Up-Proof` — one-time proof after verification (localhost path)
 
 Retries of the same token + operation + crate + fingerprint reuse the pending
 challenge until it expires or is completed.
@@ -278,9 +276,10 @@ Service gauge: `cratesio_service_api_mfa_challenges_pending`.
 ## Cargo integration
 
 When Cargo understands protocol version 1, it prefers a localhost OTP callback
-(`Crates-Step-Up-Port` + `Crates-OTP`) when interactive and concurrently retains
+(`Cargo-Step-Up-Port` + `Cargo-Step-Up-Proof`) when interactive and concurrently retains
 polling as a completion fallback, then retries publish / yank / unyank / owner
-changes. Set `CARGO_STEP_UP_CHANNEL` to `auto`, `localhost`, `poll`, or `disabled`.
+changes. Set `CARGO_REGISTRY_STEP_UP_CHANNEL` to `auto`, `localhost`, `poll`, or
+`disabled`.
 Use `poll` for an interactive SSH session whose browser runs on another machine.
 The older `CARGO_STEP_UP_PREFER_LOCALHOST` test/demo override remains supported.
 

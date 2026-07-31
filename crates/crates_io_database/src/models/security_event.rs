@@ -174,8 +174,9 @@ impl NewUserSecurityEvent {
     pub async fn record(&self, conn: &mut AsyncPgConnection) {
         if let Err(err) = self.insert(conn).await {
             warn!(
-                user_id = self.user_id,
-                event_type = ?self.event_type,
+                user.id = self.user_id,
+                security_event.type = ?self.event_type,
+                error = %err,
                 "failed to record security event: {err}"
             );
         }
