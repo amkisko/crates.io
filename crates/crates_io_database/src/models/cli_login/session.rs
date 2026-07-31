@@ -14,9 +14,13 @@ pub const DEFAULT_SESSION_DURATION_SECS: i64 = 10 * 60;
 /// Maximum non-expired pending sessions that may share a client IP.
 pub const MAX_PENDING_CLI_LOGIN_PER_IP: i64 = 10;
 
+/// Status of a CLI login session awaiting browser approval.
 pub const STATUS_PENDING: &str = "pending";
+/// Status of a CLI login session whose token is ready for one-time retrieval.
 pub const STATUS_READY: &str = "ready";
+/// Status of a CLI login session whose token has already been retrieved.
 pub const STATUS_CONSUMED: &str = "consumed";
+/// Status returned when a CLI login session has expired.
 pub const STATUS_EXPIRED: &str = "expired";
 
 const SESSION_ID_PREFIX: &str = "login_";

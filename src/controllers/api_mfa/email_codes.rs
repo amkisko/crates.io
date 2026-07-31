@@ -16,6 +16,7 @@ use minijinja::context;
 use serde::Serialize;
 use tracing::warn;
 
+/// Delivery details for a newly issued email OTP.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SendEmailOtpResponse {
     /// When the emailed code expires.

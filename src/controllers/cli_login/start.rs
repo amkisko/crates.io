@@ -14,12 +14,14 @@ use chrono::{DateTime, Utc};
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 
+/// Request to begin a browser-assisted CLI login ceremony.
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct StartCliLoginRequest {
     /// Optional localhost port the browser may ping (token-free) after approve.
     pub localhost_port: Option<i32>,
 }
 
+/// Browser and polling details returned for a new CLI login ceremony.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StartCliLoginResponse {
     pub login_id: String,

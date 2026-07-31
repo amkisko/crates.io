@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 
+/// Browser options returned when starting passkey authorization.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StartAuthorizeResponse {
     /// `PublicKeyCredentialRequestOptions` for `navigator.credentials.get()`.
@@ -65,12 +66,14 @@ pub async fn start_api_mfa_authorize(
     Ok((no_store(), Json(StartAuthorizeResponse { public_key })))
 }
 
+/// Browser assertion submitted to finish passkey authorization.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct FinishAuthorizeRequest {
     /// Credential assertion response from the browser.
     pub credential: serde_json::Value,
 }
 
+/// Details of the short-lived grant issued after passkey authorization.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FinishAuthorizeResponse {
     /// When the newly issued grant expires.

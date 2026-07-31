@@ -703,6 +703,7 @@ fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
     Ok(Some(port))
 }
 
+/// Reads and validates the optional loopback callback secret request header.
 pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Option<String>> {
     let Some(secret) = parts
         .headers

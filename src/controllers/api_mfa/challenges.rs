@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use webauthn_rs::prelude::*;
 
+/// Request to create a manual API MFA challenge.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateChallengeRequest {
     /// Dangerous operation label. Defaults to `manual`.
@@ -44,6 +45,7 @@ pub struct CreateChallengeRequest {
     pub port: Option<i32>,
 }
 
+/// URLs and timing information for a newly created API MFA challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CreateChallengeResponse {
     /// Opaque step-up challenge identifier.
@@ -219,6 +221,7 @@ fn challenge_created_response(
     }
 }
 
+/// Current state and operation details for an API MFA challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GetChallengeResponse {
     /// Opaque step-up challenge identifier.
@@ -368,6 +371,7 @@ fn challenge_rate_limit_key(challenge_id: &str, req: &Parts) -> AppResult<String
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Browser options returned when starting challenge passkey verification.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StartChallengeAuthResponse {
     pub public_key: serde_json::Value,
@@ -424,11 +428,13 @@ pub async fn start_api_mfa_challenge(
     Ok((no_store(), Json(StartChallengeAuthResponse { public_key })))
 }
 
+/// Browser assertion submitted to finish challenge verification.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct FinishChallengeAuthRequest {
     pub credential: serde_json::Value,
 }
 
+/// OTP and fallback grant issued after successful challenge verification.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FinishChallengeAuthResponse {
     /// One-time password for the CLI to send as `Crates-OTP`.
@@ -570,6 +576,7 @@ pub async fn finish_api_mfa_challenge(
     ))
 }
 
+/// Loopback callback details recovered for an acknowledged challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RecoverChallengeCallbackResponse {
     /// URL for the browser to retry against the waiting loopback listener.

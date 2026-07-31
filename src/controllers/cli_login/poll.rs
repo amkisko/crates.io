@@ -17,6 +17,7 @@ use serde::Serialize;
 /// Header carrying the poll secret from `POST /api/v1/cli_login` (CLI starter only).
 pub const CRATES_CLI_LOGIN_SECRET_HEADER: &str = "crates-cli-login-secret";
 
+/// Current CLI login status and an optional one-time token result.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PollCliLoginResponse {
     pub status: String,

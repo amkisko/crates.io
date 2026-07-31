@@ -143,7 +143,6 @@ pub(crate) fn build_openapi_document() -> utoipa::openapi::OpenApi {
     openapi
 }
 
-#[allow(deprecated)]
 pub fn build_axum_router(state: AppState) -> Router<()> {
     let (router, openapi) = build_openapi_router().split_for_parts();
 

@@ -19,6 +19,7 @@ use diesel_async::AsyncConnection;
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 
+/// Browser-visible metadata for a pending CLI login ceremony.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CliLoginMetaResponse {
     pub login_id: String,
@@ -84,6 +85,7 @@ pub async fn get_cli_login_meta(
     ))
 }
 
+/// Token settings and step-up proof submitted to approve CLI login.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ApproveCliLoginRequest {
     pub name: String,
@@ -101,6 +103,7 @@ pub struct ApproveCliLoginRequest {
     pub email_code: Option<String>,
 }
 
+/// Token metadata returned after approving CLI login.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApproveCliLoginResponse {
     pub status: String,

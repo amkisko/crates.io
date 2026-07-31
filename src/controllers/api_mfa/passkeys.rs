@@ -23,6 +23,7 @@ use http::request::Parts;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::*;
 
+/// Step-up credentials used to begin passkey registration.
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct StartRegistrationRequest {
     /// Required when API MFA is enabled and at least one passkey exists: assertion from
@@ -37,6 +38,7 @@ pub struct StartRegistrationRequest {
     pub email_code: Option<String>,
 }
 
+/// Browser options returned when starting passkey registration.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StartRegistrationResponse {
     /// `PublicKeyCredentialCreationOptions` for `navigator.credentials.create()`.
@@ -117,6 +119,7 @@ pub async fn start_webauthn_registration(
     Ok((no_store(), Json(StartRegistrationResponse { public_key })))
 }
 
+/// Browser credential and label submitted to finish passkey registration.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct FinishRegistrationRequest {
     /// Label for the new passkey.
@@ -125,6 +128,7 @@ pub struct FinishRegistrationRequest {
     pub credential: serde_json::Value,
 }
 
+/// Registered passkey returned after successful enrollment.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FinishRegistrationResponse {
     #[schema(inline)]
@@ -227,6 +231,7 @@ pub async fn finish_webauthn_registration(
     ))
 }
 
+/// Step-up credentials used to authorize passkey deletion.
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct DeleteCredentialRequest {
     /// Passkey assertion from `authorize/start` (preferred when a passkey remains).

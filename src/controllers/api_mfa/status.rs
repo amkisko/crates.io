@@ -16,6 +16,7 @@ use diesel_async::RunQueryDsl;
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 
+/// API MFA enrollment, enforcement, and authorization state for a user.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiMfaStatusResponse {
     /// Whether the user has opted into API MFA.
@@ -33,6 +34,7 @@ pub struct ApiMfaStatusResponse {
     pub has_verified_email: bool,
 }
 
+/// A registered passkey exposed through the API MFA settings endpoints.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EncodableWebauthnCredential {
     pub id: i64,
@@ -85,6 +87,7 @@ pub async fn get_api_mfa_status(
     ))
 }
 
+/// Request to enable or disable API MFA for the authenticated user.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ApiMfaUpdateRequest {
     /// Whether to enable API MFA enforcement.
@@ -103,6 +106,7 @@ pub struct ApiMfaUpdateRequest {
     pub email_code: Option<String>,
 }
 
+/// API MFA state returned after an update.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiMfaUpdateResponse {
     pub enabled: bool,

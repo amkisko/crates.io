@@ -53,12 +53,14 @@ impl From<UserSecurityEvent> for EncodableSecurityEvent {
     }
 }
 
+/// Paginated security activity returned for the authenticated user.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ListSecurityEventsResponse {
     pub security_events: Vec<EncodableSecurityEvent>,
     pub meta: ListSecurityEventsMeta,
 }
 
+/// Pagination metadata for a security activity response.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ListSecurityEventsMeta {
     /// Total number of retained events for this user.
