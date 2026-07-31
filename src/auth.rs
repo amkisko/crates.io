@@ -365,6 +365,18 @@ async fn authenticate(parts: &Parts, conn: &mut AsyncPgConnection) -> AppResult<
     return Err(forbidden("this action requires authentication"));
 }
 
+/// Authenticates an API token without requiring cookie-session middleware.
+pub(crate) async fn authenticate_api_token_id(
+    parts: &Parts,
+    conn: &mut AsyncPgConnection,
+) -> AppResult<i32> {
+    controllers::util::verify_origin(parts)?;
+    authenticate_via_token(parts, conn)
+        .await?
+        .map(|authentication| authentication.token.id)
+        .ok_or_else(|| forbidden("this action requires API token authentication"))
+}
+
 fn ensure_not_locked(user: &User) -> AppResult<()> {
     if let Some(reason) = &user.account_lock_reason {
         let still_locked = user

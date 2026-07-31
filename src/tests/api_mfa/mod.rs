@@ -11,6 +11,148 @@ use diesel_async::RunQueryDsl;
 use http::Method;
 use insta::assert_snapshot;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publish_preflight_binds_and_replays_one_mutation() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let body = PublishBuilder::new("preflight_replay", "1.0.0")
+        .add_file("preflight_replay-1.0.0/large.txt", "payload")
+        .body();
+    let descriptor = publish_preflight_descriptor("preflight_replay", "1.0.0", &body);
+    let initial = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(initial.status(), 403);
+    initial.assert_cache_control("no-store");
+    let challenge_id = initial.json()["errors"][0]["challenge_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(challenge.request_size, Some(body.len() as i64));
+    assert_eq!(
+        challenge.request_sha256,
+        Some(Sha256::digest(&body).to_vec())
+    );
+
+    challenge
+        .mark_verified(ApiMfaChallenge::hash_otp("preflight-proof"), None, &conn)
+        .await
+        .unwrap();
+    NewApiMfaGrant::for_operation(
+        user.as_model().id,
+        token.as_model().id,
+        challenge.operation.clone(),
+        challenge.crate_name.clone(),
+        challenge.mutation_fingerprint.clone(),
+    )
+    .insert(&conn)
+    .await
+    .unwrap();
+
+    let mut first_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    first_request.header("Cargo-Mutation-Id", &challenge_id);
+    let mut concurrent_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    concurrent_request.header("Cargo-Mutation-Id", &challenge_id);
+    let (first, concurrent) = tokio::join!(
+        token.run::<crates_io::views::GoodCrate>(first_request.with_body(body.clone())),
+        token.run::<crates_io::views::GoodCrate>(concurrent_request.with_body(body.clone())),
+    );
+    assert_eq!(first.status(), 200, "{}", first.text());
+    assert_eq!(concurrent.status(), 200, "{}", concurrent.text());
+
+    let mut replay = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    replay.header("Cargo-Mutation-Id", &challenge_id);
+    let replay = token
+        .run::<crates_io::views::GoodCrate>(replay.with_body(body))
+        .await;
+    assert_eq!(replay.status(), 200, "{}", replay.text());
+
+    let stored = ApiMfaChallenge::find_active(&challenge_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.response_status, Some(200));
+    assert!(stored.completed_at.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_id_rejects_a_different_raw_publish_body() {
+    let (_app, _, user, token) = TestApp::full().with_token().await;
+    let other_token = user.db_new_token("other-mutation-token").await;
+    let body = PublishBuilder::new("preflight_mismatch", "1.0.0").body();
+    let descriptor = publish_preflight_descriptor("preflight_mismatch", "1.0.0", &body);
+    let ready = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(ready.status(), 200, "{}", ready.text());
+    let challenge_id = ready.json()["challenge_id"].as_str().unwrap().to_owned();
+
+    let mut stolen_id = other_token.request_builder(Method::PUT, "/api/v1/crates/new");
+    stolen_id.header("Cargo-Mutation-Id", &challenge_id);
+    let stolen_id = other_token
+        .run::<Value>(stolen_id.with_body(body.clone()))
+        .await;
+    assert_eq!(stolen_id.status(), 400, "{}", stolen_id.text());
+    assert!(stolen_id.text().contains("different credential"));
+
+    let different = PublishBuilder::new("preflight_mismatch", "1.0.0")
+        .add_file("preflight_mismatch-1.0.0/different.txt", "different")
+        .body();
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Cargo-Mutation-Id", &challenge_id);
+    let rejected = token.run::<Value>(request.with_body(different)).await;
+    assert_eq!(rejected.status(), 400, "{}", rejected.text());
+    assert!(
+        rejected.text().contains("preflight size"),
+        "{}",
+        rejected.text()
+    );
+}
+
+fn publish_preflight_descriptor(name: &str, version: &str, body: &[u8]) -> Value {
+    let metadata_size = u32::from_le_bytes(body[..4].try_into().unwrap()) as usize;
+    let archive_size_offset = 4 + metadata_size;
+    let archive_size = u32::from_le_bytes(
+        body[archive_size_offset..archive_size_offset + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let archive = &body[archive_size_offset + 4..];
+    assert_eq!(archive.len(), archive_size);
+    json!({
+        "protocol_version": 1,
+        "operation": "publish",
+        "method": "PUT",
+        "endpoint": "/api/v1/crates/new",
+        "crate": name,
+        "version": version,
+        "request_sha256": hex::encode(Sha256::digest(body)),
+        "request_size": body.len(),
+        "archive_sha256": hex::encode(Sha256::digest(archive)),
+        "archive_size": archive.len(),
+    })
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn publish_returns_operation_challenge_link() {
@@ -408,6 +550,7 @@ async fn otp_for_other_crate_is_rejected() {
             crate_name: Some("other_crate".into()),
             mutation_fingerprint: vec![0; 32],
             operation_summary: "Publish other_crate".into(),
+            descriptor: None,
         },
         None,
         None,
@@ -451,6 +594,7 @@ async fn pending_challenge_cap_is_enforced() {
                 crate_name: Some(format!("pending_cap_{i}")),
                 mutation_fingerprint: vec![i as u8; 32],
                 operation_summary: format!("Publish pending_cap_{i}"),
+                descriptor: None,
             },
             None,
             None,

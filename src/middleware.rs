@@ -4,6 +4,7 @@ pub mod cargo_compat;
 mod common_headers;
 mod debug;
 mod frontend_html;
+pub mod idempotent_mutation;
 pub mod log_request;
 pub mod normalize_path;
 pub mod real_ip;
@@ -57,6 +58,10 @@ pub fn apply_axum_middleware(state: AppState, router: Router<()>) -> Router {
         }));
 
     let middlewares_2 = tower::ServiceBuilder::new()
+        .layer(from_fn_with_state(
+            state.clone(),
+            idempotent_mutation::middleware,
+        ))
         .layer(from_fn_with_state(
             state.config.cargo_compat_status_code_config,
             cargo_compat::middleware,

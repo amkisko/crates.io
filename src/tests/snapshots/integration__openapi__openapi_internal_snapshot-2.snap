@@ -1823,8 +1823,44 @@ expression: document
               "schema": {
                 "description": "Request to create a manual API MFA challenge.",
                 "properties": {
-                  "crate_name": {
+                  "archive_sha256": {
+                    "description": "Hex SHA-256 of the publish archive bytes.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "archive_size": {
+                    "description": "Length of the publish archive bytes.",
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "crate": {
                     "description": "Optional crate name associated with the operation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "direction": {
+                    "description": "`add` or `remove` for owner changes.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "endpoint": {
+                    "description": "Absolute-path endpoint of the ordinary mutation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "method": {
+                    "description": "HTTP method of the ordinary mutation.",
                     "type": [
                       "string",
                       "null"
@@ -1837,11 +1873,52 @@ expression: document
                       "null"
                     ]
                   },
+                  "owners": {
+                    "description": "Complete ordered owner list for owner changes.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
                   "port": {
                     "description": "Optional localhost port (1024–65535) for proof delivery to the CLI.\n\nRequires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains\navailable as a fallback when callback delivery fails.",
                     "format": "int32",
                     "type": [
                       "integer",
+                      "null"
+                    ]
+                  },
+                  "protocol_version": {
+                    "description": "Step-up protocol version. Version 1 is currently supported.",
+                    "format": "int64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "request_sha256": {
+                    "description": "Hex SHA-256 of the exact raw mutation request body.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "request_size": {
+                    "description": "Length of the exact raw mutation request body.",
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "version": {
+                    "description": "Version involved in publish, yank, or unyank.",
+                    "type": [
+                      "string",
                       "null"
                     ]
                   }
@@ -1865,7 +1942,10 @@ expression: document
                     },
                     "detail": {
                       "description": "Complete human-readable instructions for satisfying the challenge.",
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "expires_at": {
                       "format": "date-time",
@@ -1873,21 +1953,29 @@ expression: document
                     },
                     "poll_url": {
                       "description": "URL the CLI should poll until `acknowledged` is true.",
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "recommended_poll_interval_secs": {
                       "description": "Suggested seconds between CLI polls of `poll_url`.",
                       "format": "int64",
                       "minimum": 0,
-                      "type": "integer"
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
+                      "type": "string"
                     }
                   },
                   "required": [
+                    "status",
                     "challenge_id",
-                    "detail",
-                    "poll_url",
-                    "expires_at",
-                    "recommended_poll_interval_secs"
+                    "expires_at"
                   ],
                   "type": "object"
                 }

@@ -290,6 +290,7 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
                 &version_string,
                 &metadata_sha256,
                 &tarball_sha256,
+                content_length,
             ),
         )
         .await?;

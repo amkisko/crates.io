@@ -3,6 +3,7 @@
 use crate::auth::Authentication;
 use crate::config::WebauthnConfig;
 use crate::metrics::InstanceMetrics;
+use crate::middleware::idempotent_mutation::{IdempotentMutation, replay_response};
 use crate::middleware::log_request::RequestLogExt;
 use crate::models::{
     ApiMfaChallenge, ApiMfaGrant, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, OwnerKind,
@@ -11,10 +12,13 @@ use crate::models::{
 use crate::rate_limiter::{LimitedAction, RateLimiter};
 use crate::schema::{crate_owners, crates, users};
 use crate::util::errors::{ApiMfaRequired, AppResult, BoxedAppError, bad_request};
+use axum::response::Response;
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use http::request::Parts;
 use sha2::{Digest, Sha256};
+use std::fmt;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Header carrying a one-time proof after passkey verification.
@@ -76,6 +80,8 @@ pub struct ApiMfaOperation {
     pub crate_name: Option<String>,
     pub mutation_fingerprint: Vec<u8>,
     pub summary: String,
+    /// Server-parsed fields compared with an untrusted preflight descriptor.
+    pub facts: serde_json::Value,
 }
 
 impl ApiMfaOperation {
@@ -99,7 +105,13 @@ impl ApiMfaOperation {
             crate_name,
             mutation_fingerprint: hasher.finalize().to_vec(),
             summary,
+            facts: serde_json::Value::Null,
         }
+    }
+
+    fn with_facts(mut self, facts: serde_json::Value) -> Self {
+        self.facts = facts;
+        self
     }
 
     /// Bind a publish approval to the exact metadata and tarball bytes.
@@ -108,6 +120,7 @@ impl ApiMfaOperation {
         version: &str,
         metadata_sha256: &[u8],
         tarball_sha256: &[u8],
+        tarball_size: u64,
     ) -> Self {
         Self::new(
             "publish",
@@ -115,6 +128,11 @@ impl ApiMfaOperation {
             format!("Publish {crate_name} {version}"),
             &[version.as_bytes(), metadata_sha256, tarball_sha256],
         )
+        .with_facts(serde_json::json!({
+            "version": version,
+            "archive_sha256": hex::encode(tarball_sha256),
+            "archive_size": tarball_size,
+        }))
     }
 
     /// Bind a yank approval to the exact version and optional public message.
@@ -126,6 +144,10 @@ impl ApiMfaOperation {
             format!("Yank {crate_name} {version}"),
             &[version.as_bytes(), message.as_bytes()],
         )
+        .with_facts(serde_json::json!({
+            "version": version,
+            "yank_message": yank_message,
+        }))
     }
 
     /// Bind an unyank approval to the exact version.
@@ -136,6 +158,7 @@ impl ApiMfaOperation {
             format!("Unyank {crate_name} {version}"),
             &[version.as_bytes()],
         )
+        .with_facts(serde_json::json!({ "version": version }))
     }
 
     /// Bind an owner change to its direction and exact submitted owner list.
@@ -154,6 +177,10 @@ impl ApiMfaOperation {
             format!("{direction} owners for {crate_name}: {}", owners.join(", ")),
             &fields,
         )
+        .with_facts(serde_json::json!({
+            "direction": if add { "add" } else { "remove" },
+            "owners": owners,
+        }))
     }
 
     /// Toggle `trustpub_only` on crate settings (`PATCH /api/v1/crates/{name}`).
@@ -289,10 +316,14 @@ pub async fn ensure_api_mfa(
     parts: &Parts,
     conn: &mut AsyncPgConnection,
     deps: ApiMfaEnsureDeps<'_>,
-    operation: ApiMfaOperation,
+    mut operation: ApiMfaOperation,
 ) -> AppResult<()> {
     let user = auth.user();
+    let mutation_context = validate_idempotent_mutation(auth, parts, conn, &mut operation).await?;
     if !deps.enforcement_enabled {
+        if let Some(context) = mutation_context {
+            context.authorize_execution();
+        }
         return Ok(());
     }
 
@@ -309,6 +340,9 @@ pub async fn ensure_api_mfa(
                  Sign in on the website, enable API MFA under Settings → API MFA, \
                  register a passkey, then retry.",
             ));
+        }
+        if let Some(context) = mutation_context {
+            context.authorize_execution();
         }
         return Ok(());
     }
@@ -350,7 +384,95 @@ pub async fn ensure_api_mfa(
         .with_label_values(&[label])
         .observe(started.elapsed().as_secs_f64());
 
+    if result.is_ok()
+        && let Some(context) = mutation_context
+    {
+        context.authorize_execution();
+    }
     result
+}
+
+#[derive(Debug)]
+struct ReplayedMutationResponse(ApiMfaChallenge);
+
+impl fmt::Display for ReplayedMutationResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "replayed mutation {}", self.0.id)
+    }
+}
+
+impl crate::util::errors::AppError for ReplayedMutationResponse {
+    fn response(&self) -> Response {
+        replay_response(&self.0).unwrap_or_else(|| {
+            crate::util::errors::server_error("stored mutation response is incomplete").response()
+        })
+    }
+}
+
+async fn validate_idempotent_mutation(
+    auth: &Authentication,
+    parts: &Parts,
+    conn: &mut AsyncPgConnection,
+    operation: &mut ApiMfaOperation,
+) -> AppResult<Option<Arc<IdempotentMutation>>> {
+    let Some(context) = parts.extensions.get::<Arc<IdempotentMutation>>().cloned() else {
+        return Ok(None);
+    };
+    let Some(token_id) = auth.api_token_id() else {
+        return Err(bad_request(
+            "Cargo-Mutation-Id requires API token authentication",
+        ));
+    };
+    let challenge = ApiMfaChallenge::find_active(&context.id, conn)
+        .await?
+        .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+    if challenge.api_token_id != Some(token_id) {
+        return Err(bad_request(
+            "Cargo-Mutation-Id belongs to a different credential",
+        ));
+    }
+    if challenge.request_method.as_deref() != Some(context.method.as_str())
+        || challenge.request_endpoint.as_deref() != Some(context.endpoint.as_str())
+        || challenge.request_sha256.as_deref() != Some(context.request_sha256.as_slice())
+        || challenge.request_size != Some(context.request_size)
+    {
+        return Err(bad_request(
+            "mutation request does not match its preflight descriptor",
+        ));
+    }
+    if challenge.operation != operation.kind || challenge.crate_name != operation.crate_name {
+        return Err(bad_request(
+            "parsed mutation does not match its preflight operation",
+        ));
+    }
+    let descriptor = challenge
+        .descriptor_json
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| bad_request("Cargo-Mutation-Id does not identify a mutation preflight"))?;
+    if let Some(facts) = operation.facts.as_object() {
+        for (name, actual) in facts {
+            if let Some(declared) = descriptor.get(name)
+                && declared != actual
+            {
+                return Err(bad_request(format!(
+                    "parsed mutation field `{name}` does not match its preflight descriptor"
+                )));
+            }
+        }
+    }
+    if let Some(response) = replay_response(&challenge) {
+        let _ = response;
+        return Err(Box::new(ReplayedMutationResponse(challenge)));
+    }
+    if !challenge.is_acknowledged() {
+        return Err(bad_request("mutation challenge has not been acknowledged"));
+    }
+
+    // Proofs and grants were issued against the descriptor fingerprint, not
+    // the older reactive fingerprint derived after parsing the mutation.
+    operation.mutation_fingerprint = challenge.mutation_fingerprint;
+    Ok(Some(context))
 }
 
 async fn ensure_api_mfa_inner(
@@ -576,6 +698,7 @@ pub(crate) async fn insert_challenge_or_reuse_pending(
             crate_name: operation.crate_name.clone(),
             mutation_fingerprint: operation.mutation_fingerprint.clone(),
             operation_summary: operation.summary.clone(),
+            descriptor: None,
         },
         callback.port,
         callback.secret,
@@ -606,7 +729,7 @@ pub(crate) async fn insert_challenge_or_reuse_pending(
     }
 }
 
-fn step_up_required_error(
+pub(crate) fn step_up_required_error(
     webauthn: &WebauthnConfig,
     challenge: &ApiMfaChallenge,
     operation: &ApiMfaOperation,
@@ -642,7 +765,7 @@ fn otp_from_headers(parts: &Parts) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
+pub(crate) fn mfa_port_from_headers(parts: &Parts) -> AppResult<Option<i32>> {
     let Some(raw) = parts
         .headers
         .get(CARGO_STEP_UP_PORT_HEADER)

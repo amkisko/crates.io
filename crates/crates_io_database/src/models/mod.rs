@@ -2,8 +2,8 @@ pub use self::action::{NewVersionOwnerAction, VersionAction, VersionOwnerAction}
 pub use self::api_mfa::{
     ApiMfaChallenge, ApiMfaEmailOtp, ApiMfaGrant, DEFAULT_EMAIL_OTP_DURATION_SECS,
     KIND_AUTHENTICATION, KIND_REGISTRATION, MAX_PASSKEYS_PER_USER, MAX_PENDING_CHALLENGES_PER_USER,
-    NewApiMfaChallenge, NewApiMfaChallengeOperation, NewApiMfaGrant, NewWebauthnCredential,
-    WebauthnCeremonyState, WebauthnCredential,
+    NewApiMfaChallenge, NewApiMfaChallengeOperation, NewApiMfaGrant, NewApiMfaMutationDescriptor,
+    NewWebauthnCredential, WebauthnCeremonyState, WebauthnCredential,
 };
 pub use self::category::{Category, CrateCategory, NewCategory};
 pub use self::cli_login::{

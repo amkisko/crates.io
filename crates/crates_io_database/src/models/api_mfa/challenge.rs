@@ -25,6 +25,7 @@ pub struct ApiMfaChallenge {
     pub api_token_id: Option<i32>,
     pub auth_state_json: Option<JsonValue>,
     pub crate_name: Option<String>,
+    pub descriptor_json: Option<JsonValue>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub hashed_otp: Option<Vec<u8>>,
@@ -35,7 +36,15 @@ pub struct ApiMfaChallenge {
     pub operation: String,
     pub operation_summary: String,
     pub otp_consumed_at: Option<DateTime<Utc>>,
+    pub request_endpoint: Option<String>,
+    pub request_method: Option<String>,
+    pub request_sha256: Option<Vec<u8>>,
+    pub request_size: Option<i64>,
+    pub response_body: Option<Vec<u8>>,
+    pub response_headers: Option<JsonValue>,
+    pub response_status: Option<i32>,
     pub sealed_otp: Option<String>,
+    pub completed_at: Option<DateTime<Utc>>,
     pub user_id: i32,
     pub verified_at: Option<DateTime<Utc>>,
 }
@@ -51,6 +60,11 @@ pub struct NewApiMfaChallenge {
     pub crate_name: Option<String>,
     pub mutation_fingerprint: Vec<u8>,
     pub operation_summary: String,
+    pub descriptor_json: Option<JsonValue>,
+    pub request_method: Option<String>,
+    pub request_endpoint: Option<String>,
+    pub request_sha256: Option<Vec<u8>>,
+    pub request_size: Option<i64>,
     pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
     pub expires_at: DateTime<Utc>,
@@ -63,6 +77,22 @@ pub struct NewApiMfaChallengeOperation {
     pub crate_name: Option<String>,
     pub mutation_fingerprint: Vec<u8>,
     pub operation_summary: String,
+    pub descriptor: Option<NewApiMfaMutationDescriptor>,
+}
+
+/// Validated raw-request binding retained for an idempotent mutation.
+#[derive(Debug)]
+pub struct NewApiMfaMutationDescriptor {
+    /// Canonical validated descriptor used for parsed-field comparisons.
+    pub descriptor_json: JsonValue,
+    /// Uppercase HTTP method of the final mutation.
+    pub request_method: String,
+    /// Absolute-path endpoint of the final mutation.
+    pub request_endpoint: String,
+    /// SHA-256 of the exact raw final request body.
+    pub request_sha256: Vec<u8>,
+    /// Length of the exact raw final request body.
+    pub request_size: i64,
 }
 
 impl ApiMfaChallenge {
@@ -100,11 +130,58 @@ impl ApiMfaChallenge {
         self.verified_at.is_some()
     }
 
+    /// Marks a preflight ready when policy does not require additional authentication.
+    pub async fn mark_ready(&self, mut conn: &AsyncPgConnection) -> QueryResult<bool> {
+        let updated = diesel::update(
+            api_mfa_challenges::table
+                .find(&self.id)
+                .filter(api_mfa_challenges::verified_at.is_null()),
+        )
+        .set(api_mfa_challenges::verified_at.eq(Utc::now()))
+        .execute(&mut conn)
+        .await?;
+        Ok(updated > 0)
+    }
+
+    /// Stores the normal terminal response for later idempotent replay.
+    pub async fn store_terminal_response(
+        &self,
+        status: i32,
+        headers: JsonValue,
+        body: Vec<u8>,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<bool> {
+        let updated = diesel::update(
+            api_mfa_challenges::table
+                .find(&self.id)
+                .filter(api_mfa_challenges::completed_at.is_null()),
+        )
+        .set((
+            api_mfa_challenges::response_status.eq(status),
+            api_mfa_challenges::response_headers.eq(headers),
+            api_mfa_challenges::response_body.eq(body),
+            api_mfa_challenges::completed_at.eq(Utc::now()),
+        ))
+        .execute(&mut conn)
+        .await?;
+        Ok(updated > 0)
+    }
+
     /// Loads a non-expired challenge by operation id.
     pub async fn find_active(id: &str, mut conn: &AsyncPgConnection) -> QueryResult<Option<Self>> {
         api_mfa_challenges::table
             .find(id)
             .filter(api_mfa_challenges::expires_at.gt(now))
+            .select(Self::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
+    /// Loads a challenge by operation id, including one that expired during execution.
+    pub async fn find(id: &str, mut conn: &AsyncPgConnection) -> QueryResult<Option<Self>> {
+        api_mfa_challenges::table
+            .find(id)
             .select(Self::as_select())
             .first(&mut conn)
             .await
@@ -134,6 +211,34 @@ impl ApiMfaChallenge {
             None => query.filter(api_mfa_challenges::crate_name.is_null()),
         };
 
+        query
+            .order(api_mfa_challenges::created_at.desc())
+            .select(Self::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
+    /// Finds an unexpired mutation record, including acknowledged/completed records.
+    pub async fn find_active_for_operation(
+        user_id: i32,
+        api_token_id: i32,
+        operation: &str,
+        crate_name: Option<&str>,
+        mutation_fingerprint: &[u8],
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Option<Self>> {
+        let mut query = api_mfa_challenges::table
+            .filter(api_mfa_challenges::user_id.eq(user_id))
+            .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
+            .filter(api_mfa_challenges::operation.eq(operation))
+            .filter(api_mfa_challenges::mutation_fingerprint.eq(mutation_fingerprint))
+            .filter(api_mfa_challenges::expires_at.gt(now))
+            .into_boxed();
+        query = match crate_name {
+            Some(name) => query.filter(api_mfa_challenges::crate_name.eq(name)),
+            None => query.filter(api_mfa_challenges::crate_name.is_null()),
+        };
         query
             .order(api_mfa_challenges::created_at.desc())
             .select(Self::as_select())
@@ -360,6 +465,7 @@ impl NewApiMfaChallenge {
         localhost_port: Option<i32>,
         localhost_callback_secret: Option<&str>,
     ) -> Self {
+        let descriptor = operation.descriptor;
         Self {
             id: ApiMfaChallenge::generate_id(),
             user_id,
@@ -368,6 +474,19 @@ impl NewApiMfaChallenge {
             crate_name: operation.crate_name,
             mutation_fingerprint: operation.mutation_fingerprint,
             operation_summary: operation.operation_summary,
+            descriptor_json: descriptor
+                .as_ref()
+                .map(|value| value.descriptor_json.clone()),
+            request_method: descriptor
+                .as_ref()
+                .map(|value| value.request_method.clone()),
+            request_endpoint: descriptor
+                .as_ref()
+                .map(|value| value.request_endpoint.clone()),
+            request_sha256: descriptor
+                .as_ref()
+                .map(|value| value.request_sha256.clone()),
+            request_size: descriptor.map(|value| value.request_size),
             localhost_callback_secret_hash: localhost_callback_secret
                 .map(ApiMfaChallenge::hash_localhost_callback_secret),
             localhost_port,

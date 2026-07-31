@@ -2,8 +2,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use diesel::dsl::now;
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use rand::RngExt;
 use rand::distr::{Alphanumeric, SampleString};
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 use crate::schema::cli_login_sessions;
