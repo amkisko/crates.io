@@ -4,6 +4,7 @@ set -e
 
 repo_root=$(pwd)
 index_bare="$repo_root/tmp/index-bare"
+registry_api_url=${LOCAL_REGISTRY_API_URL:-http://localhost:8888}
 mkdir -p "$repo_root/tmp"
 index_tmp=$(mktemp -d "$repo_root/tmp/index-tmp.XXXXXX")
 trap 'rm -rf "$index_tmp"' EXIT
@@ -21,7 +22,7 @@ cd "$index_tmp"
 cat > config.json <<-EOF
 {
   "dl": "http://localhost:8888/api/v1/crates",
-  "api": "http://localhost:8888/",
+  "api": "${registry_api_url%/}/",
   "step-up-auth": 1
 }
 EOF
