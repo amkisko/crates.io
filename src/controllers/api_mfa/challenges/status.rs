@@ -35,8 +35,6 @@ pub struct GetChallengeResponse {
     pub crate_name: Option<String>,
     /// Hex SHA-256 of the publish archive, when this is a publish authorization.
     pub archive_sha256: Option<String>,
-    /// Size of the publish archive in bytes.
-    pub archive_size: Option<i64>,
     pub expires_at: DateTime<Utc>,
     /// Suggested seconds between CLI polls while status is `pending`.
     pub recommended_poll_interval_secs: u64,
@@ -97,11 +95,6 @@ pub async fn get_api_mfa_challenge(
         .and_then(|descriptor| descriptor.get("archive_sha256"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    let archive_size = challenge
-        .descriptor_json
-        .as_ref()
-        .and_then(|descriptor| descriptor.get("archive_size"))
-        .and_then(serde_json::Value::as_i64);
     Ok((
         no_store(),
         Json(GetChallengeResponse {
@@ -112,7 +105,6 @@ pub async fn get_api_mfa_challenge(
             operation_summary: challenge.operation_summary,
             crate_name: challenge.crate_name,
             archive_sha256,
-            archive_size,
             expires_at: challenge.expires_at,
             recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,
         }),

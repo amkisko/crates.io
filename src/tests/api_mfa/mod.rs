@@ -64,7 +64,6 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         browser_status["archive_sha256"],
         descriptor["archive_sha256"]
     );
-    assert_eq!(browser_status["archive_size"], descriptor["archive_size"]);
 
     challenge.mark_verified(&conn).await.unwrap();
     let ready_response = token

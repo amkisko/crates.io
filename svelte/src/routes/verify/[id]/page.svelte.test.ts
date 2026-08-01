@@ -36,7 +36,6 @@ function installApiHandlers(worker: SetupWorker) {
         operation_summary: 'Publish example 1.0.0',
         crate_name: 'example',
         archive_sha256: archiveSha256,
-        archive_size: 1234,
         expires_at: '2099-01-01T00:00:00Z',
       }),
     ),

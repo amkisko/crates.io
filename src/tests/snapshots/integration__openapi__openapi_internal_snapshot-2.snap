@@ -1859,14 +1859,6 @@ expression: document
                         "null"
                       ]
                     },
-                    "archive_size": {
-                      "description": "Size of the publish archive in bytes.",
-                      "format": "int64",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
                     "challenge_id": {
                       "description": "Opaque API MFA challenge identifier.",
                       "type": "string"
