@@ -31,16 +31,13 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
     let initial = token
         .run::<Value>(
             token
-                .request_builder(Method::POST, "/api/v1/auth/challenges")
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
                 .with_body(descriptor.to_string().into()),
         )
         .await;
-    assert_eq!(initial.status(), 403);
+    assert_eq!(initial.status(), 202);
     initial.assert_cache_control("no-store");
-    let challenge_id = initial.json()["errors"][0]["challenge_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let challenge_id = initial.json()["mutation_id"].as_str().unwrap().to_owned();
     let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
         .unwrap()
@@ -66,10 +63,15 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
     .await
     .unwrap();
 
+    let body_len = body.len().to_string();
     let mut first_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     first_request.header("Cargo-Mutation-Id", &challenge_id);
+    first_request.header("Content-Type", "application/octet-stream");
+    first_request.header("Content-Length", &body_len);
     let mut concurrent_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     concurrent_request.header("Cargo-Mutation-Id", &challenge_id);
+    concurrent_request.header("Content-Type", "application/octet-stream");
+    concurrent_request.header("Content-Length", &body_len);
     let (first, concurrent) = tokio::join!(
         token.run::<crates_io::views::GoodCrate>(first_request.with_body(body.clone())),
         token.run::<crates_io::views::GoodCrate>(concurrent_request.with_body(body.clone())),
@@ -79,6 +81,8 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
 
     let mut replay = token.request_builder(Method::PUT, "/api/v1/crates/new");
     replay.header("Cargo-Mutation-Id", &challenge_id);
+    replay.header("Content-Type", "application/octet-stream");
+    replay.header("Content-Length", &body_len);
     let replay = token
         .run::<crates_io::views::GoodCrate>(replay.with_body(body))
         .await;
@@ -101,15 +105,18 @@ async fn mutation_id_rejects_a_different_raw_publish_body() {
     let ready = token
         .run::<Value>(
             token
-                .request_builder(Method::POST, "/api/v1/auth/challenges")
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
                 .with_body(descriptor.to_string().into()),
         )
         .await;
     assert_eq!(ready.status(), 200, "{}", ready.text());
-    let challenge_id = ready.json()["challenge_id"].as_str().unwrap().to_owned();
+    let challenge_id = ready.json()["mutation_id"].as_str().unwrap().to_owned();
 
+    let body_len = body.len().to_string();
     let mut stolen_id = other_token.request_builder(Method::PUT, "/api/v1/crates/new");
     stolen_id.header("Cargo-Mutation-Id", &challenge_id);
+    stolen_id.header("Content-Type", "application/octet-stream");
+    stolen_id.header("Content-Length", &body_len);
     let stolen_id = other_token
         .run::<Value>(stolen_id.with_body(body.clone()))
         .await;
@@ -121,6 +128,8 @@ async fn mutation_id_rejects_a_different_raw_publish_body() {
         .body();
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     request.header("Cargo-Mutation-Id", &challenge_id);
+    request.header("Content-Type", "application/octet-stream");
+    request.header("Content-Length", &different.len().to_string());
     let rejected = token.run::<Value>(request.with_body(different)).await;
     assert_eq!(rejected.status(), 400, "{}", rejected.text());
     assert!(
@@ -142,9 +151,12 @@ fn publish_preflight_descriptor(name: &str, version: &str, body: &[u8]) -> Value
     assert_eq!(archive.len(), archive_size);
     json!({
         "protocol_version": 1,
+        "preflight_id": "pf_0123456789abcdefghijklmnopqr",
+        "allow_pending": true,
         "operation": "publish",
         "method": "PUT",
-        "endpoint": "/api/v1/crates/new",
+        "request_target": "/api/v1/crates/new",
+        "content_type": "application/octet-stream",
         "crate": name,
         "version": version,
         "request_sha256": hex::encode(Sha256::digest(body)),

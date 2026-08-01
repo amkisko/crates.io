@@ -8,14 +8,15 @@ type Fetch = typeof globalThis.fetch;
 export function addLocalhostCallbackState(callbackUrl: string, callbackSecret: string): string {
   let url = new URL(callbackUrl);
   let port = Number(url.port);
+  let legacyCallback = url.pathname === '/' && Boolean(url.searchParams.get('code'));
+  let mutationCallback = url.pathname === '/cargo/registry-authorization' && url.searchParams.size === 0;
   let valid =
     url.protocol === 'http:' &&
     url.hostname === '127.0.0.1' &&
     Number.isInteger(port) &&
     port >= MIN_CALLBACK_PORT &&
     port <= MAX_CALLBACK_PORT &&
-    url.pathname === '/' &&
-    Boolean(url.searchParams.get('code')) &&
+    (legacyCallback || mutationCallback) &&
     !url.searchParams.has('state');
   if (!valid) {
     throw new Error('Invalid Cargo callback URL');
@@ -52,14 +53,15 @@ export async function deliverLocalhostCallback(
 ): Promise<void> {
   let url = new URL(callbackUrl);
   let port = Number(url.port);
+  let legacyCallback = url.pathname === '/' && Boolean(url.searchParams.get('code'));
+  let mutationCallback = url.pathname === '/cargo/registry-authorization' && !url.searchParams.has('code');
   let valid =
     url.protocol === 'http:' &&
     url.hostname === '127.0.0.1' &&
     Number.isInteger(port) &&
     port >= MIN_CALLBACK_PORT &&
     port <= MAX_CALLBACK_PORT &&
-    url.pathname === '/' &&
-    Boolean(url.searchParams.get('code')) &&
+    (legacyCallback || mutationCallback) &&
     Boolean(url.searchParams.get('state'));
 
   if (!valid) {

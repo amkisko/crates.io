@@ -887,6 +887,19 @@ expression: document
         ],
         "type": "object"
       },
+      "MutationCallbackRequest": {
+        "description": "Loopback delivery metadata for a mutation preflight.",
+        "properties": {
+          "url": {
+            "description": "Exact `http://127.0.0.1:{port}/cargo/registry-authorization` URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
       "Owner": {
         "properties": {
           "avatar": {
@@ -1815,7 +1828,7 @@ expression: document
     },
     "/api/v1/auth/challenges": {
       "post": {
-        "description": "Registries advertise this version 1 flow through `step-up-auth` in the index\n`config.json`. Reactive challenges remain available to older clients.",
+        "description": "Create a manual API MFA challenge or support the legacy reactive flow.",
         "operationId": "create_api_mfa_challenge",
         "requestBody": {
           "content": {
@@ -1823,6 +1836,13 @@ expression: document
               "schema": {
                 "description": "Request to create a manual API MFA challenge.",
                 "properties": {
+                  "allow_pending": {
+                    "description": "Whether the registry may create a pending authorization record.",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
                   "archive_sha256": {
                     "description": "Hex SHA-256 of the publish archive bytes.",
                     "type": [
@@ -1838,6 +1858,24 @@ expression: document
                       "null"
                     ]
                   },
+                  "callback": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/MutationCallbackRequest",
+                        "description": "Optional exact loopback callback URL."
+                      }
+                    ]
+                  },
+                  "content_type": {
+                    "description": "Normalized media type of the ordinary mutation, or null when bodyless.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "crate": {
                     "description": "Optional crate name associated with the operation.",
                     "type": [
@@ -1847,13 +1885,6 @@ expression: document
                   },
                   "direction": {
                     "description": "`add` or `remove` for owner changes.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "endpoint": {
-                    "description": "Absolute-path endpoint of the ordinary mutation.",
                     "type": [
                       "string",
                       "null"
@@ -1891,6 +1922,13 @@ expression: document
                       "null"
                     ]
                   },
+                  "preflight_id": {
+                    "description": "Cargo-generated logical invocation identifier.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "protocol_version": {
                     "description": "Step-up protocol version. Version 1 is currently supported.",
                     "format": "int64",
@@ -1915,6 +1953,13 @@ expression: document
                       "null"
                     ]
                   },
+                  "request_target": {
+                    "description": "Origin-form target of the ordinary mutation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "version": {
                     "description": "Version involved in publish, yank, or unyank.",
                     "type": [
@@ -1936,9 +1981,25 @@ expression: document
                 "schema": {
                   "description": "Instructions and timing information for a newly created API MFA challenge.",
                   "properties": {
+                    "challenge_expires_in": {
+                      "description": "Conservative remaining pending lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
                     "challenge_id": {
                       "description": "Opaque step-up challenge identifier.",
                       "type": "string"
+                    },
+                    "crate": {
+                      "description": "Crate associated with the operation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "detail": {
                       "description": "Complete human-readable instructions for satisfying the challenge.",
@@ -1951,10 +2012,49 @@ expression: document
                       "format": "date-time",
                       "type": "string"
                     },
+                    "grant_expires_in": {
+                      "description": "Conservative remaining ready-grant lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "mutation_id": {
+                      "description": "Mutation record identifier sent on the final request.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "description": "Server-generated operation label.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_summary": {
+                      "description": "Server-generated summary of the exact mutation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "poll_url": {
                       "description": "URL the CLI should poll until `acknowledged` is true.",
                       "type": [
                         "string",
+                        "null"
+                      ]
+                    },
+                    "protocol_version": {
+                      "description": "Selected mutation-authorization protocol version.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
                         "null"
                       ]
                     },
@@ -1970,6 +2070,13 @@ expression: document
                     "status": {
                       "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
                       "type": "string"
+                    },
+                    "verification_url": {
+                      "description": "Structured same-origin verification URL.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -2246,6 +2353,465 @@ expression: document
           }
         },
         "summary": "Start passkey authentication for a pending challenge.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/mutation-challenges": {
+      "post": {
+        "operationId": "create_mutation_authorization",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Request to create a manual API MFA challenge.",
+                "properties": {
+                  "allow_pending": {
+                    "description": "Whether the registry may create a pending authorization record.",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "archive_sha256": {
+                    "description": "Hex SHA-256 of the publish archive bytes.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "archive_size": {
+                    "description": "Length of the publish archive bytes.",
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "callback": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/MutationCallbackRequest",
+                        "description": "Optional exact loopback callback URL."
+                      }
+                    ]
+                  },
+                  "content_type": {
+                    "description": "Normalized media type of the ordinary mutation, or null when bodyless.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "crate": {
+                    "description": "Optional crate name associated with the operation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "direction": {
+                    "description": "`add` or `remove` for owner changes.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "method": {
+                    "description": "HTTP method of the ordinary mutation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "operation": {
+                    "description": "Dangerous operation label. Defaults to `manual`.\n\nAllowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,\n`change-trusted-publishing`, `delete-crate`, `manual`.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "owners": {
+                    "description": "Complete ordered owner list for owner changes.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "description": "Optional localhost port (1024–65535) for proof delivery to the CLI.\n\nRequires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains\navailable as a fallback when callback delivery fails.",
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "preflight_id": {
+                    "description": "Cargo-generated logical invocation identifier.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "protocol_version": {
+                    "description": "Step-up protocol version. Version 1 is currently supported.",
+                    "format": "int64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "request_sha256": {
+                    "description": "Hex SHA-256 of the exact raw mutation request body.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "request_size": {
+                    "description": "Length of the exact raw mutation request body.",
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "request_target": {
+                    "description": "Origin-form target of the ordinary mutation.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "version": {
+                    "description": "Version involved in publish, yank, or unyank.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Instructions and timing information for a newly created API MFA challenge.",
+                  "properties": {
+                    "challenge_expires_in": {
+                      "description": "Conservative remaining pending lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "challenge_id": {
+                      "description": "Opaque step-up challenge identifier.",
+                      "type": "string"
+                    },
+                    "crate": {
+                      "description": "Crate associated with the operation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "detail": {
+                      "description": "Complete human-readable instructions for satisfying the challenge.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "grant_expires_in": {
+                      "description": "Conservative remaining ready-grant lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "mutation_id": {
+                      "description": "Mutation record identifier sent on the final request.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "description": "Server-generated operation label.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_summary": {
+                      "description": "Server-generated summary of the exact mutation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "poll_url": {
+                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "protocol_version": {
+                      "description": "Selected mutation-authorization protocol version.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls of `poll_url`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
+                      "type": "string"
+                    },
+                    "verification_url": {
+                      "description": "Structured same-origin verification URL.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "challenge_id",
+                    "expires_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Mutation is ready"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Instructions and timing information for a newly created API MFA challenge.",
+                  "properties": {
+                    "challenge_expires_in": {
+                      "description": "Conservative remaining pending lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "challenge_id": {
+                      "description": "Opaque step-up challenge identifier.",
+                      "type": "string"
+                    },
+                    "crate": {
+                      "description": "Crate associated with the operation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "detail": {
+                      "description": "Complete human-readable instructions for satisfying the challenge.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "grant_expires_in": {
+                      "description": "Conservative remaining ready-grant lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "mutation_id": {
+                      "description": "Mutation record identifier sent on the final request.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "description": "Server-generated operation label.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_summary": {
+                      "description": "Server-generated summary of the exact mutation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "poll_url": {
+                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "protocol_version": {
+                      "description": "Selected mutation-authorization protocol version.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls of `poll_url`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
+                      "type": "string"
+                    },
+                    "verification_url": {
+                      "description": "Structured same-origin verification URL.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "challenge_id",
+                    "expires_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Mutation authorization is pending"
+          },
+          "403": {
+            "description": "Waiting was not permitted"
+          }
+        },
+        "security": [
+          {
+            "api_token": []
+          }
+        ],
+        "summary": "Preflight an exact version 1 registry mutation.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/mutation-challenges/poll/{token}": {
+      "get": {
+        "operationId": "poll_mutation_authorization",
+        "parameters": [
+          {
+            "description": "Poll capability",
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Read-only mutation-authorization status returned through a poll token.",
+                  "properties": {
+                    "challenge_expires_in": {
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "grant_expires_in": {
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "recommended_poll_interval_secs": {
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "description": "One of `pending`, `ready`, or `expired`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Mutation authorization status"
+          }
+        },
+        "summary": "Poll mutation authorization through its independent read-only capability.",
         "tags": [
           "users"
         ]

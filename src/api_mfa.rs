@@ -45,11 +45,12 @@ pub(crate) struct ApiMfaCallback<'a> {
     pub(crate) secret: Option<&'a str>,
 }
 
-/// Allowed `operation` values for preflight `POST /api/v1/auth/challenges`.
+/// Allowed operation values for API MFA and mutation authorization.
 pub const ALLOWED_CHALLENGE_OPERATIONS: &[&str] = &[
     "publish",
     "yank",
     "unyank",
+    "owners",
     "change-owners",
     "change-trustpub-only",
     "change-trusted-publishing",

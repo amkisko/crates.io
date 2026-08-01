@@ -64,11 +64,12 @@ pub async fn log_requests(
     let duration = start_instant.elapsed();
 
     let method = &request_metadata.method;
-    let url = request_metadata
+    let raw_url = request_metadata
         .original_path
         .as_ref()
         .map(|p| Cow::Borrowed(&p.0.0))
         .unwrap_or_else(|| Cow::Owned(request_metadata.uri.to_string()));
+    let url = redact_poll_capability(&raw_url);
 
     let matched_path = request_metadata
         .matched_path
@@ -106,6 +107,26 @@ pub async fn log_requests(
     response
 }
 
+/// Redacts the read-only mutation poll capability from request URLs.
+pub fn redact_poll_capability(url: &str) -> Cow<'_, str> {
+    const PREFIX: &str = "/api/v1/auth/mutation-challenges/poll/";
+    let Some(start) = url.find(PREFIX).map(|start| start + PREFIX.len()) else {
+        return Cow::Borrowed(url);
+    };
+    let end = url[start..]
+        .find(['?', '#'])
+        .map(|offset| start + offset)
+        .unwrap_or(url.len());
+    if start == end {
+        return Cow::Borrowed(url);
+    }
+    let mut redacted = String::with_capacity(url.len());
+    redacted.push_str(&url[..start]);
+    redacted.push_str("[REDACTED]");
+    redacted.push_str(&url[end..]);
+    Cow::Owned(redacted)
+}
+
 #[derive(Clone, Debug, Deref, Default)]
 pub struct RequestLog(Arc<Mutex<Vec<(&'static str, String)>>>);
 
@@ -127,5 +148,22 @@ impl<T: RequestPartsExt> RequestLogExt for T {
         self.extensions()
             .get::<RequestLog>()
             .expect("Failed to find `RequestLog` request extension")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_poll_capability;
+
+    #[test]
+    fn mutation_poll_capabilities_are_redacted() {
+        assert_eq!(
+            redact_poll_capability("/api/v1/auth/mutation-challenges/poll/poll_secret?format=json"),
+            "/api/v1/auth/mutation-challenges/poll/[REDACTED]?format=json"
+        );
+        assert_eq!(
+            redact_poll_capability("/api/v1/auth/mutation-challenges"),
+            "/api/v1/auth/mutation-challenges"
+        );
     }
 }

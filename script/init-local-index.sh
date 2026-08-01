@@ -23,7 +23,10 @@ cat > config.json <<-EOF
 {
   "dl": "http://localhost:8888/api/v1/crates",
   "api": "${registry_api_url%/}/",
-  "step-up-auth": 1
+  "mutation-authorization": {
+    "versions": [1],
+    "operations": ["publish", "yank", "unyank", "owners"]
+  }
 }
 EOF
 git add config.json

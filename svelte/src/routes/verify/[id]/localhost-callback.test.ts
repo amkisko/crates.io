@@ -9,6 +9,12 @@ describe('addLocalhostCallbackState', () => {
     );
   });
 
+  it('constructs the mutation-authorization wake-up URL', () => {
+    expect(addLocalhostCallbackState('http://127.0.0.1:34567/cargo/registry-authorization', 'callback-state')).toBe(
+      'http://127.0.0.1:34567/cargo/registry-authorization?state=callback-state',
+    );
+  });
+
   it.each([
     'https://127.0.0.1:34567/?code=TestOtp1',
     'http://localhost:34567/?code=TestOtp1',
@@ -81,6 +87,23 @@ describe('deliverLocalhostCallback', () => {
 
     await expect(delivery).resolves.toBeUndefined();
     expect(image.src).toBe('http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef');
+  });
+
+  it('delivers a mutation-authorization wake-up without an OTP', async () => {
+    let listeners = new Map<string, EventListener>();
+    let image = {
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) =>
+        listeners.set(type, listener as EventListener),
+      src: '',
+    } as Pick<HTMLImageElement, 'addEventListener' | 'src'>;
+
+    let callbackUrl = 'http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef';
+    let delivery = deliverLocalhostCallback(callbackUrl, () => image);
+    await vi.waitFor(() => expect(listeners.get('load')).toBeTypeOf('function'));
+    listeners.get('load')!(new Event('load'));
+
+    await expect(delivery).resolves.toBeUndefined();
+    expect(image.src).toBe(callbackUrl);
   });
 
   it.each([

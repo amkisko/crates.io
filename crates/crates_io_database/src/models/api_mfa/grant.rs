@@ -7,6 +7,8 @@ use crate::schema::api_mfa_grants;
 
 /// Default lifetime of an API MFA grant after passkey verification.
 pub const DEFAULT_GRANT_DURATION_SECS: i64 = 15 * 60;
+/// Maximum lifetime of an exact mutation-authorization grant.
+pub const MUTATION_GRANT_DURATION_SECS: i64 = 5 * 60;
 
 /// A short-lived grant allowing API token actions after passkey verification.
 #[derive(Clone, Debug, Queryable, Selectable, Identifiable)]
@@ -152,7 +154,7 @@ impl NewApiMfaGrant {
             operation: Some(operation.into()),
             crate_name,
             mutation_fingerprint: Some(mutation_fingerprint),
-            expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_GRANT_DURATION_SECS),
+            expires_at: Utc::now() + chrono::Duration::seconds(MUTATION_GRANT_DURATION_SECS),
         }
     }
 

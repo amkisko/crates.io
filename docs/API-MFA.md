@@ -1,15 +1,14 @@
-# API MFA (passkey step-up)
+# API MFA (registry mutation authorization)
 
 Opt-in protection so publish, yank, and owner changes require recent interactive
 authentication — for API tokens and for website cookie sessions.
 
-A token-authenticated protected API call returns a short-lived authentication
-challenge; the browser completes passkey verification without a crates.io cookie
-while the CLI receives a one-time proof (localhost OTP callback) or observes the
-same challenge through a scoped step-up grant (poll). Both completion channels
-remain available for a callback-enabled challenge. `cargo login` still mints the API token before
-`cargo publish`. Cookie sessions use the settings "Authorize for 15 minutes"
-grant instead of that handshake.
+Cargo preflights a token-authenticated mutation before sending it. If policy
+requires user presence, the browser completes passkey verification without a
+crates.io cookie while Cargo observes readiness through a read-only poll token.
+An optional loopback callback only wakes Cargo for an immediate poll.
+`cargo login` still mints the primary API token. Cookie sessions use the
+settings "Authorize for 15 minutes" grant instead of the Cargo protocol.
 
 ### Glossary
 
@@ -22,24 +21,15 @@ Architecture (IAM vocabulary; not route names):
 
 Registry protocol:
 
-- Additional interactive authentication — what Cargo and registry docs say the
-  client must do for a protected operation.
-- Wire error: `step_up_required` — compact `errors[].id` cargo matches. Names the
-  unmet condition without claiming OAuth Bearer compliance or MFA factor counts.
-  (A longer self-describing alternative is `additional_authentication_required`;
-  this design keeps the shorter id.)
-- Protocol version: `protocol_version: 1`. Cargo handles only version 1 with a
-  same-origin `poll_url`; unknown or incomplete contracts remain ordinary
-  registry errors.
-- Authentication challenge — temporary server object under
-  `/api/v1/auth/challenges/{challenge_id}` (`stp_…` ids).
-- Browser page: `/verify/{challenge_id}` — capability URL; no crates.io cookie.
-- Step-up completion — browser ceremony finished for this challenge.
-- One-time proof — localhost callback OTP bound to the challenge / mutation;
-  consumed on retry (`Cargo-Step-Up-Proof`).
-- Scoped step-up grant — server-side authorization for the poll/retry path,
-  bound to token + operation + crate (+ mutation fingerprint). Not a synonym
-  for the one-time proof.
+- Mutation record — one logical invocation under a Cargo `preflight_id` and a
+  registry `mutation_id`.
+- Authorization challenge — a pending mutation record awaiting the registry's
+  chosen verification method.
+- Poll token — independent read-only capability for `pending`, `ready`,
+  `denied`, or `expired` status.
+- Grant — server-side exact authorization bound to credential identity and
+  mutation fingerprint.
+- Browser page: `/verify/{mutation_id}` — capability URL; no crates.io cookie.
 - Product setting: API MFA — crates.io settings/docs/metrics when the account
   promises multi-factor composition for this policy.
 
@@ -118,7 +108,7 @@ Any future factor (hardware token protocol, external signing service, etc.) must
 
 ## Challenge binding and security properties
 
-Challenges, one-time proofs, and scoped grants are bound to:
+Mutation records and grants are bound to:
 
 - the user and API token that started the handshake
 - the operation type and crate
@@ -128,107 +118,70 @@ Completion for one request must not authorize a modified publication or a differ
 
 Additional properties:
 
-- Challenge ids (`stp_…`) are unguessable, short-lived, and request-bound.
-- The localhost callback secret is hashed at rest. Cargo adds the plaintext to
-  the verification URL fragment locally, so it never appears in a registry
-  response or a request URL sent to the registry. The verification page reads
-  the fragment and constructs callback `state` locally. Callback port
-  replacement and proof recovery require the same secret, and Cargo rejects
-  callbacks whose state does not match before accepting a proof.
+- Mutation ids and independent poll tokens are unguessable and short-lived.
+- Cargo keeps callback state locally and adds it to the structured verification
+  URL fragment. The page removes the fragment after capture and sends the state
+  only to the registered `127.0.0.1` listener.
 - `poll_url` must share the registry API origin; Cargo refuses cross-origin
   poll URLs and does not follow poll redirects. `detail` contains the complete
-  verification instructions. For callback state, Cargo only augments a URL in
-  `detail` when that URL shares the registry origin.
-- Cargo allowlists `step_up_required` only; it must not follow arbitrary URLs from
-  a generic challenge handler.
-- Non-interactive clients (`CI=true` / non-TTY) fail fast instead of hanging.
-- Poll responses use `status`: `pending` or `acknowledged` (`acknowledged` /
-  `verified` bools are aliases). Missing or expired challenges return `404`.
-  Future states may include `denied` / `expired` without changing the error id.
+  verification instructions. Cargo uses only the structured same-origin
+  `verification_url` for callback augmentation.
+- Non-interactive automatic mode uses `allow_pending: false`, so it cannot
+  create an abandoned challenge.
+- Poll responses use `pending`, `ready`, `denied`, or `expired`.
 
 ## Version advertisement and mutation preflight
 
-The registry index advertises version 1 only after both preflight and
-idempotent mutations are deployed:
+The registry advertises version 1 only after each listed operation implements
+both preflight and idempotent final requests:
 
 ```json
 {
-  "step-up-auth": 1
+  "mutation-authorization": {
+    "versions": [1],
+    "operations": ["publish", "yank", "unyank", "owners"]
+  }
 }
 ```
 
-Cargo then sends an authenticated `POST /api/v1/auth/challenges` before
-publish, yank, unyank, or owner changes. The request describes the exact
-mutation: protocol version, operation, HTTP method and endpoint, crate,
-request-body hash and size, and operation-specific fields. Publish also
-includes version plus archive hash and size; owner changes include direction
-and owners.
+Cargo sends an authenticated `POST /api/v1/auth/mutation-challenges` before
+the ordinary request. The body contains a fresh `preflight_id`,
+`allow_pending`, and the exact method, request target, content type, raw-body
+digest and size, plus operation-specific facts. Publish also binds the archive
+digest and size.
 
-If API MFA does not apply, the endpoint returns `status: "acknowledged"` and a
-canonical `challenge_id` immediately. If fresh authentication is required, it
-returns the version 1 `step_up_required` response below. Once acknowledged,
-Cargo sends the ordinary mutation with `Cargo-Mutation-Id: {challenge_id}` and
-an optional `Cargo-Step-Up-Proof`.
+The response is `ready` (200), `pending` (202), or
+`interaction_required` (403). The last result is used when `allow_pending` is
+false; it creates no record or actionable URL. Pending responses contain
+complete plain-text instructions, a mutation id, a structured verification
+URL, an independent poll-token URL, and a relative lifetime.
 
 The mutation middleware authenticates the mutation id before buffering the
-body, verifies the method, endpoint, size, hash, parsed operation fields, and
-API token against the stored descriptor, serializes concurrent attempts, and
-replays a completed response instead of executing the mutation twice.
-
-Reactive challenges from ordinary mutation endpoints remain a compatibility
-path for registries that do not advertise version 1. They may transmit a
-publish body more than once and do not have the preflight mutation's
-idempotency guarantees.
+body, verifies the credential, method, request target, content type, declared
+and actual size, digest, and parsed operation fields against the stored
+descriptor, serializes concurrent attempts, and replays a completed response
+instead of executing the mutation twice.
 
 ## CLI handshake (primary flow)
 
 1. Register a passkey under Settings → API MFA and enable enforcement.
-2. Cargo preflights the exact mutation with the user's API token. The registry
-   returns ready status or `step_up_required` before Cargo sends the ordinary
-   mutation body.
-3. Preferred (localhost OTP / one-time proof): CLI binds `127.0.0.1`, sends
-   `Cargo-Step-Up-Port` plus a client-held `Cargo-Step-Up-Callback-Secret`, and
-   waits for the verify page to
-   `GET http://127.0.0.1:{port}/?code={otp}&state={callback_secret}` while also
-   polling the challenge as a fallback.
-4. Remote/SSH users select polling with `CARGO_REGISTRY_STEP_UP_CHANNEL=poll`. Automatic
-   mode uses localhost on an interactive TTY and falls back to polling after a
-   bind failure. A callback-enabled challenge remains pollable, so delivery
-   failure does not strand the mutation.
-5. API `403` fields:
-   - `id` — `step_up_required` (cargo matches this)
-   - `protocol_version` — `1`
-   - `detail` — leads with "Additional authentication is required"
-   - `challenge_id` — temporary challenge id (`stp_…`)
-   - `operation` / `crate` / `operation_summary` — protected operation context
-     (`operation_summary` is safe to display; Cargo may show `operation` + `crate`)
-   - `poll_url` — `GET /api/v1/auth/challenges/{challenge_id}`
-   - `expires_at` — short TTL (5 minutes)
-   - `recommended_poll_interval_secs` — advisory poll interval (currently `5`)
-6. User opens the link and completes passkey check. The verify page does not
-   require a crates.io cookie; the opaque `challenge_id` is the capability, and
-   the passkey proves control of the account that owns the token.
-7. Cargo sends the original request with `Cargo-Mutation-Id` (idempotent):
-   - With `Cargo-Step-Up-Port`: finish returns a loopback URL containing the
-     stored port and one-time proof, but no callback state. The verification
-     page adds its fragment-held secret and contacts Cargo; retry with
-     `Cargo-Step-Up-Proof` when callback wins.
-   - Finish always issues a scoped grant bound to the same API token, operation,
-     crate, and fingerprint. If polling observes acknowledgment first, Cargo
-     retries without OTP and uses that grant.
+2. Cargo preflights the exact mutation. Each logical invocation has its own
+   `preflight_id`; only an ambiguous retry reuses it.
+3. Interactive Cargo registers
+   `http://127.0.0.1:{port}/cargo/registry-authorization` and keeps polling as a
+   fallback. Remote users select `poll`.
+4. Cargo adds client-generated `callback_state` only to the structured
+   verification URL fragment. The page removes the fragment after capture and,
+   after passkey verification, navigates to the stored loopback URL with
+   `?state=...`.
+5. The callback is only a wake-up signal. Cargo immediately polls and continues
+   only after `ready`. Polling uses no primary credential.
+6. Cargo sends the original request with its ordinary credential and only
+   `Cargo-Mutation-Id`. The registry-side exact grant authorizes that mutation.
 
-Optional headers on preflight or the dangerous request:
-
-- `Cargo-Step-Up-Port` — localhost port for proof callback after verification
-- `Cargo-Step-Up-Callback-Secret` — URL-safe client secret authorizing callback
-  port refreshes and authenticating listener callback state; required with the
-  port
-- `Cargo-Step-Up-Proof` — one-time proof after verification (localhost path)
-- `Cargo-Mutation-Id` — acknowledged preflight id on the ordinary mutation and
-  its bounded transport retry
-
-Retries of the same token + operation + crate + fingerprint reuse the pending
-challenge until it expires or is completed.
+`CARGO_REGISTRY_MUTATION_AUTHORIZATION_CHANNEL` and
+`--registry-authorization` accept `auto`, `loopback`, `poll`, and `disabled`.
+Automatic non-interactive mode preflights with `allow_pending: false`.
 
 ## Enforced endpoints
 
@@ -303,7 +256,8 @@ crates-admin enqueue-job api_mfa_cleanup
 The job:
 
 - clears `auth_state_json` on expired challenges (free TOAST early)
-- deletes challenges with `expires_at` older than 24 hours
+- deletes pending challenges 24 hours after `expires_at` and terminal mutation
+  records 24 hours after `completed_at`
 - deletes expired grants and WebAuthn ceremony states
 - deletes expired or consumed email OTPs
 
@@ -313,14 +267,11 @@ Service gauge: `cratesio_service_api_mfa_challenges_pending`.
 
 ## Cargo integration
 
-When Cargo reads `"step-up-auth": 1` from registry `config.json`, it preflights
-the exact mutation and sends the acknowledged `Cargo-Mutation-Id` on publish,
-yank, unyank, or owner changes. It prefers a localhost OTP callback
-(`Cargo-Step-Up-Port` + `Cargo-Step-Up-Proof`) when interactive and concurrently
-retains polling as a completion fallback. Set
-`CARGO_REGISTRY_STEP_UP_CHANNEL` to `auto`, `localhost`, `poll`, or `disabled`.
-Use `poll` for an interactive SSH session whose browser runs on another machine.
-The older `CARGO_STEP_UP_PREFER_LOCALHOST` test/demo override remains supported.
+Cargo selects the highest mutually supported version from the
+`mutation-authorization` envelope and preflights listed operations. The
+loopback channel only accelerates polling and never carries a server proof or
+final-request credential. Use `poll` for an SSH session whose browser runs on
+another machine.
 
 While Cargo lacks built-in handshake support, an opted-in user must:
 
@@ -370,8 +321,9 @@ Treat API MFA as the interactive publish step-up layer only. Separate tracks rem
 
 - Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutate; it does not bind the published tarball to a long-term publisher key. Step-up MFA and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound step-up or for signed package bytes.
 - Tighter ceremony binding: publish acknowledgment already includes metadata and
-  tarball hashes. Callback OTP is one-shot, while the polling fallback grant is
-  token- and mutation-scoped. Keep browser Authorize separate from token grants.
+  tarball hashes. The loopback callback only wakes Cargo; the server-side grant
+  is token- and mutation-scoped. Keep browser Authorize separate from token
+  grants.
 - Scoped automation tokens: Trusted Publishing covers OIDC CI; non-OIDC automation still needs a human MFA step or a future short-lived / scoped automation token (automation bypass policy is a separate product decision, not part of this design).
 - Local token storage and login UX (Cargo): API MFA assumes a long-lived token already on disk; it does not fix plaintext `~/.cargo/credentials.toml`, OS-keychain defaults, CLI token paste, multi-identity login, or runtime token injection. Those stay Cargo-side tracks (credential providers, login UX, CI token injection). See [CLI-LOGIN.md](CLI-LOGIN.md) for the browser-assisted mint path.
 - Consumer trust policy: optional client or UI signals for `trustpub_only`, MFA-enabled owners, or signed crates; complements ecosystem MFA / download-threshold mandates.

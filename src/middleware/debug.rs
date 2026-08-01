@@ -6,6 +6,8 @@ use axum::response::IntoResponse;
 use http::HeaderName;
 use tracing::debug;
 
+use super::log_request::redact_poll_capability;
+
 fn is_sensitive_header(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
@@ -20,7 +22,7 @@ fn is_sensitive_header(name: &HeaderName) -> bool {
 pub async fn debug_requests(req: Request, next: Next) -> impl IntoResponse {
     debug!("  version: {:?}", req.version());
     debug!("  method: {:?}", req.method());
-    debug!("  path: {}", req.uri().path());
+    debug!("  path: {}", redact_poll_capability(req.uri().path()));
     debug!("  query_string: {:?}", req.uri().query());
     for (k, ref v) in req.headers().iter() {
         if is_sensitive_header(k) {

@@ -4,8 +4,7 @@ use super::webauthn_util::{
 use crate::api_mfa::{
     ApiMfaCallback, ApiMfaOperation, RECOMMENDED_POLL_INTERVAL_SECS,
     insert_challenge_or_reuse_pending, mfa_callback_secret_from_headers, mfa_port_from_headers,
-    normalize_challenge_operation, public_mfa_urls, refresh_challenge_localhost_callback,
-    step_up_required_error,
+    normalize_challenge_operation, refresh_challenge_localhost_callback,
 };
 use crate::app::AppState;
 use crate::auth::{AuthCheck, AuthHeader, Authentication};
@@ -27,7 +26,7 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use http::request::Parts;
+use http::{StatusCode, request::Parts};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,8 +46,10 @@ pub struct CreateChallengeRequest {
     pub crate_name: Option<String>,
     /// HTTP method of the ordinary mutation.
     pub method: Option<String>,
-    /// Absolute-path endpoint of the ordinary mutation.
-    pub endpoint: Option<String>,
+    /// Origin-form target of the ordinary mutation.
+    pub request_target: Option<String>,
+    /// Normalized media type of the ordinary mutation, or null when bodyless.
+    pub content_type: Option<String>,
     /// Version involved in publish, yank, or unyank.
     pub version: Option<String>,
     /// Hex SHA-256 of the exact raw mutation request body.
@@ -65,11 +66,24 @@ pub struct CreateChallengeRequest {
     pub owners: Option<Vec<String>>,
     /// Step-up protocol version. Version 1 is currently supported.
     pub protocol_version: Option<u64>,
+    /// Cargo-generated logical invocation identifier.
+    pub preflight_id: Option<String>,
+    /// Whether the registry may create a pending authorization record.
+    pub allow_pending: Option<bool>,
+    /// Optional exact loopback callback URL.
+    pub callback: Option<MutationCallbackRequest>,
     /// Optional localhost port (1024–65535) for proof delivery to the CLI.
     ///
     /// Requires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains
     /// available as a fallback when callback delivery fails.
     pub port: Option<i32>,
+}
+
+/// Loopback delivery metadata for a mutation preflight.
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct MutationCallbackRequest {
+    /// Exact `http://127.0.0.1:{port}/cargo/registry-authorization` URL.
+    pub url: String,
 }
 
 /// Instructions and timing information for a newly created API MFA challenge.
@@ -79,10 +93,27 @@ pub struct CreateChallengeResponse {
     pub status: String,
     /// Opaque step-up challenge identifier.
     pub challenge_id: String,
+    /// Selected mutation-authorization protocol version.
+    pub protocol_version: Option<u64>,
+    /// Mutation record identifier sent on the final request.
+    pub mutation_id: Option<String>,
     /// Complete human-readable instructions for satisfying the challenge.
     pub detail: Option<String>,
     /// URL the CLI should poll until `acknowledged` is true.
     pub poll_url: Option<String>,
+    /// Structured same-origin verification URL.
+    pub verification_url: Option<String>,
+    /// Server-generated operation label.
+    pub operation: Option<String>,
+    /// Crate associated with the operation.
+    #[serde(rename = "crate")]
+    pub crate_name: Option<String>,
+    /// Server-generated summary of the exact mutation.
+    pub operation_summary: Option<String>,
+    /// Conservative remaining pending lifetime in seconds.
+    pub challenge_expires_in: Option<u64>,
+    /// Conservative remaining ready-grant lifetime in seconds.
+    pub grant_expires_in: Option<u64>,
     pub expires_at: DateTime<Utc>,
     /// Suggested seconds between CLI polls of `poll_url`.
     pub recommended_poll_interval_secs: Option<u64>,
@@ -90,8 +121,7 @@ pub struct CreateChallengeResponse {
 
 /// Preflight an exact CLI mutation and create or reuse its API MFA challenge.
 ///
-/// Registries advertise this version 1 flow through `step-up-auth` in the index
-/// `config.json`. Reactive challenges remain available to older clients.
+/// Create a manual API MFA challenge or support the legacy reactive flow.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/challenges",
@@ -129,6 +159,14 @@ pub async fn create_api_mfa_challenge(
             max_archive_size,
         )?)
     };
+    let protocol = descriptor.as_ref().map(|_| {
+        validate_preflight_fields(
+            body.preflight_id.as_deref(),
+            body.allow_pending,
+            body.callback.as_ref(),
+        )
+    });
+    let protocol = protocol.transpose()?;
 
     let auth_check =
         auth_check_for_preflight(&requested_operation, body.crate_name.as_deref(), &conn).await?;
@@ -188,24 +226,21 @@ pub async fn create_api_mfa_challenge(
         }
         _ => {}
     }
+    if protocol.is_some() && (callback_port.is_some() || callback_secret.is_some()) {
+        return Err(bad_request(
+            "mutation preflight uses the callback object, not Cargo-Step-Up headers",
+        ));
+    }
 
     let operation = descriptor
         .as_ref()
         .map(ValidatedMutationDescriptor::operation)
         .unwrap_or_else(|| ApiMfaOperation::manual(body.crate_name.clone()));
 
-    let existing = if requested_operation == "manual" {
-        ApiMfaChallenge::find_pending_for_operation(
-            user.id,
-            token.id,
-            operation.kind,
-            operation.crate_name.as_deref(),
-            &operation.mutation_fingerprint,
-            &conn,
-        )
-        .await?
+    let existing = if let Some(protocol) = &protocol {
+        ApiMfaChallenge::find_by_preflight_id(token.id, &protocol.preflight_id, &conn).await?
     } else {
-        ApiMfaChallenge::find_active_for_operation(
+        ApiMfaChallenge::find_pending_for_operation(
             user.id,
             token.id,
             operation.kind,
@@ -216,6 +251,28 @@ pub async fn create_api_mfa_challenge(
         .await?
     };
     if let Some(existing) = existing {
+        if let (Some(protocol), Some(descriptor)) = (&protocol, &descriptor) {
+            validate_preflight_retry(&existing, protocol, descriptor)?;
+            if existing.is_acknowledged() {
+                if existing.completed_at.is_none() && grant_expires_in(&existing).is_none() {
+                    return Ok(
+                        (no_store(), Json(challenge_expired_response(&existing))).into_response()
+                    );
+                }
+                return Ok((no_store(), Json(challenge_ready_response(&existing))).into_response());
+            }
+            if existing.expires_at <= Utc::now() {
+                return Ok(
+                    (no_store(), Json(challenge_expired_response(&existing))).into_response()
+                );
+            }
+            return Ok((
+                StatusCode::ACCEPTED,
+                no_store(),
+                Json(challenge_created_response(&app.config.webauthn, &existing)),
+            )
+                .into_response());
+        }
         let existing = refresh_challenge_localhost_callback(
             existing,
             ApiMfaCallback {
@@ -225,16 +282,6 @@ pub async fn create_api_mfa_challenge(
             &mut conn,
         )
         .await?;
-        if requested_operation != "manual" {
-            if existing.is_acknowledged() {
-                return Ok((no_store(), Json(challenge_ready_response(&existing))).into_response());
-            }
-            return Err(step_up_required_error(
-                &app.config.webauthn,
-                &existing,
-                &operation,
-            ));
-        }
         return Ok((
             no_store(),
             Json(challenge_created_response(&app.config.webauthn, &existing)),
@@ -246,14 +293,26 @@ pub async fn create_api_mfa_challenge(
         .check_rate_limit(user.id, LimitedAction::ApiMfaChallengeCreate, &mut conn)
         .await?;
 
-    ApiMfaChallenge::delete_expired_pending_for_operation(
-        token.id,
-        operation.kind,
-        operation.crate_name.as_deref(),
-        &operation.mutation_fingerprint,
-        &conn,
-    )
-    .await?;
+    if protocol.is_none() {
+        ApiMfaChallenge::delete_expired_pending_for_operation(
+            token.id,
+            operation.kind,
+            operation.crate_name.as_deref(),
+            &operation.mutation_fingerprint,
+            &conn,
+        )
+        .await?;
+    }
+
+    let requires_pending = requested_operation != "manual"
+        && app.config.api_mfa_enforcement_enabled
+        && user.api_mfa_enabled;
+    if protocol
+        .as_ref()
+        .is_some_and(|protocol| !protocol.allow_pending && requires_pending)
+    {
+        return Ok(interaction_required_response());
+    }
 
     let pending = ApiMfaChallenge::count_pending_for_user(user.id, &conn).await?;
     if pending >= MAX_PENDING_CHALLENGES_PER_USER {
@@ -267,9 +326,9 @@ pub async fn create_api_mfa_challenge(
         port: callback_port,
         secret: callback_secret.as_deref(),
     };
-    let (challenge, created) = if let Some(descriptor) = descriptor {
+    let (challenge, created) = if let (Some(descriptor), Some(protocol)) = (descriptor, protocol) {
         insert_preflight_or_reuse(
-            user.id, token.id, &operation, descriptor, callback, &mut conn,
+            user.id, token.id, &operation, descriptor, protocol, &mut conn,
         )
         .await?
     } else {
@@ -281,9 +340,7 @@ pub async fn create_api_mfa_challenge(
         app.instance_metrics.api_mfa_challenges_created_total.inc();
     }
 
-    if requested_operation != "manual"
-        && (!app.config.api_mfa_enforcement_enabled || !user.api_mfa_enabled)
-    {
+    if requested_operation != "manual" && !requires_pending {
         conn.transaction(async |conn| {
             challenge.mark_ready(conn).await?;
             NewApiMfaGrant::for_operation(
@@ -302,11 +359,12 @@ pub async fn create_api_mfa_challenge(
     }
 
     if requested_operation != "manual" {
-        return Err(step_up_required_error(
-            &app.config.webauthn,
-            &challenge,
-            &operation,
-        ));
+        return Ok((
+            StatusCode::ACCEPTED,
+            no_store(),
+            Json(challenge_created_response(&app.config.webauthn, &challenge)),
+        )
+            .into_response());
     }
 
     Ok((
@@ -316,11 +374,39 @@ pub async fn create_api_mfa_challenge(
         .into_response())
 }
 
+/// Preflight an exact version 1 registry mutation.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/mutation-challenges",
+    request_body = inline(CreateChallengeRequest),
+    security(("api_token" = [])),
+    tag = "users",
+    extensions(("x-internal" = json!(true))),
+    responses(
+        (status = 200, description = "Mutation is ready", body = inline(CreateChallengeResponse)),
+        (status = 202, description = "Mutation authorization is pending", body = inline(CreateChallengeResponse)),
+        (status = 403, description = "Waiting was not permitted")
+    ),
+)]
+pub async fn create_mutation_authorization(
+    app: AppState,
+    req: Parts,
+    body: Json<CreateChallengeRequest>,
+) -> AppResult<Response> {
+    if body.preflight_id.is_none() {
+        return Err(bad_request("preflight_id is required"));
+    }
+    create_api_mfa_challenge(app, req, body).await
+}
+
 fn challenge_created_response(
     webauthn: &crate::config::WebauthnConfig,
     challenge: &ApiMfaChallenge,
 ) -> CreateChallengeResponse {
-    let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
+    let (verification_url, poll_url) = mutation_authorization_urls(webauthn, challenge);
+    let challenge_expires_in = (challenge.expires_at - Utc::now())
+        .num_seconds()
+        .clamp(1, 300) as u64;
     CreateChallengeResponse {
         status: "pending".into(),
         challenge_id: challenge.id.clone(),
@@ -329,6 +415,14 @@ fn challenge_created_response(
              {verification_url}\n\nAfter verification, retry the request."
         )),
         poll_url: Some(poll_url),
+        verification_url: Some(verification_url),
+        protocol_version: Some(1),
+        mutation_id: Some(challenge.id.clone()),
+        operation: Some(challenge.operation.clone()),
+        crate_name: challenge.crate_name.clone(),
+        operation_summary: Some(challenge.operation_summary.clone()),
+        challenge_expires_in: Some(challenge_expires_in),
+        grant_expires_in: None,
         expires_at: challenge.expires_at,
         recommended_poll_interval_secs: Some(RECOMMENDED_POLL_INTERVAL_SECS),
     }
@@ -336,13 +430,151 @@ fn challenge_created_response(
 
 fn challenge_ready_response(challenge: &ApiMfaChallenge) -> CreateChallengeResponse {
     CreateChallengeResponse {
-        status: "acknowledged".into(),
+        status: "ready".into(),
         challenge_id: challenge.id.clone(),
+        protocol_version: Some(1),
+        mutation_id: Some(challenge.id.clone()),
         detail: None,
         poll_url: None,
+        verification_url: None,
+        operation: None,
+        crate_name: None,
+        operation_summary: None,
+        challenge_expires_in: None,
+        grant_expires_in: Some(grant_expires_in(challenge).unwrap_or(300)),
         expires_at: challenge.expires_at,
         recommended_poll_interval_secs: None,
     }
+}
+
+fn grant_expires_in(challenge: &ApiMfaChallenge) -> Option<u64> {
+    let deadline = challenge.verified_at? + chrono::TimeDelta::seconds(300);
+    let remaining = (deadline - Utc::now()).num_seconds();
+    (remaining > 0).then_some(remaining.min(300) as u64)
+}
+
+fn challenge_expired_response(challenge: &ApiMfaChallenge) -> CreateChallengeResponse {
+    CreateChallengeResponse {
+        status: "expired".into(),
+        challenge_id: challenge.id.clone(),
+        protocol_version: Some(1),
+        mutation_id: Some(challenge.id.clone()),
+        detail: Some("The registry authorization request expired.".into()),
+        poll_url: None,
+        verification_url: None,
+        operation: None,
+        crate_name: None,
+        operation_summary: None,
+        challenge_expires_in: None,
+        grant_expires_in: None,
+        expires_at: challenge.expires_at,
+        recommended_poll_interval_secs: None,
+    }
+}
+
+fn mutation_authorization_urls(
+    webauthn: &crate::config::WebauthnConfig,
+    challenge: &ApiMfaChallenge,
+) -> (String, String) {
+    let verification_base = webauthn.rp_origin.as_str().trim_end_matches('/');
+    let api_base = webauthn.api_origin.as_str().trim_end_matches('/');
+    let poll_token = challenge
+        .poll_token
+        .as_deref()
+        .expect("preflight mutation must have a poll token");
+    (
+        format!("{verification_base}/verify/{}", challenge.id),
+        format!("{api_base}/api/v1/auth/mutation-challenges/poll/{poll_token}"),
+    )
+}
+
+#[derive(Debug)]
+struct ValidatedPreflight {
+    preflight_id: String,
+    allow_pending: bool,
+    callback_url: Option<String>,
+}
+
+fn validate_preflight_fields(
+    preflight_id: Option<&str>,
+    allow_pending: Option<bool>,
+    callback: Option<&MutationCallbackRequest>,
+) -> AppResult<ValidatedPreflight> {
+    let preflight_id = required_descriptor_field(preflight_id, "preflight_id")?;
+    if !(22..=128).contains(&preflight_id.len())
+        || !preflight_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(bad_request(
+            "preflight_id must be 22–128 URL-safe ASCII characters",
+        ));
+    }
+    let allow_pending =
+        allow_pending.ok_or_else(|| bad_request("allow_pending is required for preflight"))?;
+    let callback_url = callback
+        .map(|callback| validate_callback_url(&callback.url))
+        .transpose()?;
+    if !allow_pending && callback_url.is_some() {
+        return Err(bad_request(
+            "callback is not allowed when allow_pending is false",
+        ));
+    }
+    Ok(ValidatedPreflight {
+        preflight_id: preflight_id.to_owned(),
+        allow_pending,
+        callback_url,
+    })
+}
+
+fn validate_callback_url(raw: &str) -> AppResult<String> {
+    let url = url::Url::parse(raw).map_err(|_| bad_request("callback.url is invalid"))?;
+    let port = url
+        .port()
+        .ok_or_else(|| bad_request("callback.url must contain an explicit port"))?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || !(1024..=65535).contains(&port)
+        || url.path() != "/cargo/registry-authorization"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(bad_request(
+            "callback.url must be http://127.0.0.1:{port}/cargo/registry-authorization",
+        ));
+    }
+    Ok(raw.to_owned())
+}
+
+fn validate_preflight_retry(
+    existing: &ApiMfaChallenge,
+    protocol: &ValidatedPreflight,
+    descriptor: &ValidatedMutationDescriptor,
+) -> AppResult<()> {
+    if existing.allow_pending != Some(protocol.allow_pending)
+        || existing.callback_url != protocol.callback_url
+        || existing.descriptor_json.as_ref() != Some(&descriptor.stored.descriptor_json)
+    {
+        return Err(bad_request(
+            "preflight_id was already used with different request data",
+        ));
+    }
+    Ok(())
+}
+
+fn interaction_required_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        no_store(),
+        Json(json!({
+            "status": "interaction_required",
+            "protocol_version": 1,
+            "detail": "This operation requires registry authorization.",
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Debug)]
@@ -396,7 +628,8 @@ fn validate_mutation_descriptor(
     let crate_name = required_descriptor_field(body.crate_name.as_deref(), "crate")?;
     crates_io_validation::validate_crate_name("crate", crate_name).map_err(bad_request)?;
     let method = required_descriptor_field(body.method.as_deref(), "method")?.to_uppercase();
-    let endpoint = required_descriptor_field(body.endpoint.as_deref(), "endpoint")?;
+    let request_target =
+        required_descriptor_field(body.request_target.as_deref(), "request_target")?;
     let request_sha256 = decode_sha256(
         required_descriptor_field(body.request_sha256.as_deref(), "request_sha256")?,
         "request_sha256",
@@ -411,8 +644,13 @@ fn validate_mutation_descriptor(
             let version = required_descriptor_field(body.version.as_deref(), "version")?;
             semver::Version::parse(version)
                 .map_err(|_| bad_request("version is not valid semver"))?;
-            if method != "PUT" || endpoint != "/api/v1/crates/new" {
+            if method != "PUT" || request_target != "/api/v1/crates/new" {
                 return Err(bad_request("publish must describe PUT /api/v1/crates/new"));
+            }
+            if body.content_type.as_deref() != Some("application/octet-stream") {
+                return Err(bad_request(
+                    "publish content_type must be application/octet-stream",
+                ));
             }
             decode_sha256(
                 required_descriptor_field(body.archive_sha256.as_deref(), "archive_sha256")?,
@@ -444,9 +682,14 @@ fn validate_mutation_descriptor(
             let action = operation;
             let expected_method = if operation == "yank" { "DELETE" } else { "PUT" };
             let expected_endpoint = format!("/api/v1/crates/{crate_name}/{version}/{action}");
-            if method != expected_method || endpoint != expected_endpoint {
+            if method != expected_method || request_target != expected_endpoint {
                 return Err(bad_request(format!(
-                    "{operation} descriptor method or endpoint does not match its fields"
+                    "{operation} descriptor method or request_target does not match its fields"
+                )));
+            }
+            if body.content_type.is_some() {
+                return Err(bad_request(format!(
+                    "{operation} content_type must be null"
                 )));
             }
             if request_size != 0 || request_sha256 != Sha256::digest([]).as_slice() {
@@ -468,7 +711,7 @@ fn validate_mutation_descriptor(
                 format!("{verb} {crate_name} {version}"),
             )
         }
-        "change-owners" => {
+        "owners" => {
             if request_size > 64 * 1024 {
                 return Err(bad_request("change-owners request body is too large"));
             }
@@ -479,10 +722,13 @@ fn validate_mutation_descriptor(
                 _ => return Err(bad_request("direction must be `add` or `remove`")),
             };
             let expected_endpoint = format!("/api/v1/crates/{crate_name}/owners");
-            if method != expected_method || endpoint != expected_endpoint {
+            if method != expected_method || request_target != expected_endpoint {
                 return Err(bad_request(
-                    "change-owners descriptor method or endpoint does not match its fields",
+                    "owners descriptor method or request_target does not match its fields",
                 ));
+            }
+            if body.content_type.as_deref() != Some("application/json") {
+                return Err(bad_request("owners content_type must be application/json"));
             }
             let owners = body
                 .owners
@@ -493,7 +739,7 @@ fn validate_mutation_descriptor(
             }
             let verb = if direction == "add" { "Add" } else { "Remove" };
             (
-                "change-owners",
+                "owners",
                 format!("{verb} owners for {crate_name}: {}", owners.join(", ")),
             )
         }
@@ -508,7 +754,14 @@ fn validate_mutation_descriptor(
         ("protocol_version".to_owned(), serde_json::json!(1)),
         ("operation".to_owned(), serde_json::json!(kind)),
         ("method".to_owned(), serde_json::json!(method)),
-        ("endpoint".to_owned(), serde_json::json!(endpoint)),
+        (
+            "request_target".to_owned(),
+            serde_json::json!(request_target),
+        ),
+        (
+            "content_type".to_owned(),
+            serde_json::json!(body.content_type),
+        ),
         ("crate".to_owned(), serde_json::json!(crate_name)),
         (
             "request_sha256".to_owned(),
@@ -545,7 +798,7 @@ fn validate_mutation_descriptor(
         stored: NewApiMfaMutationDescriptor {
             descriptor_json,
             request_method: method,
-            request_endpoint: endpoint.to_owned(),
+            request_endpoint: request_target.to_owned(),
             request_sha256,
             request_size,
         },
@@ -593,7 +846,7 @@ async fn auth_check_for_preflight(
             })
         }
         "yank" | "unyank" => check.with_endpoint_scope(EndpointScope::Yank),
-        "change-owners" => check.with_endpoint_scope(EndpointScope::ChangeOwners),
+        "owners" | "change-owners" => check.with_endpoint_scope(EndpointScope::ChangeOwners),
         _ => check,
     };
     Ok(check)
@@ -604,14 +857,14 @@ async fn insert_preflight_or_reuse(
     api_token_id: i32,
     operation: &ApiMfaOperation,
     descriptor: ValidatedMutationDescriptor,
-    callback: ApiMfaCallback<'_>,
+    protocol: ValidatedPreflight,
     conn: &mut diesel_async::AsyncPgConnection,
 ) -> AppResult<(ApiMfaChallenge, bool)> {
     use diesel::result::{DatabaseErrorKind, Error as DieselError};
 
-    let challenge = NewApiMfaChallenge::new(
+    let challenge = NewApiMfaChallenge::for_preflight(
         user_id,
-        Some(api_token_id),
+        api_token_id,
         NewApiMfaChallengeOperation {
             operation: operation.kind.to_owned(),
             crate_name: operation.crate_name.clone(),
@@ -619,23 +872,27 @@ async fn insert_preflight_or_reuse(
             operation_summary: operation.summary.clone(),
             descriptor: Some(descriptor.stored),
         },
-        callback.port,
-        callback.secret,
+        protocol.preflight_id.clone(),
+        protocol.allow_pending,
+        protocol.callback_url.clone(),
     );
     match challenge.insert(conn).await {
         Ok(challenge) => Ok((challenge, true)),
         Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-            let existing = ApiMfaChallenge::find_pending_for_operation(
-                user_id,
-                api_token_id,
-                operation.kind,
-                operation.crate_name.as_deref(),
-                &operation.mutation_fingerprint,
-                conn,
-            )
-            .await?
-            .ok_or_else(|| server_error("preflight conflict without a reusable mutation record"))?;
-            let existing = refresh_challenge_localhost_callback(existing, callback, conn).await?;
+            let existing =
+                ApiMfaChallenge::find_by_preflight_id(api_token_id, &protocol.preflight_id, conn)
+                    .await?
+                    .ok_or_else(|| {
+                        server_error("preflight conflict without a reusable mutation record")
+                    })?;
+            if existing.allow_pending != challenge.allow_pending
+                || existing.callback_url != challenge.callback_url
+                || existing.descriptor_json != challenge.descriptor_json
+            {
+                return Err(bad_request(
+                    "preflight_id was already used with different request data",
+                ));
+            }
             Ok((existing, false))
         }
         Err(error) => Err(error.into()),
@@ -661,6 +918,90 @@ pub struct GetChallengeResponse {
     pub localhost_port: Option<i32>,
     /// Suggested seconds between CLI polls while status is `pending`.
     pub recommended_poll_interval_secs: u64,
+}
+
+/// Read-only mutation-authorization status returned through a poll token.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PollMutationAuthorizationResponse {
+    /// One of `pending`, `ready`, or `expired`.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub challenge_expires_in: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant_expires_in: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended_poll_interval_secs: Option<u64>,
+}
+
+/// Poll mutation authorization through its independent read-only capability.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/mutation-challenges/poll/{token}",
+    params(("token" = String, Path, description = "Poll capability")),
+    tag = "users",
+    extensions(("x-internal" = json!(true))),
+    responses((status = 200, description = "Mutation authorization status", body = inline(PollMutationAuthorizationResponse))),
+)]
+pub async fn poll_mutation_authorization(
+    app: AppState,
+    Path(token): Path<String>,
+    req: Parts,
+) -> AppResult<(
+    TypedHeader<CacheControl>,
+    Json<PollMutationAuthorizationResponse>,
+)> {
+    let mut conn = app.db_write().await?;
+    let Some(challenge) = ApiMfaChallenge::find_by_poll_token(&token, &conn).await? else {
+        return Err(not_found());
+    };
+    let bucket_key = challenge_rate_limit_key(&challenge.id, &req)?;
+    app.rate_limiter
+        .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengePoll, &mut conn)
+        .await?;
+    app.instance_metrics.api_mfa_challenge_polls_total.inc();
+
+    let now = Utc::now();
+    let response = if challenge.completed_at.is_some() {
+        PollMutationAuthorizationResponse {
+            status: "ready".into(),
+            challenge_expires_in: None,
+            grant_expires_in: Some(300),
+            recommended_poll_interval_secs: None,
+        }
+    } else if challenge.is_acknowledged() {
+        if let Some(grant_expires_in) = grant_expires_in(&challenge) {
+            PollMutationAuthorizationResponse {
+                status: "ready".into(),
+                challenge_expires_in: None,
+                grant_expires_in: Some(grant_expires_in),
+                recommended_poll_interval_secs: None,
+            }
+        } else {
+            PollMutationAuthorizationResponse {
+                status: "expired".into(),
+                challenge_expires_in: None,
+                grant_expires_in: None,
+                recommended_poll_interval_secs: None,
+            }
+        }
+    } else if challenge.expires_at <= now {
+        PollMutationAuthorizationResponse {
+            status: "expired".into(),
+            challenge_expires_in: None,
+            grant_expires_in: None,
+            recommended_poll_interval_secs: None,
+        }
+    } else {
+        PollMutationAuthorizationResponse {
+            status: "pending".into(),
+            challenge_expires_in: Some(
+                (challenge.expires_at - now).num_seconds().clamp(1, 300) as u64
+            ),
+            grant_expires_in: None,
+            recommended_poll_interval_secs: Some(RECOMMENDED_POLL_INTERVAL_SECS),
+        }
+    };
+    Ok((no_store(), Json(response)))
 }
 
 /// Poll an API MFA challenge until the browser acknowledges it.
@@ -962,9 +1303,11 @@ pub async fn finish_api_mfa_challenge(
         return Err(bad_request("this challenge is already acknowledged"));
     };
 
-    let localhost_callback_url = challenge
-        .localhost_port
-        .map(|port| format!("http://127.0.0.1:{port}/?code={otp}"));
+    let localhost_callback_url = challenge.callback_url.clone().or_else(|| {
+        challenge
+            .localhost_port
+            .map(|port| format!("http://127.0.0.1:{port}/?code={otp}"))
+    });
 
     use crate::models::{NewUserSecurityEvent, SecurityEventType};
     NewUserSecurityEvent::new(

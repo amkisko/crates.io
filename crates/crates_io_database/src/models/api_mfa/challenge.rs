@@ -15,6 +15,8 @@ pub const DEFAULT_CHALLENGE_DURATION_SECS: i64 = 5 * 60;
 pub const MAX_PENDING_CHALLENGES_PER_USER: i64 = 10;
 
 const CHALLENGE_ID_PREFIX: &str = "stp_";
+const MUTATION_ID_PREFIX: &str = "mut_";
+const POLL_TOKEN_PREFIX: &str = "poll_";
 const CHALLENGE_ID_LENGTH: usize = 32;
 const OTP_LENGTH: usize = 32;
 
@@ -22,8 +24,10 @@ const OTP_LENGTH: usize = 32;
 #[derive(Clone, Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = api_mfa_challenges, check_for_backend(diesel::pg::Pg))]
 pub struct ApiMfaChallenge {
+    pub allow_pending: Option<bool>,
     pub api_token_id: Option<i32>,
     pub auth_state_json: Option<JsonValue>,
+    pub callback_url: Option<String>,
     pub crate_name: Option<String>,
     pub descriptor_json: Option<JsonValue>,
     pub created_at: DateTime<Utc>,
@@ -36,6 +40,8 @@ pub struct ApiMfaChallenge {
     pub operation: String,
     pub operation_summary: String,
     pub otp_consumed_at: Option<DateTime<Utc>>,
+    pub poll_token: Option<String>,
+    pub preflight_id: Option<String>,
     pub request_endpoint: Option<String>,
     pub request_method: Option<String>,
     pub request_sha256: Option<Vec<u8>>,
@@ -56,6 +62,8 @@ pub struct NewApiMfaChallenge {
     pub id: String,
     pub user_id: i32,
     pub api_token_id: Option<i32>,
+    pub allow_pending: Option<bool>,
+    pub callback_url: Option<String>,
     pub operation: String,
     pub crate_name: Option<String>,
     pub mutation_fingerprint: Vec<u8>,
@@ -67,6 +75,8 @@ pub struct NewApiMfaChallenge {
     pub request_size: Option<i64>,
     pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
+    pub poll_token: Option<String>,
+    pub preflight_id: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -100,6 +110,22 @@ impl ApiMfaChallenge {
     pub fn generate_id() -> String {
         format!(
             "{CHALLENGE_ID_PREFIX}{}",
+            Alphanumeric.sample_string(&mut rand::rng(), CHALLENGE_ID_LENGTH)
+        )
+    }
+
+    /// Generates a mutation record identifier distinct from its polling capability.
+    pub fn generate_mutation_id() -> String {
+        format!(
+            "{MUTATION_ID_PREFIX}{}",
+            Alphanumeric.sample_string(&mut rand::rng(), CHALLENGE_ID_LENGTH)
+        )
+    }
+
+    /// Generates a short-lived read-only polling capability.
+    pub fn generate_poll_token() -> String {
+        format!(
+            "{POLL_TOKEN_PREFIX}{}",
             Alphanumeric.sample_string(&mut rand::rng(), CHALLENGE_ID_LENGTH)
         )
     }
@@ -182,6 +208,34 @@ impl ApiMfaChallenge {
     pub async fn find(id: &str, mut conn: &AsyncPgConnection) -> QueryResult<Option<Self>> {
         api_mfa_challenges::table
             .find(id)
+            .select(Self::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
+    /// Loads the mutation record for an idempotent preflight retry.
+    pub async fn find_by_preflight_id(
+        api_token_id: i32,
+        preflight_id: &str,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Option<Self>> {
+        api_mfa_challenges::table
+            .filter(api_mfa_challenges::api_token_id.eq(api_token_id))
+            .filter(api_mfa_challenges::preflight_id.eq(preflight_id))
+            .select(Self::as_select())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
+    /// Loads a mutation record through its read-only polling capability.
+    pub async fn find_by_poll_token(
+        poll_token: &str,
+        mut conn: &AsyncPgConnection,
+    ) -> QueryResult<Option<Self>> {
+        api_mfa_challenges::table
+            .filter(api_mfa_challenges::poll_token.eq(poll_token))
             .select(Self::as_select())
             .first(&mut conn)
             .await
@@ -470,6 +524,8 @@ impl NewApiMfaChallenge {
             id: ApiMfaChallenge::generate_id(),
             user_id,
             api_token_id,
+            allow_pending: None,
+            callback_url: None,
             operation: operation.operation,
             crate_name: operation.crate_name,
             mutation_fingerprint: operation.mutation_fingerprint,
@@ -490,8 +546,28 @@ impl NewApiMfaChallenge {
             localhost_callback_secret_hash: localhost_callback_secret
                 .map(ApiMfaChallenge::hash_localhost_callback_secret),
             localhost_port,
+            poll_token: None,
+            preflight_id: None,
             expires_at: Utc::now() + chrono::Duration::seconds(DEFAULT_CHALLENGE_DURATION_SECS),
         }
+    }
+
+    /// Creates a version 1 mutation-authorization record.
+    pub fn for_preflight(
+        user_id: i32,
+        api_token_id: i32,
+        operation: NewApiMfaChallengeOperation,
+        preflight_id: String,
+        allow_pending: bool,
+        callback_url: Option<String>,
+    ) -> Self {
+        let mut challenge = Self::new(user_id, Some(api_token_id), operation, None, None);
+        challenge.id = ApiMfaChallenge::generate_mutation_id();
+        challenge.allow_pending = Some(allow_pending);
+        challenge.callback_url = callback_url;
+        challenge.poll_token = Some(ApiMfaChallenge::generate_poll_token());
+        challenge.preflight_id = Some(preflight_id);
+        challenge
     }
 
     /// Inserts the challenge and returns the created row.

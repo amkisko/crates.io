@@ -65,10 +65,10 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
         return next.run(request).await;
     };
 
-    if id.len() > 128
+    if !(22..=128).contains(&id.len())
         || !id
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return crate::util::errors::bad_request("invalid Cargo-Mutation-Id").into_response();
     }
@@ -102,9 +102,12 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             // Resolve the preflight before accepting its body. This bounds the
             // allocation by the authenticated descriptor and rejects unknown
             // mutation IDs without buffering attacker-selected bytes.
-            let challenge = ApiMfaChallenge::find_active(&id, conn)
+            let challenge = ApiMfaChallenge::find(&id, conn)
                 .await?
                 .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+            if challenge.expires_at <= chrono::Utc::now() && challenge.completed_at.is_none() {
+                return Err(bad_request("Cargo-Mutation-Id is expired"));
+            }
             if challenge.api_token_id != Some(token_id) {
                 return Err(bad_request(
                     "Cargo-Mutation-Id belongs to a different credential",
@@ -114,6 +117,39 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
                 .request_size
                 .and_then(|size| usize::try_from(size).ok())
                 .ok_or_else(|| bad_request("Cargo-Mutation-Id is not a mutation preflight"))?;
+            if request_parts
+                .headers
+                .contains_key(http::header::CONTENT_ENCODING)
+            {
+                return Err(bad_request(
+                    "mutation authorization version 1 does not permit Content-Encoding",
+                ));
+            }
+            let declared_size = request_parts
+                .headers
+                .get(http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| bad_request("mutation request requires a valid Content-Length"))?;
+            if declared_size != expected_size {
+                return Err(bad_request(
+                    "mutation Content-Length does not match its preflight descriptor",
+                ));
+            }
+            let expected_content_type = challenge
+                .descriptor_json
+                .as_ref()
+                .and_then(|descriptor| descriptor.get("content_type"))
+                .and_then(serde_json::Value::as_str);
+            let actual_content_type = request_parts
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok());
+            if actual_content_type != expected_content_type {
+                return Err(bad_request(
+                    "mutation Content-Type does not match its preflight descriptor",
+                ));
+            }
             let bytes = to_bytes(request_body, expected_size)
                 .await
                 .map_err(|_| bad_request("mutation request exceeds its preflight size"))?;
@@ -125,7 +161,12 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             let context = Arc::new(IdempotentMutation {
                 id: id.clone(),
                 method: request_parts.method.clone(),
-                endpoint: request_parts.uri.path().to_owned(),
+                endpoint: request_parts
+                    .uri
+                    .path_and_query()
+                    .map(|target| target.as_str())
+                    .unwrap_or_else(|| request_parts.uri.path())
+                    .to_owned(),
                 request_sha256: Sha256::digest(&bytes).to_vec(),
                 request_size: challenge.request_size.unwrap_or_default(),
                 authorized: AtomicBool::new(false),
@@ -171,20 +212,7 @@ fn replay_headers(headers: &HeaderMap) -> serde_json::Value {
     json!(
         headers
             .iter()
-            .filter(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "content-type"
-                        | "cache-control"
-                        | "vary"
-                        | "www-authenticate"
-                        | "access-control-allow-origin"
-                        | "strict-transport-security"
-                        | "x-content-type-options"
-                        | "x-frame-options"
-                        | "x-xss-protection"
-                )
-            })
+            .filter(|(name, _)| name == &http::header::CONTENT_TYPE)
             .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?)))
             .collect::<Vec<_>>()
     )

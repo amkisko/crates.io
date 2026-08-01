@@ -26,7 +26,14 @@
   let loadError = $state<string | null>(null);
 
   let challengeId = $derived(page.params.id);
-  let callbackSecret = $derived(new URLSearchParams(page.url.hash.slice(1)).get('callback_secret'));
+  let callbackSecret = $state(new URLSearchParams(page.url.hash.slice(1)).get('callback_secret'));
+  let callbackState = $state(callbackSecret ?? new URLSearchParams(page.url.hash.slice(1)).get('callback_state'));
+
+  $effect(() => {
+    if (callbackState && globalThis.location.hash) {
+      globalThis.history.replaceState(null, '', globalThis.location.pathname + globalThis.location.search);
+    }
+  });
 
   async function loadMeta() {
     let id = challengeId;
@@ -101,8 +108,8 @@
 
       let result = await finish.json();
       localhostCallbackUrl =
-        result.localhost_callback_url && callbackSecret
-          ? addLocalhostCallbackState(result.localhost_callback_url, callbackSecret)
+        result.localhost_callback_url && callbackState
+          ? addLocalhostCallbackState(result.localhost_callback_url, callbackState)
           : null;
       done = true;
 

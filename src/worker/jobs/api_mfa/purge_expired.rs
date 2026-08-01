@@ -18,7 +18,8 @@ use tracing::info;
 /// `cratesio_service_cli_login_sessions{status=…}` for growth between runs.
 ///
 /// Retention:
-/// - Challenges: kept for 24 hours after `expires_at` (forensics / late poll debugging)
+/// - Pending challenges: kept for 24 hours after `expires_at`
+/// - Terminal mutations: kept for 24 hours after `completed_at` for response replay
 /// - Grants: deleted once expired
 /// - Ceremony states: deleted once expired
 /// - Email OTPs: deleted once expired or consumed
@@ -49,7 +50,12 @@ impl BackgroundJob for PurgeExpiredApiMfa {
 
         let challenge_cutoff = Utc::now() - TimeDelta::days(1);
         let challenges_deleted = diesel::delete(
-            api_mfa_challenges::table.filter(api_mfa_challenges::expires_at.lt(challenge_cutoff)),
+            api_mfa_challenges::table.filter(
+                api_mfa_challenges::completed_at
+                    .is_null()
+                    .and(api_mfa_challenges::expires_at.lt(challenge_cutoff))
+                    .or(api_mfa_challenges::completed_at.lt(challenge_cutoff)),
+            ),
         )
         .execute(&mut conn)
         .await?;
