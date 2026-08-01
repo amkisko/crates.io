@@ -19,7 +19,7 @@ impl crate::util::MockCookieUser {
     pub async fn confirm_email(&self, email_token: &str) {
         let url = format!("/api/v1/confirm/{email_token}");
         let response = self.put::<()>(&url, &[] as &[u8]).await;
-        assert_snapshot!(response.status(), @"200 OK");
+        assert_eq!(response.status(), 200);
         assert_eq!(response.json(), json!({ "ok": true }));
     }
 }

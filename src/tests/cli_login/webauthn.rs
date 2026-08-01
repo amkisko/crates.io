@@ -25,6 +25,17 @@ async fn approve_with_soft_passkey_when_mfa_enabled() {
         .await;
     assert_eq!(enabled.status(), 200);
 
+    // Enabling MFA rotates the session generation. A real browser stores the
+    // refreshed cookie returned above; reload the model so this request helper
+    // signs subsequent requests with the same new generation.
+    let conn = app.db_conn().await;
+    let user = MockCookieUser::new(
+        &app,
+        crates_io::models::User::find(&conn, user.as_model().id)
+            .await
+            .unwrap(),
+    );
+
     let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap().to_string();
     let confirmation_code = start["confirmation_code"].as_str().unwrap();
@@ -42,7 +53,7 @@ async fn approve_with_soft_passkey_when_mfa_enabled() {
             .to_string(),
         )
         .await;
-    assert_eq!(approve.status(), 200);
+    assert_eq!(approve.status(), 200, "response: {:#?}", approve.json());
     assert_eq!(approve.json()["status"], "ready");
     assert!(approve.json().get("token").is_none());
 

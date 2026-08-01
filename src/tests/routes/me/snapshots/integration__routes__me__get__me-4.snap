@@ -1,6 +1,5 @@
 ---
 source: src/tests/routes/me/get.rs
-assertion_line: 31
 expression: response.json()
 ---
 {
@@ -10,6 +9,7 @@ expression: response.json()
     "avatar": null,
     "created_at": "[datetime]",
     "email": "foo@example.com",
+    "email_pending": null,
     "email_verification_sent": true,
     "email_verified": true,
     "id": 1,

@@ -1815,7 +1815,7 @@ expression: document
     },
     "/api/v1/auth/challenges": {
       "post": {
-        "description": "Prefer letting dangerous endpoints auto-create challenges; this endpoint is for\nexplicit preflight handshakes.",
+        "description": "Registries advertise this version 1 flow through `step-up-auth` in the index\n`config.json`. Reactive challenges remain available to older clients.",
         "operationId": "create_api_mfa_challenge",
         "requestBody": {
           "content": {
@@ -1989,7 +1989,7 @@ expression: document
             "api_token": []
           }
         ],
-        "summary": "Create an API MFA challenge for a CLI client (token auth).",
+        "summary": "Preflight an exact CLI mutation and create or reuse its API MFA challenge.",
         "tags": [
           "users"
         ]
