@@ -146,10 +146,46 @@ Additional properties:
   `verified` bools are aliases). Missing or expired challenges return `404`.
   Future states may include `denied` / `expired` without changing the error id.
 
+## Version advertisement and mutation preflight
+
+The registry index advertises version 1 only after both preflight and
+idempotent mutations are deployed:
+
+```json
+{
+  "step-up-auth": 1
+}
+```
+
+Cargo then sends an authenticated `POST /api/v1/auth/challenges` before
+publish, yank, unyank, or owner changes. The request describes the exact
+mutation: protocol version, operation, HTTP method and endpoint, crate,
+request-body hash and size, and operation-specific fields. Publish also
+includes version plus archive hash and size; owner changes include direction
+and owners.
+
+If API MFA does not apply, the endpoint returns `status: "acknowledged"` and a
+canonical `challenge_id` immediately. If fresh authentication is required, it
+returns the version 1 `step_up_required` response below. Once acknowledged,
+Cargo sends the ordinary mutation with `Cargo-Mutation-Id: {challenge_id}` and
+an optional `Cargo-Step-Up-Proof`.
+
+The mutation middleware authenticates the mutation id before buffering the
+body, verifies the method, endpoint, size, hash, parsed operation fields, and
+API token against the stored descriptor, serializes concurrent attempts, and
+replays a completed response instead of executing the mutation twice.
+
+Reactive challenges from ordinary mutation endpoints remain a compatibility
+path for registries that do not advertise version 1. They may transmit a
+publish body more than once and do not have the preflight mutation's
+idempotency guarantees.
+
 ## CLI handshake (primary flow)
 
 1. Register a passkey under Settings → API MFA and enable enforcement.
-2. CLI performs a dangerous action (`cargo publish`, yank, change owners) with an API token.
+2. Cargo preflights the exact mutation with the user's API token. The registry
+   returns ready status or `step_up_required` before Cargo sends the ordinary
+   mutation body.
 3. Preferred (localhost OTP / one-time proof): CLI binds `127.0.0.1`, sends
    `Cargo-Step-Up-Port` plus a client-held `Cargo-Step-Up-Callback-Secret`, and
    waits for the verify page to
@@ -172,7 +208,7 @@ Additional properties:
 6. User opens the link and completes passkey check. The verify page does not
    require a crates.io cookie; the opaque `challenge_id` is the capability, and
    the passkey proves control of the account that owns the token.
-7. CLI retries the original request (idempotent):
+7. Cargo sends the original request with `Cargo-Mutation-Id` (idempotent):
    - With `Cargo-Step-Up-Port`: finish returns a loopback URL containing the
      stored port and one-time proof, but no callback state. The verification
      page adds its fragment-held secret and contacts Cargo; retry with
@@ -181,13 +217,15 @@ Additional properties:
      crate, and fingerprint. If polling observes acknowledgment first, Cargo
      retries without OTP and uses that grant.
 
-Optional headers on the dangerous request:
+Optional headers on preflight or the dangerous request:
 
 - `Cargo-Step-Up-Port` — localhost port for proof callback after verification
 - `Cargo-Step-Up-Callback-Secret` — URL-safe client secret authorizing callback
   port refreshes and authenticating listener callback state; required with the
   port
 - `Cargo-Step-Up-Proof` — one-time proof after verification (localhost path)
+- `Cargo-Mutation-Id` — acknowledged preflight id on the ordinary mutation and
+  its bounded transport retry
 
 Retries of the same token + operation + crate + fingerprint reuse the pending
 challenge until it expires or is completed.
@@ -275,11 +313,12 @@ Service gauge: `cratesio_service_api_mfa_challenges_pending`.
 
 ## Cargo integration
 
-When Cargo understands protocol version 1, it prefers a localhost OTP callback
-(`Cargo-Step-Up-Port` + `Cargo-Step-Up-Proof`) when interactive and concurrently retains
-polling as a completion fallback, then retries publish / yank / unyank / owner
-changes. Set `CARGO_REGISTRY_STEP_UP_CHANNEL` to `auto`, `localhost`, `poll`, or
-`disabled`.
+When Cargo reads `"step-up-auth": 1` from registry `config.json`, it preflights
+the exact mutation and sends the acknowledged `Cargo-Mutation-Id` on publish,
+yank, unyank, or owner changes. It prefers a localhost OTP callback
+(`Cargo-Step-Up-Port` + `Cargo-Step-Up-Proof`) when interactive and concurrently
+retains polling as a completion fallback. Set
+`CARGO_REGISTRY_STEP_UP_CHANNEL` to `auto`, `localhost`, `poll`, or `disabled`.
 Use `poll` for an interactive SSH session whose browser runs on another machine.
 The older `CARGO_STEP_UP_PREFER_LOCALHOST` test/demo override remains supported.
 
