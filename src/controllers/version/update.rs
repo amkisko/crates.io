@@ -73,8 +73,6 @@ pub async fn update_version(
             &req,
             &mut conn,
             crate::api_mfa::ApiMfaEnsureDeps {
-                webauthn: &state.config.webauthn,
-                rate_limiter: &state.rate_limiter,
                 metrics: &state.instance_metrics,
                 enforcement_enabled: state.config.api_mfa_enforcement_enabled,
             },

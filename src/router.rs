@@ -87,7 +87,6 @@ fn build_openapi_router() -> utoipa_axum::router::OpenApiRouter<AppState> {
         .routes(routes!(api_mfa::passkeys::delete_webauthn_credential))
         .routes(routes!(api_mfa::authorize::start_api_mfa_authorize))
         .routes(routes!(api_mfa::authorize::finish_api_mfa_authorize))
-        .routes(routes!(api_mfa::challenges::create_api_mfa_challenge))
         .routes(routes!(
             api_mfa::challenges::mutation_preflight::create_mutation_authorization
         ))
@@ -101,9 +100,6 @@ fn build_openapi_router() -> utoipa_axum::router::OpenApiRouter<AppState> {
         ))
         .routes(routes!(
             api_mfa::challenges::ceremony::finish_api_mfa_challenge
-        ))
-        .routes(routes!(
-            api_mfa::challenges::recovery::recover_api_mfa_challenge_callback
         ))
         .routes(routes!(
             crate_owner_invitation::list_crate_owner_invitations_for_user

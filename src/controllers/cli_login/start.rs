@@ -16,10 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// Request to begin a browser-assisted CLI login ceremony.
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
-pub struct StartCliLoginRequest {
-    /// Optional localhost port the browser may ping (token-free) after approve.
-    pub localhost_port: Option<i32>,
-}
+pub struct StartCliLoginRequest {}
 
 /// Browser and polling details returned for a new CLI login ceremony.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -48,15 +45,9 @@ pub struct StartCliLoginResponse {
 pub async fn start_cli_login(
     app: AppState,
     parts: Parts,
-    Json(body): Json<StartCliLoginRequest>,
+    Json(_body): Json<StartCliLoginRequest>,
 ) -> AppResult<(TypedHeader<CacheControl>, Json<StartCliLoginResponse>)> {
     ensure_cli_login_enabled(&app)?;
-
-    if let Some(port) = body.localhost_port
-        && !(1024..=65535).contains(&port)
-    {
-        return Err(bad_request("localhost_port must be between 1024 and 65535"));
-    }
 
     let client_ip = parts
         .extensions
@@ -76,7 +67,7 @@ pub async fn start_cli_login(
     }
 
     let (session, confirmation_code, poll_secret) =
-        NewCliLoginSession::pending_with_secrets(body.localhost_port, Some(client_ip))
+        NewCliLoginSession::pending_with_secrets(Some(client_ip))
             .insert(&conn)
             .await?;
 

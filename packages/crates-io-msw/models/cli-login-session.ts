@@ -7,7 +7,6 @@ const schema = v.pipe(
   v.object({
     id: v.optional(v.string()),
     status: v.optional(v.picklist(['pending', 'ready', 'consumed']), 'pending'),
-    localhostPort: v.optional(v.nullable(v.number()), null),
     clientIp: v.optional(v.nullable(v.string()), null),
     /** Plaintext for MSW only; real API stores a hash and returns the code once from start. */
     confirmationCode: v.optional(v.string()),

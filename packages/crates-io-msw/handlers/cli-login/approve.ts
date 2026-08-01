@@ -83,6 +83,5 @@ export default http.post('/api/v1/cli_login/:id/approve', async ({ params, reque
     status: 'ready',
     token_name: body.name,
     api_token_id: token.id,
-    localhost_port: session.localhostPort ?? undefined,
   });
 });

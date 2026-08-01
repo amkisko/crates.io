@@ -280,8 +280,6 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
             &req,
             &mut conn,
             crate::api_mfa::ApiMfaEnsureDeps {
-                webauthn: &app.config.webauthn,
-                rate_limiter: &app.rate_limiter,
                 metrics: &app.instance_metrics,
                 enforcement_enabled: app.config.api_mfa_enforcement_enabled,
             },
@@ -297,9 +295,9 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
     }
 
     if let Some(user_id) = auth.user_id() {
-        // Authorization handshakes and failed legacy OTP attempts must not consume the mutation
-        // bucket; otherwise an attacker with a challenge ID can exhaust the
-        // legitimate publisher's allowance before verification completes.
+        // Authorization preflights must not consume the mutation bucket; otherwise an
+        // attacker could exhaust the legitimate publisher's allowance before
+        // verification completes.
         let rate_limit_action = match existing_crate {
             Some(_) => LimitedAction::PublishUpdate,
             None => LimitedAction::PublishNew,

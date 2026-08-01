@@ -28,10 +28,7 @@ async fn poll_with_secret(
 async fn start_approve_poll_delivers_token_once() {
     let (app, anon, user) = TestApp::full().with_user().await;
 
-    let start = anon
-        .post::<Value>("/api/v1/cli_login", r#"{"localhost_port":null}"#)
-        .await
-        .good();
+    let start = anon.post::<Value>("/api/v1/cli_login", "{}").await.good();
     let login_id = start["login_id"].as_str().unwrap().to_string();
     let confirmation_code = start["confirmation_code"].as_str().unwrap().to_string();
     let poll_secret = start["poll_secret"].as_str().unwrap().to_string();

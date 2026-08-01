@@ -139,16 +139,6 @@
       let result = await response.json();
       done = true;
 
-      // Wake a waiting localhost listener without sending the token (CLI polls for it).
-      let port = result.localhost_port ?? meta?.localhost_port;
-      if (typeof port === 'number' && port >= 1024 && port <= 65_535) {
-        try {
-          await fetch(`http://127.0.0.1:${port}/`, { mode: 'no-cors' });
-        } catch {
-          // Ignore; CLI can poll for the token instead.
-        }
-      }
-
       notifications.success('Token issued. Return to the terminal — the token is not shown here.');
     } catch (error) {
       notifications.error(error instanceof Error ? error.message : 'Failed to approve CLI login');

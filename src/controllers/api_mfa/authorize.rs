@@ -102,8 +102,8 @@ pub async fn finish_api_mfa_authorize(
     complete_passkey_authentication(user.id, &body.credential, &app.config.webauthn, &mut conn)
         .await?;
 
-    // Browser-cookie wildcard after explicit settings-page authorization.
-    // API-token requests require exact token-bound operation grants.
+    // Browser-session grant after explicit settings-page authorization.
+    // API-token requests require mutation authorization instead.
     let grant = NewApiMfaGrant::for_user(user.id).insert(&conn).await?;
 
     use crate::middleware::real_ip::RealIp;

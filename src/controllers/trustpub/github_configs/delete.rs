@@ -55,8 +55,6 @@ pub async fn delete_trustpub_github_config(
         &parts,
         &mut conn,
         ApiMfaEnsureDeps {
-            webauthn: &state.config.webauthn,
-            rate_limiter: &state.rate_limiter,
             metrics: &state.instance_metrics,
             enforcement_enabled: state.config.api_mfa_enforcement_enabled,
         },

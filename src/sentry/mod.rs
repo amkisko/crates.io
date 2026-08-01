@@ -69,12 +69,9 @@ fn options(config: SentryConfig) -> ClientOptions {
 
             // Remove credentials before they are sent to Sentry, even if Sentry would redact
             // them downstream.
-            request.headers.retain(|name, _value| {
-                AUTHORIZATION != name.as_str()
-                    && COOKIE != name.as_str()
-                    && !name.eq_ignore_ascii_case("cargo-step-up-callback-secret")
-                    && !name.eq_ignore_ascii_case("cargo-step-up-proof")
-            });
+            request
+                .headers
+                .retain(|name, _value| AUTHORIZATION != name.as_str() && COOKIE != name.as_str());
         }
 
         Some(event)
@@ -115,8 +112,6 @@ mod tests {
                 ("authorization", "another secret"),
                 ("Accept", "application/json"),
                 ("Cookie", "cargo_session=foobar"),
-                ("Cargo-Step-Up-Callback-Secret", "callback secret"),
-                ("Cargo-Step-Up-Proof", "one-time proof"),
             ]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))

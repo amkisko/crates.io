@@ -4,24 +4,18 @@ use axum::Json;
 use axum::extract::Path;
 use axum_extra::TypedHeader;
 use axum_extra::headers::CacheControl;
-use chrono::{DateTime, Utc};
-use diesel_async::AsyncConnection;
 use http::request::Parts;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::PasskeyAuthentication;
 
-use crate::api_mfa::mfa_callback_secret_from_headers;
 use crate::app::AppState;
-use crate::models::{
-    ApiMfaChallenge, DEFAULT_CHALLENGE_DURATION_SECS, NewApiMfaGrant, WebauthnCredential,
-};
-use crate::util::errors::{AppResult, bad_request, forbidden, not_found, server_error};
+use crate::models::{ApiMfaChallenge, WebauthnCredential};
+use crate::util::errors::{AppResult, bad_request, not_found, server_error};
 use crate::util::no_store;
 
 use super::super::webauthn_util::{
     build_webauthn, parse_auth_response, passkeys_from_credentials, record_passkey_authentication,
 };
-use super::recovery::seal_callback_otp;
 use super::status::rate_limit_challenge_ceremony;
 
 /// Browser options returned when starting challenge passkey verification.
@@ -90,22 +84,15 @@ pub struct FinishChallengeAuthRequest {
     pub credential: serde_json::Value,
 }
 
-/// Proof and fallback grant issued after successful challenge verification.
+/// Result of successful challenge verification.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FinishChallengeAuthResponse {
-    /// One-time proof for the CLI to send as `Cargo-Step-Up-Proof`.
-    pub otp: String,
-    /// Optional exact loopback URL where the browser can wake Cargo.
-    ///
-    /// Mutation preflights register a URL containing state. Legacy challenges
-    /// receive fragment-held state from the browser.
-    pub localhost_callback_url: Option<String>,
-    /// Expiry of the exact token-and-operation-scoped polling fallback grant.
-    pub grant_expires_at: DateTime<Utc>,
+    /// Exact loopback URL registered by Cargo, used only as a wake-up signal.
+    pub callback_url: Option<String>,
     pub challenge_id: String,
 }
 
-/// Finish verification, making a mutation ready or issuing a legacy OTP and grant.
+/// Finish verification and make the mutation authorization ready.
 ///
 /// Unauthenticated: passkey assertion for the challenge owner's credentials is
 /// the only factor (no crates.io cookie). `cargo login` must already have
@@ -139,15 +126,6 @@ pub async fn finish_api_mfa_challenge(
 
     rate_limit_challenge_ceremony(&app, &challenge, &req, &mut conn).await?;
 
-    let callback_secret = mfa_callback_secret_from_headers(&req)?;
-    if challenge.localhost_port.is_some()
-        && callback_secret
-            .as_deref()
-            .is_none_or(|secret| !challenge.localhost_callback_secret_matches(secret))
-    {
-        return Err(forbidden("invalid localhost callback secret"));
-    }
-
     let Some(state_json) = challenge.auth_state_json.clone() else {
         return Err(bad_request("passkey authentication has not been started"));
     };
@@ -162,55 +140,9 @@ pub async fn finish_api_mfa_challenge(
 
     record_passkey_authentication(challenge.user_id, &auth_result, &mut conn).await?;
 
-    let otp = ApiMfaChallenge::generate_otp();
-    let hashed_otp = ApiMfaChallenge::hash_otp(&otp);
-    let sealed_otp = challenge
-        .localhost_port
-        .map(|_| seal_callback_otp(&app.config.token_encryption, &otp))
-        .transpose()?;
-    let grant_token_id = challenge.api_token_id.ok_or_else(|| {
-        bad_request("challenge is missing api_token_id; cannot issue a token-bound grant")
-    })?;
-
-    // Commit legacy grants or the exact mutation record's ready state in one
-    // transaction so callback and poll observe the same completion outcome.
-    let grant_expires_at: Option<DateTime<Utc>> = conn
-        .transaction(async |conn| {
-            if !challenge
-                .mark_verified(hashed_otp, sealed_otp, conn)
-                .await?
-            {
-                return Ok::<_, diesel::result::Error>(None);
-            }
-
-            if challenge.preflight_id.is_some() {
-                Ok(Some(
-                    Utc::now() + chrono::TimeDelta::seconds(DEFAULT_CHALLENGE_DURATION_SECS),
-                ))
-            } else {
-                let grant = NewApiMfaGrant::for_operation(
-                    challenge.user_id,
-                    grant_token_id,
-                    challenge.operation.clone(),
-                    challenge.crate_name.clone(),
-                    challenge.mutation_fingerprint.clone(),
-                )
-                .insert(conn)
-                .await?;
-                Ok(Some(grant.expires_at))
-            }
-        })
-        .await?;
-
-    let Some(grant_expires_at) = grant_expires_at else {
+    if !challenge.mark_verified(&conn).await? {
         return Err(bad_request("this challenge is already acknowledged"));
-    };
-
-    let localhost_callback_url = challenge.callback_url.clone().or_else(|| {
-        challenge
-            .localhost_port
-            .map(|port| format!("http://127.0.0.1:{port}/?code={otp}"))
-    });
+    }
 
     use crate::models::{NewUserSecurityEvent, SecurityEventType};
     NewUserSecurityEvent::new(
@@ -230,9 +162,7 @@ pub async fn finish_api_mfa_challenge(
     Ok((
         no_store(),
         Json(FinishChallengeAuthResponse {
-            otp,
-            localhost_callback_url,
-            grant_expires_at,
+            callback_url: challenge.callback_url,
             challenge_id: challenge.id,
         }),
     ))

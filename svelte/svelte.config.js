@@ -53,7 +53,7 @@ const config = {
           // CDN that the `/api/v1/crates/{name}/{version}/readme` endpoint redirects to
           'https://static.crates.io',
           'https://static.staging.crates.io',
-          // API MFA localhost OTP callback after passkey verify
+          // Mutation-authorization loopback wake-up after passkey verification
           'http://127.0.0.1:*',
         ],
         'script-src': [

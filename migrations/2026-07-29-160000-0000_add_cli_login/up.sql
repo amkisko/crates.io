@@ -11,8 +11,6 @@ CREATE TABLE IF NOT EXISTS cli_login_sessions (
     user_id INTEGER REFERENCES users (id) ON DELETE CASCADE,
     -- `pending` | `ready` | `consumed`
     status VARCHAR NOT NULL DEFAULT 'pending',
-    -- Optional localhost port for posting the token back to the CLI
-    localhost_port INTEGER,
     -- Client IP that started the session (pending-cap / forensics)
     client_ip VARCHAR,
     -- SHA-256 of normalized confirmation code from POST /cli_login; required on approve
@@ -27,9 +25,7 @@ CREATE TABLE IF NOT EXISTS cli_login_sessions (
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT cli_login_sessions_status_check
-        CHECK (status IN ('pending', 'ready', 'consumed')),
-    CONSTRAINT cli_login_sessions_localhost_port_range
-        CHECK (localhost_port IS NULL OR (localhost_port >= 1024 AND localhost_port <= 65535))
+        CHECK (status IN ('pending', 'ready', 'consumed'))
 );
 
 CREATE INDEX IF NOT EXISTS cli_login_sessions_expires_at_idx

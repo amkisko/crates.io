@@ -61,7 +61,28 @@ impl IdempotentMutation {
         let challenge = ApiMfaChallenge::find(&self.id, conn)
             .await?
             .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
-        if !challenge.begin_execution(conn).await? {
+        debug_assert!(self.idempotent_final);
+        let began = challenge.begin_execution(conn).await?;
+        if !began {
+            return Err(Box::new(MutationExecutionInProgress));
+        }
+        self.executing.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Durably consumes a core-only grant before the endpoint begins effects.
+    pub async fn begin_core_execution(&self, app: &AppState) -> crate::util::errors::AppResult<()> {
+        if !self.validated.load(Ordering::Acquire) {
+            return Err(server_error(
+                "mutation execution began before endpoint validation",
+            ));
+        }
+        debug_assert!(!self.idempotent_final);
+        let conn = app.db_write().await?;
+        let challenge = ApiMfaChallenge::find(&self.id, &conn)
+            .await?
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+        if !challenge.begin_core_execution(&conn).await? {
             return Err(Box::new(MutationExecutionInProgress));
         }
         self.executing.store(true, Ordering::Release);
@@ -82,27 +103,27 @@ impl IdempotentMutation {
         if !self.execution_authorized() {
             return Err(server_error("mutation execution was not started"));
         }
+        if !self.idempotent_final {
+            self.completed.store(true, Ordering::Release);
+            return Ok(());
+        }
         let challenge = ApiMfaChallenge::find(&self.id, conn)
             .await?
             .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
-        let stored = if self.idempotent_final {
-            let body = serde_json::to_vec(value).map_err(server_error)?;
-            if body.len() > MAX_TERMINAL_RESPONSE_BYTES {
-                return Err(server_error(
-                    "mutation response exceeds replay storage limit",
-                ));
-            }
-            challenge
-                .store_terminal_response(
-                    i32::from(status.as_u16()),
-                    json!([["content-type", "application/json"]]),
-                    body,
-                    conn,
-                )
-                .await?
-        } else {
-            challenge.finish_core_execution(conn).await?
-        };
+        let body = serde_json::to_vec(value).map_err(server_error)?;
+        if body.len() > MAX_TERMINAL_RESPONSE_BYTES {
+            return Err(server_error(
+                "mutation response exceeds replay storage limit",
+            ));
+        }
+        let stored = challenge
+            .store_terminal_response(
+                i32::from(status.as_u16()),
+                json!([["content-type", "application/json"]]),
+                body,
+                conn,
+            )
+            .await?;
         if !stored {
             return Err(server_error(
                 "Cargo-Mutation-Id outcome could not be committed",
@@ -168,151 +189,155 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
     };
     drop(conn);
 
-    let result: Result<Response, crate::util::errors::BoxedAppError> =
-        async move {
-            let state_conn = app.db_write().await?;
+    let result: Result<Response, crate::util::errors::BoxedAppError> = async move {
+        let state_conn = app.db_write().await?;
 
-            // Resolve the preflight before accepting its body. This bounds the
-            // allocation by the authenticated descriptor and rejects unknown
-            // mutation IDs without buffering attacker-selected bytes.
-            let mut challenge = ApiMfaChallenge::find(&id, &state_conn)
-                .await?
-                .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
-            if challenge.api_token_id != Some(token_id) {
-                return Err(bad_request(
-                    "Cargo-Mutation-Id belongs to a different credential",
-                ));
-            }
-            let expected_size = challenge
-                .request_size
-                .and_then(|size| usize::try_from(size).ok())
-                .ok_or_else(|| bad_request("Cargo-Mutation-Id is not a mutation preflight"))?;
-            if request_parts
-                .headers
-                .contains_key(http::header::CONTENT_ENCODING)
-            {
-                return Err(bad_request(
-                    "mutation authorization version 1 does not permit Content-Encoding",
-                ));
-            }
-            let declared_size = request_parts
-                .headers
-                .get(http::header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<usize>().ok())
-                .ok_or_else(|| bad_request("mutation request requires a valid Content-Length"))?;
-            if declared_size != expected_size {
-                return Err(bad_request(
-                    "mutation Content-Length does not match its preflight descriptor",
-                ));
-            }
-            let expected_content_type = challenge
-                .descriptor_json
-                .as_ref()
-                .and_then(|descriptor| descriptor.get("content_type"))
-                .and_then(serde_json::Value::as_str);
-            let actual_content_type = request_parts
-                .headers
-                .get(http::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok());
-            if actual_content_type != expected_content_type {
-                return Err(bad_request(
-                    "mutation Content-Type does not match its preflight descriptor",
-                ));
-            }
-
-            let state = challenge.mutation_state.as_deref().ok_or_else(|| {
-                bad_request("Cargo-Mutation-Id is not a versioned mutation record")
-            })?;
-            if state == "ready" {
-                if let Some(deadline) = challenge.begin_receiving(&state_conn).await? {
-                    challenge.mutation_state = Some("receiving".into());
-                    challenge.receive_expires_at = Some(deadline);
-                } else {
-                    // Another request can win the ready -> receiving CAS between
-                    // our load and update. Observe its state instead of
-                    // misreporting that race as an expired grant.
-                    challenge = ApiMfaChallenge::find(&id, &state_conn)
-                        .await?
-                        .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
-                }
-            }
-            let state = challenge.mutation_state.as_deref().ok_or_else(|| {
-                bad_request("Cargo-Mutation-Id is not a versioned mutation record")
-            })?;
-            match state {
-                "receiving" => {
-                    if challenge
-                        .receive_expires_at
-                        .is_none_or(|deadline| deadline <= chrono::Utc::now())
-                    {
-                        challenge.expire_receiving(&state_conn).await?;
-                        return Err(bad_request("Cargo-Mutation-Id receive lease is expired"));
-                    }
-                }
-                "executing" => return Ok(execution_in_progress_response()),
-                "terminal" => {}
-                "pending" => return Err(bad_request("Cargo-Mutation-Id is not ready")),
-                "denied" => return Err(bad_request("Cargo-Mutation-Id was denied")),
-                "expired" => return Err(bad_request("Cargo-Mutation-Id is expired")),
-                "ready" => return Err(bad_request("Cargo-Mutation-Id grant is expired")),
-                _ => {
-                    return Err(server_error(
-                        "Cargo-Mutation-Id has an invalid lifecycle state",
-                    ));
-                }
-            }
-            let bytes = to_bytes(request_body, expected_size)
-                .await
-                .map_err(|_| bad_request("mutation request exceeds its preflight size"))?;
-            if bytes.len() != expected_size {
-                return Err(bad_request(
-                    "mutation request length does not match its preflight descriptor",
-                ));
-            }
-            let context = Arc::new(IdempotentMutation {
-                id: id.clone(),
-                method: request_parts.method.clone(),
-                endpoint: request_parts
-                    .uri
-                    .path_and_query()
-                    .map(|target| target.as_str())
-                    .unwrap_or_else(|| request_parts.uri.path())
-                    .to_owned(),
-                request_sha256: Sha256::digest(&bytes).to_vec(),
-                request_size: challenge.request_size.unwrap_or_default(),
-                idempotent_final: challenge.idempotent_final,
-                validated: AtomicBool::new(false),
-                executing: AtomicBool::new(false),
-                completed: AtomicBool::new(false),
-            });
-            if challenge.request_method.as_deref() != Some(context.method.as_str())
-                || challenge.request_endpoint.as_deref() != Some(context.endpoint.as_str())
-                || challenge.request_sha256.as_deref() != Some(context.request_sha256.as_slice())
-            {
-                return Err(bad_request(
-                    "mutation request does not match its preflight descriptor",
-                ));
-            }
-            if let Some(response) = replay_response(&challenge) {
-                return Ok(response);
-            }
-            drop(state_conn);
-            let mut request = Request::from_parts(request_parts, Body::from(bytes));
-            request.extensions_mut().insert(context.clone());
-
-            let response = next.run(request).await;
-            if !context.execution_authorized() || !response.status().is_success() {
-                return Ok(response);
-            }
-            if context.execution_completed() {
-                return Ok(response);
-            }
-            Err(server_error(
-                "mutation endpoint returned success without committing its outcome",
-            ))
+        // Resolve the preflight before accepting its body. This bounds the
+        // allocation by the authenticated descriptor and rejects unknown
+        // mutation IDs without buffering attacker-selected bytes.
+        let mut challenge = ApiMfaChallenge::find(&id, &state_conn)
+            .await?
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+        if challenge.api_token_id != Some(token_id) {
+            return Err(bad_request(
+                "Cargo-Mutation-Id belongs to a different credential",
+            ));
         }
-        .await;
+        let expected_size = challenge
+            .request_size
+            .and_then(|size| usize::try_from(size).ok())
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is not a mutation preflight"))?;
+        if request_parts
+            .headers
+            .contains_key(http::header::CONTENT_ENCODING)
+        {
+            return Err(bad_request(
+                "mutation authorization version 1 does not permit Content-Encoding",
+            ));
+        }
+        let declared_size = request_parts
+            .headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| bad_request("mutation request requires a valid Content-Length"))?;
+        if declared_size != expected_size {
+            return Err(bad_request(
+                "mutation Content-Length does not match its preflight descriptor",
+            ));
+        }
+        let expected_content_type = challenge
+            .descriptor_json
+            .as_ref()
+            .and_then(|descriptor| descriptor.get("content_type"))
+            .and_then(serde_json::Value::as_str);
+        let actual_content_type = request_parts
+            .headers
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        if actual_content_type != expected_content_type {
+            return Err(bad_request(
+                "mutation Content-Type does not match its preflight descriptor",
+            ));
+        }
+
+        let state = challenge
+            .mutation_state
+            .as_deref()
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is not a versioned mutation record"))?;
+        if state == "ready" && challenge.idempotent_final {
+            if let Some(deadline) = challenge.begin_receiving(&state_conn).await? {
+                challenge.mutation_state = Some("receiving".into());
+                challenge.receive_expires_at = Some(deadline);
+            } else {
+                // Another request can win the ready -> receiving CAS between
+                // our load and update. Observe its state instead of
+                // misreporting that race as an expired grant.
+                challenge = ApiMfaChallenge::find(&id, &state_conn)
+                    .await?
+                    .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+            }
+        }
+        let state = challenge
+            .mutation_state
+            .as_deref()
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is not a versioned mutation record"))?;
+        match state {
+            "receiving" => {
+                if challenge
+                    .receive_expires_at
+                    .is_none_or(|deadline| deadline <= chrono::Utc::now())
+                {
+                    challenge.expire_receiving(&state_conn).await?;
+                    return Err(bad_request("Cargo-Mutation-Id receive lease is expired"));
+                }
+            }
+            "executing" => return Ok(execution_in_progress_response()),
+            "terminal" => {}
+            "pending" => return Err(bad_request("Cargo-Mutation-Id is not ready")),
+            "denied" => return Err(bad_request("Cargo-Mutation-Id was denied")),
+            "consumed" => return Err(bad_request("Cargo-Mutation-Id was already consumed")),
+            "expired" => return Err(bad_request("Cargo-Mutation-Id is expired")),
+            "ready" if !challenge.idempotent_final && challenge.expires_at > chrono::Utc::now() => {
+            }
+            "ready" => return Err(bad_request("Cargo-Mutation-Id grant is expired")),
+            _ => {
+                return Err(server_error(
+                    "Cargo-Mutation-Id has an invalid lifecycle state",
+                ));
+            }
+        }
+        let bytes = to_bytes(request_body, expected_size)
+            .await
+            .map_err(|_| bad_request("mutation request exceeds its preflight size"))?;
+        if bytes.len() != expected_size {
+            return Err(bad_request(
+                "mutation request length does not match its preflight descriptor",
+            ));
+        }
+        let context = Arc::new(IdempotentMutation {
+            id: id.clone(),
+            method: request_parts.method.clone(),
+            endpoint: request_parts
+                .uri
+                .path_and_query()
+                .map(|target| target.as_str())
+                .unwrap_or_else(|| request_parts.uri.path())
+                .to_owned(),
+            request_sha256: Sha256::digest(&bytes).to_vec(),
+            request_size: challenge.request_size.unwrap_or_default(),
+            idempotent_final: challenge.idempotent_final,
+            validated: AtomicBool::new(false),
+            executing: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+        });
+        if challenge.request_method.as_deref() != Some(context.method.as_str())
+            || challenge.request_endpoint.as_deref() != Some(context.endpoint.as_str())
+            || challenge.request_sha256.as_deref() != Some(context.request_sha256.as_slice())
+        {
+            return Err(bad_request(
+                "mutation request does not match its preflight descriptor",
+            ));
+        }
+        if let Some(response) = replay_response(&challenge) {
+            return Ok(response);
+        }
+        drop(state_conn);
+        let mut request = Request::from_parts(request_parts, Body::from(bytes));
+        request.extensions_mut().insert(context.clone());
+
+        let response = next.run(request).await;
+        if !response.status().is_success() {
+            return Ok(response);
+        }
+        if context.execution_authorized() && context.execution_completed() {
+            return Ok(response);
+        }
+        Err(server_error(
+            "mutation endpoint returned success without committing its outcome",
+        ))
+    }
+    .await;
 
     result.unwrap_or_else(IntoResponse::into_response)
 }

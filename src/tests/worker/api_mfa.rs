@@ -18,7 +18,7 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
 
     diesel::insert_into(api_mfa_challenges::table)
         .values((
-            api_mfa_challenges::id.eq("stp_keep_recent"),
+            api_mfa_challenges::id.eq("mut_keep_recent"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
             api_mfa_challenges::mutation_fingerprint.eq(vec![1; 32]),
@@ -31,7 +31,7 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
 
     diesel::insert_into(api_mfa_challenges::table)
         .values((
-            api_mfa_challenges::id.eq("stp_clear_auth_state"),
+            api_mfa_challenges::id.eq("mut_clear_auth_state"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
             api_mfa_challenges::mutation_fingerprint.eq(vec![2; 32]),
@@ -44,7 +44,7 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
 
     diesel::insert_into(api_mfa_challenges::table)
         .values((
-            api_mfa_challenges::id.eq("stp_delete_old"),
+            api_mfa_challenges::id.eq("mut_delete_old"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
             api_mfa_challenges::mutation_fingerprint.eq(vec![3; 32]),
@@ -132,13 +132,13 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
     assert_eq!(
         challenge_ids,
         vec![
-            "stp_clear_auth_state".to_string(),
-            "stp_keep_recent".to_string()
+            "mut_clear_auth_state".to_string(),
+            "mut_keep_recent".to_string()
         ]
     );
 
     let auth_state: Option<serde_json::Value> = api_mfa_challenges::table
-        .find("stp_clear_auth_state")
+        .find("mut_clear_auth_state")
         .select(api_mfa_challenges::auth_state_json)
         .first(&mut conn)
         .await?;

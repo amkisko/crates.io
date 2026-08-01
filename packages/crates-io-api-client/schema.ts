@@ -108,27 +108,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/challenges": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create an API MFA challenge for a CLI client (token auth).
-         * @description Prefer letting dangerous endpoints auto-create challenges; this endpoint is for
-         *     explicit preflight handshakes.
-         */
-        post: operations["create_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/auth/challenges/{id}": {
         parameters: {
             query?: never;
@@ -139,13 +118,30 @@ export interface paths {
         /**
          * Poll an API MFA challenge until the browser acknowledges it.
          * @description The opaque `challenge_id` is a capability URL: the verify page can load
-         *     metadata without a crates.io cookie. API token clients (CLI poll loops) are
-         *     rate-limited per user; unauthenticated browsers are rate-limited per IP.
-         *     Aside from rate-limit bucket updates this handler is read-only.
+         *     metadata without a crates.io cookie. Requests are rate-limited by capability,
+         *     IP, and challenge owner. Aside from rate-limit bucket updates this handler is
+         *     read-only.
          */
         get: operations["get_api_mfa_challenge"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/challenges/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deny a pending mutation authorization from its verification page. */
+        post: operations["deny_api_mfa_challenge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -162,33 +158,12 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Finish challenge verification, issue OTP + grant.
+         * Finish verification and make the mutation authorization ready.
          * @description Unauthenticated: passkey assertion for the challenge owner's credentials is
          *     the only factor (no crates.io cookie). `cargo login` must already have
          *     minted the API token that created this challenge.
          */
         post: operations["finish_api_mfa_challenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/challenges/{id}/recover": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Recover a verified callback after a browser reload or transient delivery failure.
-         * @description The callback secret lives only in the verification URL fragment and request
-         *     header. The server stores only its hash.
-         */
-        post: operations["recover_api_mfa_challenge_callback"];
         delete?: never;
         options?: never;
         head?: never;
@@ -210,6 +185,40 @@ export interface paths {
          *     Passkeys are loaded for the challenge owner (no crates.io cookie session).
          */
         post: operations["start_api_mfa_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mutation-challenges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preflight an exact version 1 registry mutation. */
+        post: operations["create_mutation_authorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mutation-challenges/poll/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Poll mutation authorization through its independent read-only capability. */
+        get: operations["poll_mutation_authorization"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1942,6 +1951,11 @@ export interface components {
              */
             total: number;
         };
+        /** @description Loopback delivery metadata for a mutation preflight. */
+        MutationCallbackRequest: {
+            /** @description Exact loopback URL with one random `state` query parameter. */
+            url: string;
+        };
         Owner: {
             /**
              * @description The avatar URL of the team or user.
@@ -2483,62 +2497,6 @@ export interface operations {
             };
         };
     };
-    create_api_mfa_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description Optional crate name associated with the operation. */
-                    crate_name?: string | null;
-                    /**
-                     * @description Dangerous operation label. Defaults to `manual`.
-                     *
-                     *     Allowed: `publish`, `yank`, `unyank`, `change-owners`, `change-trustpub-only`,
-                     *     `change-trusted-publishing`, `delete-crate`, `manual`.
-                     */
-                    operation?: string | null;
-                    /**
-                     * Format: int32
-                     * @description Optional localhost port (1024–65535) for proof delivery to the CLI.
-                     *
-                     *     Requires a valid `Cargo-Step-Up-Callback-Secret` header. Polling remains
-                     *     available as a fallback when callback delivery fails.
-                     */
-                    port?: number | null;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description Opaque step-up challenge identifier. */
-                        challenge_id: string;
-                        /** @description Complete human-readable instructions for satisfying the challenge. */
-                        detail: string;
-                        /** Format: date-time */
-                        expires_at: string;
-                        /** @description URL the CLI should poll until `acknowledged` is true. */
-                        poll_url: string;
-                        /**
-                         * Format: int64
-                         * @description Suggested seconds between CLI polls of `poll_url`.
-                         */
-                        recommended_poll_interval_secs: number;
-                    };
-                };
-            };
-        };
-    };
     get_api_mfa_challenge: {
         parameters: {
             query?: never;
@@ -2560,13 +2518,11 @@ export interface operations {
                     "application/json": {
                         /** @description True once the browser passkey ceremony has acknowledged the operation. */
                         acknowledged: boolean;
-                        /** @description Opaque step-up challenge identifier. */
+                        /** @description Opaque API MFA challenge identifier. */
                         challenge_id: string;
                         crate_name?: string | null;
                         /** Format: date-time */
                         expires_at: string;
-                        /** Format: int32 */
-                        localhost_port?: number | null;
                         operation: string;
                         /** @description Server-generated description of the exact mutation being approved. */
                         operation_summary: string;
@@ -2575,10 +2531,67 @@ export interface operations {
                          * @description Suggested seconds between CLI polls while status is `pending`.
                          */
                         recommended_poll_interval_secs: number;
-                        /** @description `pending` until passkey succeeds, then `acknowledged`. */
+                        /** @description `pending`, `ready`, or `denied`. */
                         status: string;
-                        /** @description Alias of `acknowledged` for older clients. */
-                        verified: boolean;
+                    };
+                };
+            };
+        };
+    };
+    deny_api_mfa_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Challenge ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mutation authorization denied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Extensions activated and bound to this mutation record. */
+                        active_extensions: string[];
+                        /**
+                         * Format: int64
+                         * @description Conservative remaining pending lifetime in seconds.
+                         */
+                        challenge_expires_in?: number | null;
+                        /** @description Complete human-readable instructions for satisfying the challenge. */
+                        detail?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Conservative remaining ready-grant lifetime in seconds.
+                         */
+                        grant_expires_in?: number | null;
+                        /** @description Mutation record identifier sent on the final request. */
+                        mutation_id: string;
+                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        poll_url?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Selected mutation-authorization protocol version.
+                         */
+                        protocol_version: number;
+                        /**
+                         * Format: int64
+                         * @description Remaining receive lease when `idempotent-final` is active.
+                         */
+                        receive_lease_secs?: number | null;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls of `poll_url`.
+                         */
+                        recommended_poll_interval_secs?: number | null;
+                        /** @description Mutation protocol state. */
+                        status: string;
                     };
                 };
             };
@@ -2609,48 +2622,9 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** @description Exact loopback URL registered by Cargo, used only as a wake-up signal. */
+                        callback_url?: string | null;
                         challenge_id: string;
-                        /**
-                         * Format: date-time
-                         * @description Expiry of the exact token-and-operation-scoped polling fallback grant.
-                         */
-                        grant_expires_at: string;
-                        /**
-                         * @description Optional loopback URL where the browser can deliver the proof.
-                         *
-                         *     This URL excludes callback state. The browser adds its fragment-held
-                         *     callback secret locally, so the registry never reflects that secret.
-                         */
-                        localhost_callback_url?: string | null;
-                        /** @description One-time proof for the CLI to send as `Cargo-Step-Up-Proof`. */
-                        otp: string;
-                    };
-                };
-            };
-        };
-    };
-    recover_api_mfa_challenge_callback: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Challenge ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        challenge_id: string;
-                        /** @description Loopback URL without callback state. The browser adds state locally. */
-                        localhost_callback_url: string;
                     };
                 };
             };
@@ -2676,6 +2650,196 @@ export interface operations {
                 content: {
                     "application/json": {
                         public_key: unknown;
+                    };
+                };
+            };
+        };
+    };
+    create_mutation_authorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Whether the registry may create a pending authorization record. */
+                    allow_pending: boolean;
+                    /** @description Hex SHA-256 of the publish archive bytes. */
+                    archive_sha256?: string | null;
+                    /**
+                     * Format: int64
+                     * @description Length of the publish archive bytes.
+                     */
+                    archive_size?: number | null;
+                    callback?: null | components["schemas"]["MutationCallbackRequest"];
+                    /** @description Normalized media type of the ordinary mutation, or null when bodyless. */
+                    content_type?: string | null;
+                    /** @description Crate name associated with the operation. */
+                    crate: string;
+                    /** @description `add` or `remove` for owner changes. */
+                    direction?: string | null;
+                    /** @description HTTP method of the ordinary mutation. */
+                    method?: string | null;
+                    /** @description Cargo mutation operation: `publish`, `yank`, `unyank`, or `owners`. */
+                    operation: string;
+                    /** @description Complete ordered owner list for owner changes. */
+                    owners?: string[] | null;
+                    /** @description Cargo-generated logical invocation identifier. */
+                    preflight_id: string;
+                    /**
+                     * Format: int64
+                     * @description Mutation-authorization protocol version. Version 1 is supported.
+                     */
+                    protocol_version: number;
+                    /** @description Hex SHA-256 of the exact raw mutation request body. */
+                    request_sha256: string;
+                    /**
+                     * Format: int64
+                     * @description Length of the exact raw mutation request body.
+                     */
+                    request_size: number;
+                    /** @description Origin-form target of the ordinary mutation. */
+                    request_target?: string | null;
+                    /** @description Protocol extensions Cargo can use for this invocation. */
+                    requested_extensions: string[];
+                    /** @description Version involved in publish, yank, or unyank. */
+                    version?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Mutation is ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Extensions activated and bound to this mutation record. */
+                        active_extensions: string[];
+                        /**
+                         * Format: int64
+                         * @description Conservative remaining pending lifetime in seconds.
+                         */
+                        challenge_expires_in?: number | null;
+                        /** @description Complete human-readable instructions for satisfying the challenge. */
+                        detail?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Conservative remaining ready-grant lifetime in seconds.
+                         */
+                        grant_expires_in?: number | null;
+                        /** @description Mutation record identifier sent on the final request. */
+                        mutation_id: string;
+                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        poll_url?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Selected mutation-authorization protocol version.
+                         */
+                        protocol_version: number;
+                        /**
+                         * Format: int64
+                         * @description Remaining receive lease when `idempotent-final` is active.
+                         */
+                        receive_lease_secs?: number | null;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls of `poll_url`.
+                         */
+                        recommended_poll_interval_secs?: number | null;
+                        /** @description Mutation protocol state. */
+                        status: string;
+                    };
+                };
+            };
+            /** @description Mutation authorization is pending */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Extensions activated and bound to this mutation record. */
+                        active_extensions: string[];
+                        /**
+                         * Format: int64
+                         * @description Conservative remaining pending lifetime in seconds.
+                         */
+                        challenge_expires_in?: number | null;
+                        /** @description Complete human-readable instructions for satisfying the challenge. */
+                        detail?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Conservative remaining ready-grant lifetime in seconds.
+                         */
+                        grant_expires_in?: number | null;
+                        /** @description Mutation record identifier sent on the final request. */
+                        mutation_id: string;
+                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        poll_url?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Selected mutation-authorization protocol version.
+                         */
+                        protocol_version: number;
+                        /**
+                         * Format: int64
+                         * @description Remaining receive lease when `idempotent-final` is active.
+                         */
+                        receive_lease_secs?: number | null;
+                        /**
+                         * Format: int64
+                         * @description Suggested seconds between CLI polls of `poll_url`.
+                         */
+                        recommended_poll_interval_secs?: number | null;
+                        /** @description Mutation protocol state. */
+                        status: string;
+                    };
+                };
+            };
+            /** @description Waiting was not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    poll_mutation_authorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Poll capability */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mutation authorization status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: int64 */
+                        challenge_expires_in?: number | null;
+                        detail?: string | null;
+                        /** Format: int64 */
+                        grant_expires_in?: number | null;
+                        /** Format: int64 */
+                        receive_lease_secs?: number | null;
+                        /** Format: int64 */
+                        recommended_poll_interval_secs?: number | null;
+                        /** @description One of `pending`, `ready`, `denied`, or `expired`. */
+                        status: string;
                     };
                 };
             };
@@ -2798,13 +2962,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    /**
-                     * Format: int32
-                     * @description Optional localhost port the browser may ping (token-free) after approve.
-                     */
-                    localhost_port?: number | null;
-                };
+                "application/json": Record<string, never>;
             };
         };
         responses: {
@@ -2903,11 +3061,6 @@ export interface operations {
                     "application/json": {
                         /** Format: int32 */
                         api_token_id: number;
-                        /**
-                         * Format: int32
-                         * @description Optional port the browser may ping (token-free) so a waiting CLI can wake.
-                         */
-                        localhost_port?: number | null;
                         status: string;
                         token_name: string;
                     };
@@ -2938,8 +3091,6 @@ export interface operations {
                         client_ip?: string | null;
                         /** Format: date-time */
                         expires_at: string;
-                        /** Format: int32 */
-                        localhost_port?: number | null;
                         login_id: string;
                         /**
                          * @description When true (API MFA on with zero passkeys), approve accepts `email_code`

@@ -41,7 +41,7 @@ Unauthenticated clients create a session with `POST /api/v1/cli_login` and recei
 
 `GET /api/v1/cli_login/{id}` requires header `Crates-Cli-Login-Secret: <poll_secret>` and reports pending, ready (with the token once), consumed, or expired.
 
-Signed-in browsers load metadata from `GET /api/v1/cli_login/{id}/meta` (including the starter client IP) and finish with `POST /api/v1/cli_login/{id}/approve`, which requires `confirmation_code` matching the CLI start. Approve mints the token but does not return the plaintext; the response may include `localhost_port` so the browser can ping a waiting CLI without the secret. The CLI picks the token up on the next successful poll (with `poll_secret`). While waiting for redeem, the server stores an encrypted blob, not the raw token.
+Signed-in browsers load metadata from `GET /api/v1/cli_login/{id}/meta` (including the starter client IP) and finish with `POST /api/v1/cli_login/{id}/approve`, which requires `confirmation_code` matching the CLI start. Approve mints the token but does not return the plaintext. The CLI picks the token up on the next successful poll (with `poll_secret`). While waiting for redeem, the server stores an encrypted blob, not the raw token.
 
 Approving a CLI login records a durable `cli_login_approved` security event (truncated starter IP). See [SECURITY-ACTIVITY.md](SECURITY-ACTIVITY.md).
 

@@ -204,8 +204,6 @@ async fn modify_owners(
         &parts,
         &mut conn,
         crate::api_mfa::ApiMfaEnsureDeps {
-            webauthn: &app.config.webauthn,
-            rate_limiter: &app.rate_limiter,
             metrics: &app.instance_metrics,
             enforcement_enabled: app.config.api_mfa_enforcement_enabled,
         },

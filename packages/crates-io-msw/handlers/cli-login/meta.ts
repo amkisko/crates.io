@@ -19,7 +19,6 @@ export default http.get('/api/v1/cli_login/:id/meta', ({ params }) => {
     login_id: session.id,
     status: session.status,
     expires_at: session.expiresAt,
-    localhost_port: session.localhostPort,
     client_ip: session.clientIp ?? undefined,
     mfa_required: mfaRequired,
     // MSW has no passkey store; recovery path is unused in e2e unless set explicitly.

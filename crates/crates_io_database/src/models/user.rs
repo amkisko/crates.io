@@ -31,7 +31,8 @@ pub struct User {
     pub account_lock_until: Option<DateTime<Utc>>,
     pub is_admin: bool,
     pub publish_notifications: bool,
-    /// When true, API token actions require passkey step-up (grant or OTP).
+    /// When true, protected Cargo mutations require mutation authorization and
+    /// protected browser actions require a recent passkey authorization.
     pub api_mfa_enabled: bool,
     /// Bumped to invalidate all `cargo_session` cookies carrying an older value.
     pub session_generation: i32,

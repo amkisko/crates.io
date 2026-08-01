@@ -7,7 +7,7 @@ use crate::api_mfa::ApiMfaOperation;
 use crate::models::NewApiMfaMutationDescriptor;
 use crate::util::errors::{AppResult, bad_request};
 
-use super::CreateChallengeRequest;
+use super::MutationAuthorizationRequest;
 
 #[derive(Debug)]
 pub(super) struct ValidatedMutationDescriptor {
@@ -51,15 +51,15 @@ impl ValidatedMutationDescriptor {
 }
 
 pub(super) fn validate_mutation_descriptor(
-    body: &CreateChallengeRequest,
+    body: &MutationAuthorizationRequest,
     operation: &str,
     max_archive_size: u32,
     idempotent_final: bool,
 ) -> AppResult<ValidatedMutationDescriptor> {
-    if body.protocol_version != Some(1) {
+    if body.protocol_version != 1 {
         return Err(bad_request("protocol_version must be 1"));
     }
-    let crate_name = required_descriptor_field(body.crate_name.as_deref(), "crate")?;
+    let crate_name = required_descriptor_field(Some(&body.crate_name), "crate")?;
     if idempotent_final && (body.method.is_none() || body.request_target.is_none()) {
         return Err(bad_request(
             "active idempotent-final requires both method and request_target",
@@ -74,13 +74,13 @@ pub(super) fn validate_mutation_descriptor(
     }
     crates_io_validation::validate_crate_name("crate", crate_name).map_err(bad_request)?;
     let request_sha256 = decode_sha256(
-        required_descriptor_field(body.request_sha256.as_deref(), "request_sha256")?,
+        required_descriptor_field(Some(&body.request_sha256), "request_sha256")?,
         "request_sha256",
     )?;
-    let request_size = body
-        .request_size
-        .filter(|size| *size >= 0)
-        .ok_or_else(|| bad_request("request_size must be a non-negative integer"))?;
+    let request_size = body.request_size;
+    if request_size < 0 {
+        return Err(bad_request("request_size must be a non-negative integer"));
+    }
 
     let (kind, summary, method, request_target, content_type) = match operation {
         "publish" => {

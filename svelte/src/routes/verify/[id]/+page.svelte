@@ -8,7 +8,7 @@
   import PageTitle from '$lib/components/PageTitle.svelte';
   import { getNotifications } from '$lib/notifications.svelte';
   import { revivePublicKeyRequest, serializeAssertion } from '$lib/utils/webauthn';
-  import { addLocalhostCallbackState, deliverLocalhostCallback } from './localhost-callback';
+  import { deliverLocalhostCallback } from './localhost-callback';
 
   type ChallengeMeta = operations['get_api_mfa_challenge']['responses'][200]['content']['application/json'];
 
@@ -22,26 +22,16 @@
   let localhostCallbackUrl = $state<string | null>(null);
   let callbackDeliveryBusy = $state(false);
   let callbackDeliveryFailed = $state(false);
-  let missingCallbackSecret = $state(false);
   let meta = $state<ChallengeMeta | null>(null);
   let loadError = $state<string | null>(null);
 
   let challengeId = $derived(page.params.id);
-  let callbackSecret = $state(new URLSearchParams(page.url.hash.slice(1)).get('callback_secret'));
-
-  $effect(() => {
-    if (callbackSecret && globalThis.location.hash) {
-      globalThis.history.replaceState(null, '', globalThis.location.pathname + globalThis.location.search);
-    }
-  });
-
   async function loadMeta() {
     let id = challengeId;
     if (!id) return;
 
     loading = true;
     loadError = null;
-    missingCallbackSecret = false;
     try {
       let response = await client.GET('/api/v1/auth/challenges/{id}', {
         params: { path: { id } },
@@ -54,16 +44,6 @@
         denied = true;
       } else if (meta?.acknowledged) {
         done = true;
-        if (meta.localhost_port && callbackSecret) {
-          try {
-            await recoverLocalhostCallback();
-          } catch (error) {
-            callbackDeliveryFailed = true;
-            notifications.error(error instanceof Error ? error.message : 'Failed to recover Cargo callback.');
-          }
-        } else if (meta.localhost_port && !callbackSecret) {
-          missingCallbackSecret = true;
-        }
       }
     } catch (error) {
       loadError = error instanceof Error ? error.message : 'Failed to load challenge';
@@ -96,11 +76,9 @@
         throw new Error('Passkey verification was cancelled');
       }
 
-      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (callbackSecret) headers['Cargo-Step-Up-Callback-Secret'] = callbackSecret;
       let finish = await fetch(`/api/v1/auth/challenges/${challengeId}/finish`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential: serializeAssertion(credential) }),
       });
       if (!finish.ok) {
@@ -109,11 +87,7 @@
       }
 
       let result = await finish.json();
-      localhostCallbackUrl = result.localhost_callback_url
-        ? callbackSecret
-          ? addLocalhostCallbackState(result.localhost_callback_url, callbackSecret)
-          : result.localhost_callback_url
-        : null;
+      localhostCallbackUrl = result.callback_url ?? null;
       done = true;
 
       if (localhostCallbackUrl && !(await sendLocalhostCallback())) {
@@ -147,22 +121,6 @@
     }
   }
 
-  async function recoverLocalhostCallback() {
-    let recovery = await fetch(`/api/v1/auth/challenges/${challengeId}/recover`, {
-      method: 'POST',
-      headers: { 'Cargo-Step-Up-Callback-Secret': callbackSecret! },
-    });
-    if (!recovery.ok) {
-      // A consumed OTP means Cargo already completed the original mutation.
-      if (recovery.status === 400) return;
-      let body = await recovery.json().catch(() => null);
-      throw new Error(body?.errors?.[0]?.detail ?? 'Failed to recover Cargo callback');
-    }
-    let result = await recovery.json();
-    localhostCallbackUrl = addLocalhostCallbackState(result.localhost_callback_url, callbackSecret!);
-    await sendLocalhostCallback();
-  }
-
   async function sendLocalhostCallback() {
     if (!localhostCallbackUrl) return true;
 
@@ -191,15 +149,6 @@
         return crateName ? `Confirm unyank ${crateName}` : 'Confirm unyank';
       case 'owners':
         return crateName ? `Confirm owner change for ${crateName}` : 'Confirm owner change';
-      case 'delete-crate':
-        return crateName ? `Confirm delete ${crateName}` : 'Confirm delete';
-      case 'change-trustpub-only':
-      case 'change-trusted-publishing':
-        return crateName ? `Confirm Trusted Publishing change for ${crateName}` : 'Confirm Trusted Publishing change';
-      case 'accept-owner-invite':
-        return crateName ? `Confirm owner invitation for ${crateName}` : 'Confirm owner invitation';
-      case 'manual':
-        return 'Confirm API MFA';
       default:
         return crateName ? `Confirm action for ${crateName}` : 'Confirm action';
     }
@@ -264,10 +213,6 @@
           {/if}
         </button>
       </div>
-    {:else if missingCallbackSecret}
-      <p role="status" data-test-missing-callback-secret>
-        Reopen the verification link from your terminal to finish connecting to Cargo.
-      </p>
     {:else}
       <p role="status" data-test-verify-success>You may close this window and return to the command line.</p>
     {/if}

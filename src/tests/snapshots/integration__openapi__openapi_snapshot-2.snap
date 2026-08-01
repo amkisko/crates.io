@@ -1694,16 +1694,6 @@ expression: document
             "application/json": {
               "schema": {
                 "description": "Request to begin a browser-assisted CLI login ceremony.",
-                "properties": {
-                  "localhost_port": {
-                    "description": "Optional localhost port the browser may ping (token-free) after approve.",
-                    "format": "int32",
-                    "type": [
-                      "integer",
-                      "null"
-                    ]
-                  }
-                },
                 "type": "object"
               }
             }

@@ -17,8 +17,8 @@ use crate::util::no_store;
 
 use super::mutation_descriptor::{ValidatedMutationDescriptor, required_descriptor_field};
 use super::{
-    CreateChallengeRequest, CreateChallengeResponse, MutationCallbackRequest,
-    create_api_mfa_challenge,
+    MutationAuthorizationRequest, MutationAuthorizationResponse, MutationCallbackRequest,
+    create_mutation_authorization_inner,
 };
 
 pub(super) const IDEMPOTENT_FINAL_EXTENSION: &str = "idempotent-final";
@@ -28,33 +28,30 @@ pub(super) const LOOPBACK_CALLBACK_EXTENSION: &str = "loopback-callback";
 #[utoipa::path(
     post,
     path = "/api/v1/auth/mutation-challenges",
-    request_body = inline(CreateChallengeRequest),
+    request_body = inline(MutationAuthorizationRequest),
     security(("api_token" = [])),
     tag = "users",
     extensions(("x-internal" = json!(true))),
     responses(
-        (status = 200, description = "Mutation is ready", body = inline(CreateChallengeResponse)),
-        (status = 202, description = "Mutation authorization is pending", body = inline(CreateChallengeResponse)),
+        (status = 200, description = "Mutation is ready", body = inline(MutationAuthorizationResponse)),
+        (status = 202, description = "Mutation authorization is pending", body = inline(MutationAuthorizationResponse)),
         (status = 403, description = "Waiting was not permitted")
     ),
 )]
 pub async fn create_mutation_authorization(
     app: AppState,
     req: Parts,
-    body: Json<CreateChallengeRequest>,
+    body: Json<MutationAuthorizationRequest>,
 ) -> AppResult<Response> {
-    if body.preflight_id.is_none() {
-        return Err(bad_request("preflight_id is required"));
-    }
     if !matches!(
-        body.operation.as_deref().map(str::trim),
-        Some("publish" | "yank" | "unyank" | "owners")
+        body.operation.trim(),
+        "publish" | "yank" | "unyank" | "owners"
     ) {
         return Err(bad_request(
             "mutation preflight operation must be publish, yank, unyank, or owners",
         ));
     }
-    create_api_mfa_challenge(app, req, body).await
+    create_mutation_authorization_inner(app, req, body).await
 }
 
 #[derive(Debug)]
@@ -74,12 +71,12 @@ impl ValidatedPreflight {
 }
 
 pub(super) fn validate_preflight_fields(
-    preflight_id: Option<&str>,
-    allow_pending: Option<bool>,
-    requested_extensions: Option<&[String]>,
+    preflight_id: &str,
+    allow_pending: bool,
+    requested_extensions: &[String],
     callback: Option<&MutationCallbackRequest>,
 ) -> AppResult<ValidatedPreflight> {
-    let preflight_id = required_descriptor_field(preflight_id, "preflight_id")?;
+    let preflight_id = required_descriptor_field(Some(preflight_id), "preflight_id")?;
     if !(22..=128).contains(&preflight_id.len())
         || !preflight_id
             .bytes()
@@ -89,10 +86,6 @@ pub(super) fn validate_preflight_fields(
             "preflight_id must be 22–128 URL-safe ASCII characters",
         ));
     }
-    let allow_pending =
-        allow_pending.ok_or_else(|| bad_request("allow_pending is required for preflight"))?;
-    let requested_extensions = requested_extensions
-        .ok_or_else(|| bad_request("requested_extensions is required for preflight"))?;
     if requested_extensions.len() > 16 {
         return Err(bad_request(
             "requested_extensions may contain at most 16 names",

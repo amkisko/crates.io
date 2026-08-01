@@ -27,12 +27,10 @@ use http::StatusCode;
 use tokio::task::JoinError;
 use tracing::error;
 
-mod api_mfa;
 mod json;
 
 use crate::email::EmailError;
 use crate::util::diesel::is_read_only_error;
-pub use api_mfa::ApiMfaRequired;
 use crates_io_github::GitHubError;
 pub use json::TOKEN_FORMAT_ERROR;
 pub(crate) use json::{InsecurelyGeneratedTokenRevoked, TooManyRequests, custom};

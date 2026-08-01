@@ -56,7 +56,6 @@ pub struct CliLoginSession {
     pub expires_at: DateTime<Utc>,
     pub id: String,
     pub last_polled_at: Option<DateTime<Utc>>,
-    pub localhost_port: Option<i32>,
     pub poll_secret_hash: Vec<u8>,
     pub sealed_token: Option<String>,
     pub status: String,
@@ -68,7 +67,6 @@ pub struct CliLoginSession {
 #[diesel(table_name = cli_login_sessions, check_for_backend(diesel::pg::Pg))]
 pub struct NewCliLoginSession {
     pub id: String,
-    pub localhost_port: Option<i32>,
     pub client_ip: Option<String>,
     pub confirmation_code_hash: Vec<u8>,
     pub poll_secret_hash: Vec<u8>,
@@ -86,16 +84,12 @@ pub struct NewCliLoginSessionWithSecrets {
 
 impl NewCliLoginSession {
     /// Builds a new pending session with opaque id, confirmation code, and poll secret.
-    pub fn pending_with_secrets(
-        localhost_port: Option<i32>,
-        client_ip: Option<String>,
-    ) -> NewCliLoginSessionWithSecrets {
+    pub fn pending_with_secrets(client_ip: Option<String>) -> NewCliLoginSessionWithSecrets {
         let confirmation_code = CliLoginSession::generate_confirmation_code();
         let poll_secret = CliLoginSession::generate_poll_secret();
         NewCliLoginSessionWithSecrets {
             session: Self {
                 id: CliLoginSession::generate_id(),
-                localhost_port,
                 client_ip,
                 confirmation_code_hash: CliLoginSession::hash_confirmation_code(&confirmation_code),
                 poll_secret_hash: CliLoginSession::hash_poll_secret(&poll_secret),

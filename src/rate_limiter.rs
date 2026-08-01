@@ -31,7 +31,7 @@ pg_enum! {
         PublishNew = 0,
         PublishUpdate = 1,
         YankUnyank = 2,
-        // Creating a new API MFA operation challenge (handshake insert).
+        // Creating a new mutation-authorization record.
         ApiMfaChallengeCreate = 3,
         // Polling an API MFA challenge from a CLI token.
         ApiMfaChallengePoll = 4,

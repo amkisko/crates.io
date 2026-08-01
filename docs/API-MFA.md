@@ -40,9 +40,9 @@ authentication methods or authenticator types whose factor properties may vary
 verification).
 
 CLI login approve meta may still expose `mfa_required: true` when the account
-has API MFA enabled — product state, not the publish handshake error id.
+has API MFA enabled — product state, not a mutation-authorization response.
 
-Org or maintainer approvals that are not this security handshake should use a
+Org or maintainer approvals that are not this authorization flow should use a
 distinct error such as `approval_required`.
 
 HTTP status: `403` when the API token is valid but inadequate for the protected
@@ -54,8 +54,9 @@ error-body handling in Cargo is a compatibility exception, not the contract.
 Long-lived API token (`~/.cargo/credentials`):
 
 - Without API MFA: immediate publish, yank, or owner change
-- With API MFA: blocked until passkey acknowledgment (token-bound CLI challenge,
-  scoped grant, or OTP)
+- With API MFA: Cargo final endpoints are blocked until an exact preflight
+  mutation record is ready. Browser-session authorization and recovery codes
+  cannot authorize them.
 
 Website session / crates.io cookie:
 
@@ -100,10 +101,11 @@ The goal is to make a silent publish from a stolen cargo token require a recent 
 
 Acceptable factors share these properties:
 
-- The proof is single-use and bound to a registry challenge; the registry binds
-  that challenge to the stored operation.
+- The verification ceremony acknowledges one registry mutation record, which
+  the registry binds to the stored operation.
 - Normal use involves human presence (user gesture, biometric, PIN + touch) at verification time.
-- Crates.io records a ceremony trace (challenge → acknowledgment / grant / OTP) linked to the dangerous API call.
+- Crates.io records mutation-authorization and product-session ceremonies in
+  the account security activity feed.
 
 WebAuthn passkeys are the supported verification method for mutation authorization today.
 
@@ -116,13 +118,16 @@ stored mutation. Agent-backed SSH (`ssh-agent`, CI keys, forwarded agents)
 typically supplies only silent key use. Accepting "can SSH as this user" would
 treat another long-lived key as MFA and miss the human-in-the-loop rule above.
 
-Any future factor (hardware token protocol, external signing service, etc.) must keep per-operation proof, intentional user interaction in the common case, and an auditable acknowledgment path. Silent pubkey possession alone is insufficient.
+Any future factor (hardware token protocol, external signing service, etc.) must
+keep per-operation verification, intentional user interaction in the common
+case, and an auditable acknowledgment path. Silent pubkey possession alone is
+insufficient.
 
 ## Challenge binding and security properties
 
 Mutation records and grants are bound to:
 
-- the user and API token that started the handshake
+- the user and API token that started mutation authorization
 - the operation type and crate
 - a mutation fingerprint (for publish: version, metadata hash, and tarball hash)
 
@@ -188,7 +193,7 @@ without retaining a response. `idempotent-final` is active only when requested,
 confirmed, and accompanied by its descriptor fields. The server must not
 activate it until every covered endpoint uses transactional outcome storage.
 
-## CLI handshake (primary flow)
+## Cargo mutation authorization (primary flow)
 
 1. Register a passkey under Settings → API MFA and enable enforcement.
 2. Cargo preflights the exact mutation. Each logical invocation has its own
@@ -206,30 +211,29 @@ activate it until every covered endpoint uses transactional outcome storage.
    `Cargo-Mutation-Id`. The registry-side exact grant authorizes that mutation.
 
 Core `CARGO_REGISTRY_MUTATION_AUTHORIZATION_CHANNEL` and
-`--registry-authorization` values are `auto`, `poll`, and `disabled`;
+`--mutation-authorization-channel` values are `auto`, `poll`, and `disabled`;
 `loopback-callback` adds `loopback`. Automatic non-interactive mode preflights
 with `allow_pending: false`.
 
 ## Enforced endpoints
 
-When `users.api_mfa_enabled` is true (API token or cookie session):
+When `users.api_mfa_enabled` is true, token-authenticated Cargo final endpoints
+require an exact ready `Cargo-Mutation-Id`:
 
 - `PUT /api/v1/crates/new` (publish)
 - `PUT` / `DELETE /api/v1/crates/{name}/owners`
 - yank / unyank version endpoints
+
+Other product endpoints use browser-session authorization grants:
+
 - `PATCH /api/v1/crates/{name}` when `trustpub_only` changes (enable or disable)
 - `DELETE /api/v1/crates/{name}` (crate delete; cookie sessions)
 - Trusted Publishing config create/delete (`/api/v1/trusted_publishing/…`)
 
-Acceptance: an active `api_mfa_grants` row covering the operation/crate, or (token clients) a valid unused OTP bound to that same operation/crate, or (token clients without grant/OTP) the `403` challenge handshake.
-
 Grant matching:
 
-- Challenge acknowledgment issues a grant bound to `api_token_id` (only that token can reuse it).
-- Settings → Authorize issues a browser wildcard grant with `api_token_id = NULL`.
-- Cookie requests accept only `api_token_id IS NULL` grants.
-- API-token requests require an exact token-bound operation grant; browser
-  authorization never authorizes a Cargo token.
+- Settings → Authorize issues a browser-session grant.
+- Browser authorization never authorizes a Cargo token.
 
 Cookie sessions without a grant receive `400` asking the user to Authorize for 15 minutes under Settings → API MFA.
 
@@ -296,12 +300,12 @@ Service gauge: `cratesio_service_api_mfa_challenges_pending`.
 
 Cargo preflights each supported mutation unless authorization is disabled. It
 requests extensions it implements and uses only those confirmed by the
-preflight response. The loopback channel only
-accelerates polling and never carries a server proof or final-request
-credential. Use `poll` for an SSH session whose browser runs on another
-machine.
+preflight response. The loopback channel only accelerates polling and never
+carries mutation authority or a final-request credential. Use `poll` for an SSH
+session whose browser runs on another machine.
 
-While Cargo lacks built-in handshake support, an opted-in user must:
+While Cargo lacks built-in mutation-authorization support, an opted-in user
+must:
 
 - upgrade to a supported Cargo release;
 - use a compatible wrapper that implements the complete version 1 contract; or
@@ -335,13 +339,12 @@ Settings changes and successful challenge acknowledgments are recorded in the ow
 ## Limitations
 
 - Opt-in only; popular-crate mandates are out of scope here.
-- When API MFA is enabled, Settings → New Token and CLI link-login approve require a passkey assertion via the authorize ceremony (`POST /api/v1/me/mfa/authorize/start` + `credential`). Grant / operation OTP / challenge handshake apply only to dangerous crate ops (publish, yank, owners, `trustpub_only`). Registering an additional passkey while API MFA is enabled and at least one passkey remains also requires a recent passkey assertion. Addresses the trustpub-only untick → mint token → publish chain from a stolen session.
+- When API MFA is enabled, Settings → New Token and CLI link-login approve require a passkey assertion via the authorize ceremony (`POST /api/v1/me/mfa/authorize/start` + `credential`). Registering an additional passkey while API MFA is enabled and at least one passkey remains also requires a recent passkey assertion. This closes the trustpub-only untick → mint token → publish chain from a stolen session.
 - Disabling API MFA requires a passkey assertion or email code.
 - Pending challenges are capped per user (currently 10) to limit write amplification from a stolen token.
 - WebAuthn ceremony state for register/authorize is stored server-side; challenge auth state is stored on the challenge row.
-- Challenge acknowledgment issues mutation-scoped grants bound to the API token
-  that created the challenge. Settings → Authorize issues a browser-cookie
-  wildcard (`api_token_id` NULL) that API-token requests cannot reuse.
+- Settings → Authorize issues a browser-session grant that API-token requests
+  cannot reuse.
 
 ## Related improvement vectors (out of v1)
 
@@ -349,9 +352,9 @@ Treat API MFA as the interactive mutation-authorization layer only. Separate tra
 
 - Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutation; it does not bind the published tarball to a long-term publisher key. Mutation authorization and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound verification or for signed package bytes.
 - Tighter ceremony binding: publish acknowledgment already includes metadata and
-  tarball hashes. The loopback callback only wakes Cargo; the server-side grant
-  is token- and mutation-scoped. Keep browser Authorize separate from token
-  grants.
+  tarball hashes. The loopback callback only wakes Cargo; the mutation record
+  is token- and request-scoped. Browser Authorize remains a separate product
+  session mechanism.
 - Scoped automation tokens: Trusted Publishing covers OIDC CI; non-OIDC automation still needs a human MFA step or a future short-lived / scoped automation token (automation bypass policy is a separate product decision, not part of this design).
 - Local token storage and login UX (Cargo): API MFA assumes a long-lived token already on disk; it does not fix plaintext `~/.cargo/credentials.toml`, OS-keychain defaults, CLI token paste, multi-identity login, or runtime token injection. Those stay Cargo-side tracks (credential providers, login UX, CI token injection). See [CLI-LOGIN.md](CLI-LOGIN.md) for the browser-assisted mint path.
 - Consumer trust policy: optional client or UI signals for `trustpub_only`, MFA-enabled owners, or signed crates; complements ecosystem MFA / download-threshold mandates.
@@ -365,13 +368,13 @@ Treat API MFA as the interactive mutation-authorization layer only. Separate tra
 This design is a form of step-up authentication for protected registry
 operations. The closest standards analogue is
 [RFC 9470](https://www.rfc-editor.org/rfc/rfc9470.html) (OAuth step-up
-challenge protocol), which obtains a new access token; this handshake instead
+challenge protocol), which obtains a new access token; this protocol instead
 keeps the existing API token and records a request-bound challenge completion.
 Authentication-method vocabulary follows
 [NIST SP 800-63B](https://pages.nist.gov/800-63-4/sp800-63b.html).
 
 Complementary Cargo documentation (credential storage and providers, not this
-mutate handshake):
+mutation-authorization flow):
 
 - [Registry authentication](https://doc.rust-lang.org/cargo/reference/registry-authentication.html)
 - [Credential provider protocol](https://doc.rust-lang.org/cargo/reference/credential-provider-protocol.html)
@@ -382,7 +385,7 @@ Trusted Publishing remains the preferred path for non-interactive CI:
 Asymmetric credentials and related RFCs (protocol cousins, separate track):
 RFC 3231 (Cargo asymmetric tokens).
 
-This handshake limits what a stolen long-lived API token can do for protected
+This protocol limits what a stolen long-lived API token can do for protected
 operations. Credential providers reduce token exposure at rest; Trusted
 Publishing can remove long-lived registry credentials from CI. Neither replaces
 interactive step-up for human-held API tokens.

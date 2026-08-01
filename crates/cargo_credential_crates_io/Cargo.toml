@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "=1.0.104"
 cargo-credential = "=0.4.10"
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "serde"] }
 fd-lock = "=4.0.4"
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 serde = { version = "=1.0.229", features = ["derive"] }

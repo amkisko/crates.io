@@ -9,14 +9,7 @@ use tracing::debug;
 use super::log_request::redact_poll_capability;
 
 fn is_sensitive_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "authorization"
-            | "cookie"
-            | "set-cookie"
-            | "cargo-step-up-callback-secret"
-            | "cargo-step-up-proof"
-    )
+    matches!(name.as_str(), "authorization" | "cookie" | "set-cookie")
 }
 
 pub async fn debug_requests(req: Request, next: Next) -> impl IntoResponse {
@@ -44,18 +37,4 @@ pub async fn debug_requests(req: Request, next: Next) -> impl IntoResponse {
     }
 
     response
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_sensitive_header;
-
-    #[test]
-    fn redacts_api_mfa_credentials() {
-        assert!(is_sensitive_header(
-            &"cargo-step-up-callback-secret".parse().unwrap()
-        ));
-        assert!(is_sensitive_header(&"cargo-step-up-proof".parse().unwrap()));
-        assert!(!is_sensitive_header(&"cargo-step-up-port".parse().unwrap()));
-    }
 }

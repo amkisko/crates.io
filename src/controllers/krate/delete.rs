@@ -90,8 +90,6 @@ pub async fn delete_crate(
         &parts,
         &mut conn,
         ApiMfaEnsureDeps {
-            webauthn: &app.config.webauthn,
-            rate_limiter: &app.rate_limiter,
             metrics: &app.instance_metrics,
             enforcement_enabled: app.config.api_mfa_enforcement_enabled,
         },

@@ -2,10 +2,8 @@ mod webauthn;
 
 use crate::builders::PublishBuilder;
 use crate::util::{MockRequestExt, RequestHelper, TestApp};
-use crates_io::models::{
-    ApiMfaChallenge, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge, NewApiMfaGrant,
-};
-use crates_io::schema::{api_mfa_challenges, api_tokens, users};
+use crates_io::models::{ApiMfaChallenge, NewApiMfaGrant};
+use crates_io::schema::{api_mfa_challenges, users};
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use http::Method;
@@ -58,10 +56,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         Some(Sha256::digest(&body).to_vec())
     );
 
-    challenge
-        .mark_verified(ApiMfaChallenge::hash_otp("preflight-proof"), None, &conn)
-        .await
-        .unwrap();
+    challenge.mark_verified(&conn).await.unwrap();
     let ready = ApiMfaChallenge::find(&challenge_id, &conn)
         .await
         .unwrap()
@@ -134,7 +129,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn browser_can_deny_a_pending_mutation_authorization() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
+    let (app, anon, user, token) = TestApp::full().with_token().await;
     let mut conn = app.db_conn().await;
     diesel::update(users::table.find(user.as_model().id))
         .set(users::api_mfa_enabled.eq(true))
@@ -154,12 +149,18 @@ async fn browser_can_deny_a_pending_mutation_authorization() {
         .await;
     assert_eq!(initial.status(), 202, "{}", initial.text());
     let mutation_id = initial.json()["mutation_id"].as_str().unwrap().to_owned();
+    let poll_url = initial.json()["poll_url"].as_str().unwrap().to_owned();
 
     let denied = token
         .post::<Value>(&format!("/api/v1/auth/challenges/{mutation_id}/deny"), "")
         .await;
     assert_eq!(denied.status(), 200, "{}", denied.text());
     assert_eq!(denied.json()["status"], "denied");
+
+    let poll_path = url::Url::parse(&poll_url).unwrap().path().to_owned();
+    let poll = anon.get::<Value>(&poll_path).await;
+    poll.assert_cache_control("no-store");
+    assert_eq!(poll.json()["status"], "denied");
 
     let retry = token
         .run::<Value>(
@@ -273,6 +274,7 @@ async fn core_preflight_derives_final_endpoint_facts() {
     assert_eq!(ready.json()["status"], "ready");
     assert_eq!(ready.json()["active_extensions"], json!([]));
     let mutation_id = ready.json()["mutation_id"].as_str().unwrap().to_owned();
+    let descriptor_body = serde_json::to_vec(descriptor).unwrap();
 
     let body_len = body.len().to_string();
     let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
@@ -290,13 +292,138 @@ async fn core_preflight_derives_final_endpoint_facts() {
         .unwrap()
         .unwrap();
     assert!(!stored.idempotent_final);
-    assert_eq!(stored.mutation_state.as_deref(), Some("expired"));
+    assert_eq!(stored.mutation_state.as_deref(), Some("consumed"));
     assert!(stored.response_body.is_none());
     assert!(stored.completed_at.is_none());
+
+    let poll_token = stored.poll_token.as_deref().unwrap();
+    let poll = token
+        .get::<Value>(&format!(
+            "/api/v1/auth/mutation-challenges/poll/{poll_token}"
+        ))
+        .await;
+    poll.assert_cache_control("no-store");
+    assert_eq!(poll.status(), 404, "{}", poll.text());
+
+    let retry = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor_body.into()),
+        )
+        .await;
+    assert_eq!(retry.status(), 409, "{}", retry.text());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn publish_returns_operation_challenge_link() {
+async fn yank_and_owner_finals_use_mutation_authorization() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let published = token
+        .publish_crate(PublishBuilder::new("protocol_mutations", "1.0.0"))
+        .await;
+    assert_eq!(published.status(), 200, "{}", published.text());
+    app.run_pending_background_jobs().await;
+
+    let mut conn = app.db_conn().await;
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let yank_descriptor = json!({
+        "protocol_version": 1,
+        "preflight_id": "pf_yank_0123456789abcdefghijkl",
+        "allow_pending": true,
+        "requested_extensions": ["idempotent-final"],
+        "operation": "yank",
+        "method": "DELETE",
+        "request_target": "/api/v1/crates/protocol_mutations/1.0.0/yank",
+        "content_type": null,
+        "crate": "protocol_mutations",
+        "version": "1.0.0",
+        "request_sha256": hex::encode(Sha256::digest([])),
+        "request_size": 0,
+    });
+    let yank_pending = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(yank_descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(yank_pending.status(), 202, "{}", yank_pending.text());
+    let yank_id = yank_pending.json()["mutation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let yank_challenge = ApiMfaChallenge::find(&yank_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    yank_challenge.mark_verified(&conn).await.unwrap();
+
+    let mut yank = token.request_builder(
+        Method::DELETE,
+        "/api/v1/crates/protocol_mutations/1.0.0/yank",
+    );
+    yank.header("Cargo-Mutation-Id", &yank_id);
+    yank.header("Content-Length", "0");
+    let yanked = token.run::<Value>(yank.with_body(Vec::new().into())).await;
+    assert_eq!(yanked.status(), 200, "{}", yanked.text());
+
+    let invitee = app.db_new_user("protocol_invitee").await;
+    let owner_body = json!({ "users": [invitee.as_model().gh_login] })
+        .to_string()
+        .into_bytes();
+    let owner_descriptor = json!({
+        "protocol_version": 1,
+        "preflight_id": "pf_owner_0123456789abcdefghijklm",
+        "allow_pending": true,
+        "requested_extensions": ["idempotent-final"],
+        "operation": "owners",
+        "method": "PUT",
+        "request_target": "/api/v1/crates/protocol_mutations/owners",
+        "content_type": "application/json",
+        "crate": "protocol_mutations",
+        "direction": "add",
+        "owners": [invitee.as_model().gh_login],
+        "request_sha256": hex::encode(Sha256::digest(&owner_body)),
+        "request_size": owner_body.len(),
+    });
+    let owner_pending = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(owner_descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(owner_pending.status(), 202, "{}", owner_pending.text());
+    let owner_id = owner_pending.json()["mutation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let owner_challenge = ApiMfaChallenge::find(&owner_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    owner_challenge.mark_verified(&conn).await.unwrap();
+
+    let owner_body_len = owner_body.len().to_string();
+    let mut add_owner =
+        token.request_builder(Method::PUT, "/api/v1/crates/protocol_mutations/owners");
+    add_owner.header("Cargo-Mutation-Id", &owner_id);
+    add_owner.header("Content-Type", "application/json");
+    add_owner.header("Content-Length", &owner_body_len);
+    let added = token
+        .run::<Value>(add_owner.with_body(owner_body.into()))
+        .await;
+    assert_eq!(added.status(), 200, "{}", added.text());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn protected_publish_requires_mutation_id() {
     let (app, _, user, token) = TestApp::full().with_token().await;
     let mut conn = app.db_conn().await;
 
@@ -306,45 +433,19 @@ async fn publish_returns_operation_challenge_link() {
         .await
         .unwrap();
 
-    // Pretend the user already registered a passkey so the handshake can start.
     insert_dummy_passkey(user.as_model().id, &mut conn).await;
 
     let crate_to_publish = PublishBuilder::new("foo_api_mfa", "1.0.0");
     let response = token.publish_crate(crate_to_publish).await;
     assert_snapshot!(response.status(), @"403 Forbidden");
-    response.assert_cache_control("no-store");
-
     let body: Value = response.json();
     let error = &body["errors"][0];
-    assert_eq!(error["id"], "step_up_required");
-    assert_eq!(error["protocol_version"], 1);
-    assert!(error.get("interaction").is_none());
-    assert_eq!(error["operation"], "publish");
-    assert_eq!(error["crate"], "foo_api_mfa");
-
-    let challenge_id = error["challenge_id"].as_str().unwrap();
-    assert!(challenge_id.starts_with("stp_"));
     assert!(
-        error["poll_url"]
+        error["detail"]
             .as_str()
             .unwrap()
-            .contains(&format!("/api/v1/auth/challenges/{challenge_id}"))
+            .contains("Cargo-Mutation-Id is required")
     );
-    assert_eq!(
-        error["detail"],
-        format!(
-            "Additional authentication is required. Open this link to verify with your passkey:\n\n\
-             http://localhost:8888/verify/{challenge_id}\n\n\
-             After verification, retry the request."
-        )
-    );
-
-    // Idempotent: retrying the same operation reuses the challenge.
-    let response2 = token
-        .publish_crate(PublishBuilder::new("foo_api_mfa", "1.0.0"))
-        .await;
-    let body2: Value = response2.json();
-    assert_eq!(body2["errors"][0]["challenge_id"], challenge_id);
 
     let count: i64 = api_mfa_challenges::table
         .filter(api_mfa_challenges::user_id.eq(user.as_model().id))
@@ -352,191 +453,7 @@ async fn publish_returns_operation_challenge_link() {
         .get_result(&mut conn)
         .await
         .unwrap();
-    assert_eq!(count, 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn cli_can_poll_until_acknowledged_then_publish() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let response = token
-        .publish_crate(PublishBuilder::new("foo_api_mfa_poll", "1.0.0"))
-        .await;
-    let body: Value = response.json();
-    let challenge_id = body["errors"][0]["challenge_id"].as_str().unwrap();
-
-    let pending = token
-        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
-        .await;
-    assert_snapshot!(pending.status(), @"200 OK");
-    let pending_body = pending.json();
-    assert_eq!(pending_body["status"], "pending");
-    assert_eq!(pending_body["acknowledged"], false);
-
-    // Simulate browser acknowledgment with a scoped grant for this operation/crate.
-    let challenge = ApiMfaChallenge::find_active(challenge_id, &conn)
-        .await
-        .unwrap()
-        .unwrap();
-    challenge
-        .mark_verified(ApiMfaChallenge::hash_otp("ACKNOWLD"), None, &conn)
-        .await
-        .unwrap();
-    NewApiMfaGrant::for_operation(
-        user.as_model().id,
-        token.as_model().id,
-        "publish",
-        Some("foo_api_mfa_poll".into()),
-        challenge.mutation_fingerprint.clone(),
-    )
-    .insert(&conn)
-    .await
-    .unwrap();
-
-    let ready = token
-        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
-        .await
-        .good();
-    assert_eq!(ready["status"], "acknowledged");
-    assert_eq!(ready["acknowledged"], true);
-
-    let published = token
-        .publish_crate(PublishBuilder::new("foo_api_mfa_poll", "1.0.0"))
-        .await;
-    assert_snapshot!(published.status(), @"200 OK");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn approval_is_bound_to_exact_publish_tarball() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let approved_body = PublishBuilder::new("foo_api_mfa_exact", "1.0.0")
-        .readme("approved")
-        .add_file("foo_api_mfa_exact-1.0.0/approved.txt", "approved")
-        .body();
-    let initial = token
-        .run::<Value>(
-            token
-                .request_builder(Method::PUT, "/api/v1/crates/new")
-                .with_body(approved_body.clone()),
-        )
-        .await;
-    assert_eq!(initial.status(), 403);
-    let challenge_id = initial.json()["errors"][0]["challenge_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
-        .await
-        .unwrap()
-        .unwrap();
-
-    NewApiMfaGrant::for_operation(
-        user.as_model().id,
-        token.as_model().id,
-        challenge.operation.clone(),
-        challenge.crate_name.clone(),
-        challenge.mutation_fingerprint,
-    )
-    .insert(&conn)
-    .await
-    .unwrap();
-
-    let substituted = token
-        .publish_crate(
-            PublishBuilder::new("foo_api_mfa_exact", "1.0.0")
-                .add_file("foo_api_mfa_exact-1.0.0/substituted.txt", "different bytes"),
-        )
-        .await;
-    assert_snapshot!(substituted.status(), @"403 Forbidden");
-    assert_ne!(
-        substituted.json()["errors"][0]["challenge_id"],
-        challenge_id
-    );
-
-    // Metadata is part of the mutation too, even when the tarball is byte-identical.
-    let mut substituted_metadata = approved_body.to_vec();
-    let metadata_len = u32::from_le_bytes(substituted_metadata[..4].try_into().unwrap()) as usize;
-    let metadata = &mut substituted_metadata[4..4 + metadata_len];
-    let approved_readme = metadata
-        .windows(b"approved".len())
-        .position(|window| window == b"approved")
-        .expect("readme value in publish metadata");
-    metadata[approved_readme..approved_readme + b"attacker".len()].copy_from_slice(b"attacker");
-    let substituted = token
-        .run::<Value>(
-            token
-                .request_builder(Method::PUT, "/api/v1/crates/new")
-                .with_body(substituted_metadata.into()),
-        )
-        .await;
-    assert_snapshot!(substituted.status(), @"403 Forbidden");
-    assert_ne!(
-        substituted.json()["errors"][0]["challenge_id"],
-        challenge_id
-    );
-
-    let approved = token
-        .run::<crates_io::views::GoodCrate>(
-            token
-                .request_builder(Method::PUT, "/api/v1/crates/new")
-                .with_body(approved_body),
-        )
-        .await;
-    token.app().run_pending_background_jobs().await;
-    assert_eq!(
-        approved.status(),
-        200,
-        "approved publish response: {}",
-        approved.text()
-    );
-    assert_snapshot!(approved.status(), @"200 OK");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn scoped_grant_does_not_cover_other_crate() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    NewApiMfaGrant::for_operation(
-        user.as_model().id,
-        token.as_model().id,
-        "publish",
-        Some("other_crate".into()),
-        vec![0; 32],
-    )
-    .insert(&conn)
-    .await
-    .unwrap();
-
-    let response = token
-        .publish_crate(PublishBuilder::new("foo_api_mfa_scope", "1.0.0"))
-        .await;
-    assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "step_up_required");
+    assert_eq!(count, 0, "a direct final request must not mint a challenge");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -560,313 +477,7 @@ async fn cookie_wildcard_grant_does_not_authorize_api_token() {
     let crate_to_publish = PublishBuilder::new("foo_api_mfa_grant", "1.0.0");
     let response = token.publish_crate(crate_to_publish).await;
     assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "step_up_required");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn publish_allowed_with_otp_header() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-    let other_token = user.db_new_token("other-token").await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let body = PublishBuilder::new("foo_api_mfa_otp", "1.0.0").body();
-    let initial = token
-        .run::<Value>(
-            token
-                .request_builder(Method::PUT, "/api/v1/crates/new")
-                .with_body(body.clone()),
-        )
-        .await;
-    let challenge_id = initial.json()["errors"][0]["challenge_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
-        .await
-        .unwrap()
-        .unwrap();
-    let otp = ApiMfaChallenge::generate_otp();
-    challenge
-        .mark_verified(ApiMfaChallenge::hash_otp(&otp), None, &conn)
-        .await
-        .unwrap();
-
-    let mut wrong_request = other_token.request_builder(Method::PUT, "/api/v1/crates/new");
-    wrong_request.header("Cargo-Step-Up-Proof", &otp);
-    let wrong_token = other_token
-        .run::<Value>(wrong_request.with_body(body.clone()))
-        .await;
-    assert_snapshot!(wrong_token.status(), @"403 Forbidden");
-
-    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Cargo-Step-Up-Proof", &otp);
-    let request = request.with_body(body);
-    let response = token.run::<crates_io::views::GoodCrate>(request).await;
-    token.app().run_pending_background_jobs().await;
-
-    assert_snapshot!(response.status(), @"200 OK");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn otp_from_revoked_token_challenge_is_rejected() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-    let revoked_token = user.db_new_token("revoked-token").await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let body = PublishBuilder::new("foo_api_mfa_revoked_otp", "1.0.0").body();
-    let initial = revoked_token
-        .run::<Value>(
-            revoked_token
-                .request_builder(Method::PUT, "/api/v1/crates/new")
-                .with_body(body.clone()),
-        )
-        .await;
-    let challenge_id = initial.json()["errors"][0]["challenge_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
-        .await
-        .unwrap()
-        .unwrap();
-    let otp = ApiMfaChallenge::generate_otp();
-    challenge
-        .mark_verified(ApiMfaChallenge::hash_otp(&otp), None, &conn)
-        .await
-        .unwrap();
-
-    diesel::delete(api_tokens::table.find(revoked_token.as_model().id))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    let challenge = ApiMfaChallenge::find_active(&challenge.id, &conn)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        challenge.api_token_id, None,
-        "deleting the originating token must clear the challenge foreign key"
-    );
-
-    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Cargo-Step-Up-Proof", &otp);
-    let response = token.run::<Value>(request.with_body(body)).await;
-
-    assert_snapshot!(response.status(), @"403 Forbidden");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn otp_for_other_crate_is_rejected() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let otp = ApiMfaChallenge::generate_otp();
-    let challenge = NewApiMfaChallenge::new(
-        user.as_model().id,
-        Some(token.as_model().id),
-        crates_io_database::models::NewApiMfaChallengeOperation {
-            operation: "publish".into(),
-            crate_name: Some("other_crate".into()),
-            mutation_fingerprint: vec![0; 32],
-            operation_summary: "Publish other_crate".into(),
-            descriptor: None,
-        },
-        None,
-        None,
-    )
-    .insert(&conn)
-    .await
-    .unwrap();
-    challenge
-        .mark_verified(ApiMfaChallenge::hash_otp(&otp), None, &conn)
-        .await
-        .unwrap();
-
-    let body = PublishBuilder::new("foo_api_mfa_otp_wrong", "1.0.0").body();
-    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
-    request.header("Cargo-Step-Up-Proof", &otp);
-    let request = request.with_body(body);
-    let response = token.run::<Value>(request).await;
-
-    assert_snapshot!(response.status(), @"403 Forbidden");
-    assert_eq!(response.json()["errors"][0]["id"], "step_up_required");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn pending_challenge_cap_is_enforced() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    for i in 0..MAX_PENDING_CHALLENGES_PER_USER {
-        NewApiMfaChallenge::new(
-            user.as_model().id,
-            Some(token.as_model().id),
-            crates_io_database::models::NewApiMfaChallengeOperation {
-                operation: "publish".into(),
-                crate_name: Some(format!("pending_cap_{i}")),
-                mutation_fingerprint: vec![i as u8; 32],
-                operation_summary: format!("Publish pending_cap_{i}"),
-                descriptor: None,
-            },
-            None,
-            None,
-        )
-        .insert(&conn)
-        .await
-        .unwrap();
-    }
-
-    let response = token
-        .publish_crate(PublishBuilder::new("pending_cap_overflow", "1.0.0"))
-        .await;
-    assert_snapshot!(response.status(), @"400 Bad Request");
-    assert!(
-        response.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("too many pending API MFA challenges")
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn challenge_create_rejects_unknown_operation() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let response = token
-        .post::<Value>(
-            "/api/v1/auth/challenges",
-            json!({ "operation": "harmless-check", "crate_name": "foo" }).to_string(),
-        )
-        .await;
-    assert_snapshot!(response.status(), @"400 Bad Request");
-    assert!(
-        response.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("invalid operation")
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn explicit_callback_challenge_requires_and_binds_secret() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let missing_secret = token
-        .post::<Value>(
-            "/api/v1/auth/challenges",
-            json!({ "operation": "manual", "port": 34567 }).to_string(),
-        )
-        .await;
-    assert_eq!(missing_secret.status(), 400);
-    assert!(
-        missing_secret.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("Callback-Secret is required")
-    );
-
-    let callback_secret = "0123456789abcdef0123456789abcdef";
-    let mut request = token.request_builder(Method::POST, "/api/v1/auth/challenges");
-    request.header("Cargo-Step-Up-Callback-Secret", callback_secret);
-    let response = token
-        .run::<Value>(
-            request.with_body(
-                json!({ "operation": "manual", "port": 34567 })
-                    .to_string()
-                    .into(),
-            ),
-        )
-        .await
-        .good();
-    assert!(response["detail"].as_str().unwrap().contains(&format!(
-        "/verify/{}",
-        response["challenge_id"].as_str().unwrap()
-    )));
-    assert!(!response.to_string().contains(callback_secret));
-    assert!(response["poll_url"].is_string());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn challenge_create_is_rate_limited() {
-    use crates_io::rate_limiter::LimitedAction;
-    use std::time::Duration;
-
-    let (app, _, user, token) = TestApp::full()
-        .with_rate_limit(
-            LimitedAction::ApiMfaChallengeCreate,
-            Duration::from_secs(60),
-            1,
-        )
-        .with_token()
-        .await;
-    let mut conn = app.db_conn().await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    let first = token
-        .publish_crate(PublishBuilder::new("foo_mfa_rl_a", "1.0.0"))
-        .await;
-    assert_eq!(first.status(), 403);
-    assert_eq!(first.json()["errors"][0]["id"], "step_up_required");
-    assert_eq!(
-        first.json()["errors"][0]["recommended_poll_interval_secs"],
-        5
-    );
-
-    // Different crate forces a new challenge insert → rate limit.
-    let second = token
-        .publish_crate(PublishBuilder::new("foo_mfa_rl_b", "1.0.0"))
-        .await;
-    second.assert_rate_limited(LimitedAction::ApiMfaChallengeCreate);
+    assert!(response.text().contains("Cargo-Mutation-Id is required"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -950,48 +561,6 @@ async fn kill_switch_skips_mutate_enforcement_but_keeps_bootstrap_otp() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn challenge_grant_does_not_cover_other_token() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
-    let mut conn = app.db_conn().await;
-    let other_token = user.db_new_token("other-token").await;
-
-    diesel::update(users::table.find(user.as_model().id))
-        .set(users::api_mfa_enabled.eq(true))
-        .execute(&mut conn)
-        .await
-        .unwrap();
-    insert_dummy_passkey(user.as_model().id, &mut conn).await;
-
-    NewApiMfaGrant::for_operation(
-        user.as_model().id,
-        token.as_model().id,
-        "publish",
-        Some("foo_mfa_token_bind".into()),
-        vec![0; 32],
-    )
-    .insert(&conn)
-    .await
-    .unwrap();
-
-    // Bound to `token`; a second token of the same user cannot ride it.
-    let blocked = other_token
-        .publish_crate(PublishBuilder::new("foo_mfa_token_bind", "1.0.0"))
-        .await;
-    assert_snapshot!(blocked.status(), @"403 Forbidden");
-    assert_eq!(blocked.json()["errors"][0]["id"], "step_up_required");
-
-    // A cookie wildcard grant must not become an API-token bypass.
-    NewApiMfaGrant::for_user(user.as_model().id)
-        .insert(&conn)
-        .await
-        .unwrap();
-    let still_blocked = other_token
-        .publish_crate(PublishBuilder::new("foo_mfa_token_bind", "1.0.0"))
-        .await;
-    assert_snapshot!(still_blocked.status(), @"403 Forbidden");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn crate_with_mfa_owner_requires_coowner_mfa() {
     use crate::builders::CrateBuilder;
     use crates_io::models::CrateOwner;
@@ -1039,7 +608,7 @@ async fn insert_dummy_passkey(user_id: i32, conn: &mut diesel_async::AsyncPgConn
     use serde_json::json;
 
     // Minimal JSON placeholder; WebAuthn ceremony tests are separate. Presence is enough
-    // for ensure_api_mfa to open a handshake instead of asking the user to register.
+    // for mutation authorization instead of asking the user to register.
     NewWebauthnCredential {
         user_id,
         credential_id: b"dummy-credential-id",

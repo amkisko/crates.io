@@ -25,7 +25,6 @@ pub struct CliLoginMetaResponse {
     pub login_id: String,
     pub status: String,
     pub expires_at: DateTime<Utc>,
-    pub localhost_port: Option<i32>,
     /// Client IP that started the ceremony (shown so users can spot phishing).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_ip: Option<String>,
@@ -77,7 +76,6 @@ pub async fn get_cli_login_meta(
             login_id: session.id,
             status: session.status,
             expires_at: session.expires_at,
-            localhost_port: session.localhost_port,
             client_ip: session.client_ip,
             mfa_required,
             mfa_email_otp_allowed,
@@ -109,9 +107,6 @@ pub struct ApproveCliLoginResponse {
     pub status: String,
     pub token_name: String,
     pub api_token_id: i32,
-    /// Optional port the browser may ping (token-free) so a waiting CLI can wake.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub localhost_port: Option<i32>,
 }
 
 /// Approve a CLI login session: choose scopes and mint a token (cookie only).
@@ -233,7 +228,6 @@ pub async fn approve_cli_login(
             status: STATUS_READY.into(),
             token_name: name.to_string(),
             api_token_id: minted.token.id,
-            localhost_port: session.localhost_port,
         }),
     ))
 }

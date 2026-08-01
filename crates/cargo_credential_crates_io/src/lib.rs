@@ -7,14 +7,17 @@
 use cargo_credential::{
     Action, CacheControl, Credential, CredentialResponse, RegistryInfo, Secret,
 };
+use chrono::{DateTime, Utc};
 use fd_lock::RwLock;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
+use url::{Host, Url};
 
 /// Index URLs accepted for the crates.io registry.
 pub const CRATES_IO_INDEX_URLS: &[&str] = &[
@@ -28,14 +31,16 @@ pub const DEFAULT_API_BASE: &str = "https://crates.io";
 /// Environment variable overriding the API/site base URL (staging/local).
 pub const API_BASE_ENV: &str = "CARGO_REGISTRY_CRATES_IO_URL";
 
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_LOGIN_WAIT: Duration = Duration::from_secs(10 * 60);
+const MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024;
+
 /// Credential provider implementation.
 pub struct CratesIoCredential {
     /// Optional override for tests (API base URL).
     pub api_base: Option<String>,
     /// Optional override for tests (`CARGO_HOME`).
     pub cargo_home: Option<PathBuf>,
-    /// HTTP client factory for tests.
-    pub http: reqwest::blocking::Client,
     /// Sleep between polls (overridable in tests).
     pub poll_sleep: Duration,
 }
@@ -45,13 +50,6 @@ impl Default for CratesIoCredential {
         Self {
             api_base: None,
             cargo_home: None,
-            http: reqwest::blocking::Client::builder()
-                .user_agent(concat!(
-                    "cargo-credential-crates-io/",
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .build()
-                .expect("reqwest client"),
             poll_sleep: Duration::from_secs(2),
         }
     }
@@ -85,7 +83,7 @@ impl Credential for CratesIoCredential {
                 let token = match &options.token {
                     Some(token) => token.to_owned(),
                     None => {
-                        let plaintext = run_link_login(&self.http, &api_base, self.poll_sleep)?;
+                        let plaintext = run_link_login(&api_base, self.poll_sleep)?;
                         Secret::from(plaintext)
                     }
                 };
@@ -146,6 +144,7 @@ struct StartResponse {
     poll_url: String,
     confirmation_code: String,
     poll_secret: String,
+    expires_at: DateTime<Utc>,
     recommended_poll_interval_secs: Option<u64>,
 }
 
@@ -156,18 +155,29 @@ struct PollResponse {
 }
 
 /// Starts the ceremony, prints the login URL, and returns the one-time token.
-pub fn run_link_login(
-    http: &reqwest::blocking::Client,
-    api_base: &str,
-    poll_sleep: Duration,
-) -> anyhow::Result<String> {
-    let start_url = format!("{api_base}/api/v1/cli_login");
-    let start: StartResponse = http
-        .post(&start_url)
-        .json(&serde_json::json!({}))
-        .send()?
-        .error_for_status()?
-        .json()?;
+pub fn run_link_login(api_base: &str, poll_sleep: Duration) -> anyhow::Result<String> {
+    let api_origin = validate_api_origin(api_base)?;
+    let start_url = api_origin.join("api/v1/cli_login")?;
+    let http = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!(
+            "cargo-credential-crates-io/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()?;
+    let start: StartResponse = decode_json_response(
+        http.post(start_url)
+            .timeout(HTTP_REQUEST_TIMEOUT)
+            .json(&serde_json::json!({}))
+            .send()?,
+    )?;
+    let login_url = validate_server_url(&api_origin, &start.login_url, "login_url")?;
+    let poll_url = validate_server_url(&api_origin, &start.poll_url, "poll_url")?;
+    let remaining = (start.expires_at - Utc::now())
+        .to_std()
+        .map_err(|_| anyhow::anyhow!("CLI login session is already expired"))?
+        .min(MAX_LOGIN_WAIT);
+    let deadline = Instant::now() + remaining;
 
     // Never print the token or poll_secret; URL + confirmation code belong on stderr.
     let mut stderr = io::stderr().lock();
@@ -175,7 +185,7 @@ pub fn run_link_login(
         stderr,
         "Please visit this URL to authorize cargo login on crates.io:\n  {}\n\n\
          Confirmation code (enter this on the website):\n  {}\n",
-        start.login_url, start.confirmation_code
+        login_url, start.confirmation_code
     )?;
     stderr.flush()?;
 
@@ -186,13 +196,22 @@ pub fn run_link_login(
         .max(poll_sleep);
 
     loop {
-        thread::sleep(interval);
-        let poll: PollResponse = http
-            .get(&start.poll_url)
-            .header(POLL_SECRET_HEADER, &start.poll_secret)
-            .send()?
-            .error_for_status()?
-            .json()?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("CLI login session expired; run cargo login again");
+        }
+        thread::sleep(interval.min(remaining));
+        if Instant::now() >= deadline {
+            anyhow::bail!("CLI login session expired; run cargo login again");
+        }
+        let poll: PollResponse = decode_json_response(
+            http.get(poll_url.clone())
+                .timeout(
+                    HTTP_REQUEST_TIMEOUT.min(deadline.saturating_duration_since(Instant::now())),
+                )
+                .header(POLL_SECRET_HEADER, &start.poll_secret)
+                .send()?,
+        )?;
 
         match poll.status.as_str() {
             "pending" => continue,
@@ -209,6 +228,75 @@ pub fn run_link_login(
             other => anyhow::bail!("unexpected CLI login status: {other}"),
         }
     }
+}
+
+fn validate_api_origin(api_base: &str) -> anyhow::Result<Url> {
+    let url = Url::parse(api_base)?;
+    anyhow::ensure!(
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.path() == "/",
+        "crates.io API base must be an origin without credentials, path, query, or fragment"
+    );
+    anyhow::ensure!(
+        is_https_or_literal_loopback(&url),
+        "crates.io API base must use HTTPS (HTTP is allowed only for a literal loopback address)"
+    );
+    Ok(url)
+}
+
+fn validate_server_url(api_origin: &Url, value: &str, field: &str) -> anyhow::Result<Url> {
+    let url = Url::parse(value)?;
+    anyhow::ensure!(
+        url.username().is_empty() && url.password().is_none() && url.fragment().is_none(),
+        "CLI login {field} must not contain credentials or a fragment"
+    );
+    anyhow::ensure!(
+        is_https_or_literal_loopback(&url) && url.origin() == api_origin.origin(),
+        "CLI login {field} must use the configured API origin"
+    );
+    Ok(url)
+}
+
+fn is_https_or_literal_loopback(url: &Url) -> bool {
+    if url.scheme() == "https" {
+        return true;
+    }
+    if url.scheme() != "http" {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Ipv4(address)) => IpAddr::V4(address).is_loopback(),
+        Some(Host::Ipv6(address)) => IpAddr::V6(address).is_loopback(),
+        _ => false,
+    }
+}
+
+fn decode_json_response<T: for<'de> Deserialize<'de>>(
+    response: reqwest::blocking::Response,
+) -> anyhow::Result<T> {
+    anyhow::ensure!(
+        !response.status().is_redirection(),
+        "CLI login endpoint redirects are not allowed"
+    );
+    response.error_for_status_ref()?;
+    anyhow::ensure!(
+        response
+            .content_length()
+            .is_none_or(|length| length <= MAX_RESPONSE_BODY_BYTES),
+        "CLI login response exceeds {MAX_RESPONSE_BODY_BYTES} bytes"
+    );
+    let mut body = Vec::new();
+    response
+        .take(MAX_RESPONSE_BODY_BYTES + 1)
+        .read_to_end(&mut body)?;
+    anyhow::ensure!(
+        body.len() as u64 <= MAX_RESPONSE_BODY_BYTES,
+        "CLI login response exceeds {MAX_RESPONSE_BODY_BYTES} bytes"
+    );
+    Ok(serde_json::from_slice(&body)?)
 }
 
 /// Reads the crates.io token from `credentials.toml` (`[registry] token = …`).
@@ -321,12 +409,6 @@ fn atomic_write(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     File::open(parent)?.sync_all()?;
 
     Ok(())
-}
-
-/// Helper used by unit tests to exercise login option plumbing without HTTP.
-#[derive(Debug, Serialize)]
-pub struct StartRequest {
-    pub localhost_port: Option<i32>,
 }
 
 #[cfg(test)]
@@ -461,8 +543,7 @@ mod tests {
             });
         });
 
-        let client = reqwest::blocking::Client::new();
-        let token = run_link_login(&client, &server.base_url(), Duration::from_millis(1)).unwrap();
+        let token = run_link_login(&server.base_url(), Duration::from_millis(1)).unwrap();
         assert_eq!(token, "cio_from_poll");
         start_mock.assert();
         poll_mock.assert_calls(2);
@@ -499,7 +580,6 @@ mod tests {
         let provider = CratesIoCredential {
             api_base: Some(server.base_url()),
             cargo_home: Some(dir.path().to_path_buf()),
-            http: reqwest::blocking::Client::new(),
             poll_sleep: Duration::from_millis(1),
         };
 
@@ -522,5 +602,101 @@ mod tests {
 
         let stored = read_stored_token(dir.path()).unwrap().unwrap();
         assert_eq!(stored.expose(), "cio_secret_never_echo");
+    }
+
+    #[test]
+    fn link_login_rejects_cross_origin_poll_url_before_sending_secret() {
+        let server = MockServer::start();
+        let other = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/cli_login");
+            then.status(200).json_body(serde_json::json!({
+                "login_url": format!("{}/settings/tokens/cli/login_x", server.base_url()),
+                "poll_url": format!("{}/redeem", other.base_url()),
+                "confirmation_code": "WXYZ-2345",
+                "poll_secret": "pollsecret_login_x_abcdefghijklmnopqrst",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "recommended_poll_interval_secs": 0,
+            }));
+        });
+        let leaked = other.mock(|when, then| {
+            when.method(GET)
+                .path("/redeem")
+                .header_exists(POLL_SECRET_HEADER);
+            then.status(200);
+        });
+
+        let error = run_link_login(&server.base_url(), Duration::from_millis(1)).unwrap_err();
+        assert!(error.to_string().contains("configured API origin"));
+        leaked.assert_calls(0);
+    }
+
+    #[test]
+    fn link_login_does_not_forward_poll_secret_through_redirects() {
+        let server = MockServer::start();
+        let other = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/cli_login");
+            then.status(200).json_body(serde_json::json!({
+                "login_url": format!("{}/settings/tokens/cli/login_x", server.base_url()),
+                "poll_url": format!("{}/api/v1/cli_login/login_x", server.base_url()),
+                "confirmation_code": "WXYZ-2345",
+                "poll_secret": "pollsecret_login_x_abcdefghijklmnopqrst",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "recommended_poll_interval_secs": 0,
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/v1/cli_login/login_x");
+            then.status(302)
+                .header("location", format!("{}/redeem", other.base_url()));
+        });
+        let leaked = other.mock(|when, then| {
+            when.method(GET)
+                .path("/redeem")
+                .header_exists(POLL_SECRET_HEADER);
+            then.status(200);
+        });
+
+        let error = run_link_login(&server.base_url(), Duration::from_millis(1)).unwrap_err();
+        assert!(error.to_string().contains("redirects are not allowed"));
+        leaked.assert_calls(0);
+    }
+
+    #[test]
+    fn link_login_rejects_expired_start_response_without_polling() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/cli_login");
+            then.status(200).json_body(serde_json::json!({
+                "login_url": format!("{}/settings/tokens/cli/login_x", server.base_url()),
+                "poll_url": format!("{}/api/v1/cli_login/login_x", server.base_url()),
+                "confirmation_code": "WXYZ-2345",
+                "poll_secret": "pollsecret_login_x_abcdefghijklmnopqrst",
+                "expires_at": "2000-01-01T00:00:00Z",
+                "recommended_poll_interval_secs": 0,
+            }));
+        });
+        let poll = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/cli_login/login_x");
+            then.status(200);
+        });
+
+        let error = run_link_login(&server.base_url(), Duration::from_millis(1)).unwrap_err();
+        assert!(error.to_string().contains("already expired"));
+        poll.assert_calls(0);
+    }
+
+    #[test]
+    fn link_login_rejects_oversized_start_response() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/cli_login");
+            then.status(200)
+                .body("x".repeat(MAX_RESPONSE_BODY_BYTES as usize + 1));
+        });
+
+        let error = run_link_login(&server.base_url(), Duration::from_millis(1)).unwrap_err();
+        assert!(error.to_string().contains("response exceeds"));
     }
 }

@@ -99,7 +99,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/verify/stp_test")
+                    .uri("/verify/mut_test")
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -2,10 +2,8 @@ import { http, HttpResponse } from 'msw';
 
 import { db } from '../../index.js';
 
-export default http.post('/api/v1/cli_login', async ({ request }) => {
-  let body = (await request.json().catch(() => ({}))) as { localhost_port?: number | null };
+export default http.post('/api/v1/cli_login', async () => {
   let session = await db.cliLoginSession.create({
-    localhostPort: body.localhost_port ?? null,
     status: 'pending',
   });
 
