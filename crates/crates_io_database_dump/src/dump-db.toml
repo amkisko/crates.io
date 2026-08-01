@@ -31,6 +31,59 @@ endpoint_scopes = "private"
 expired_at = "private"
 expiry_notification_at = "private"
 
+# Authentication challenges contain credentials, request fingerprints, and
+# replay state. They must never be included in the public database dump.
+[api_mfa_challenges.columns]
+api_token_id = "private"
+auth_state_json = "private"
+completed_at = "private"
+crate_name = "private"
+created_at = "private"
+descriptor_json = "private"
+expires_at = "private"
+hashed_otp = "private"
+id = "private"
+localhost_callback_secret_hash = "private"
+localhost_port = "private"
+mutation_fingerprint = "private"
+operation = "private"
+operation_summary = "private"
+otp_consumed_at = "private"
+request_endpoint = "private"
+request_method = "private"
+request_sha256 = "private"
+request_size = "private"
+response_body = "private"
+response_headers = "private"
+response_status = "private"
+sealed_otp = "private"
+user_id = "private"
+verified_at = "private"
+
+[api_mfa_email_otps.columns]
+consumed_at = "private"
+created_at = "private"
+expires_at = "private"
+hashed_otp = "private"
+id = "private"
+user_id = "private"
+
+[api_mfa_grants.columns]
+api_token_id = "private"
+crate_name = "private"
+created_at = "private"
+expires_at = "private"
+id = "private"
+mutation_fingerprint = "private"
+operation = "private"
+user_id = "private"
+
+[api_mfa_rate_limit_buckets.columns]
+action = "private"
+bucket_key = "private"
+last_refill = "private"
+tokens = "private"
+
 [background_jobs.columns]
 id = "private"
 job_type = "private"
@@ -54,6 +107,20 @@ id = "private"
 distribution = "private"
 path = "private"
 created_at = "private"
+
+[cli_login_sessions.columns]
+api_token_id = "private"
+client_ip = "private"
+confirmation_code_hash = "private"
+created_at = "private"
+expires_at = "private"
+id = "private"
+last_polled_at = "private"
+localhost_port = "private"
+poll_secret_hash = "private"
+sealed_token = "private"
+status = "private"
+user_id = "private"
 
 [crate_downloads.columns]
 crate_id = "public"
@@ -150,6 +217,7 @@ email = "private"
 verified = "private"
 token = "private"
 token_generated_at = "private"
+pending_email = "private"
 
 [follows.columns]
 user_id = "private"
@@ -255,6 +323,16 @@ jti = "private"
 used_at = "private"
 expires_at = "private"
 
+[user_security_events.columns]
+api_token_id = "private"
+created_at = "private"
+event_day = "private"
+event_type = "private"
+id = "private"
+ip = "private"
+metadata = "private"
+user_id = "private"
+
 [users]
 filter = """
 id in (
@@ -274,6 +352,8 @@ account_lock_until = "private"
 is_admin = "private"
 publish_notifications = "private"
 gh_encrypted_token = "private"
+api_mfa_enabled = "private"
+session_generation = "private"
 [users.column_defaults]
 gh_encrypted_token = "''"
 
@@ -335,3 +415,20 @@ zip_json_sha256 = "public"
 [versions_published_by.columns]
 version_id = "private"
 email = "private"
+
+[webauthn_ceremony_states.columns]
+created_at = "private"
+expires_at = "private"
+id = "private"
+kind = "private"
+state_json = "private"
+user_id = "private"
+
+[webauthn_credentials.columns]
+created_at = "private"
+credential_id = "private"
+id = "private"
+last_used_at = "private"
+name = "private"
+passkey_json = "private"
+user_id = "private"
