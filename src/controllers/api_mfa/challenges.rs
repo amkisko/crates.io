@@ -88,10 +88,10 @@ pub struct CreateChallengeResponse {
     pub recommended_poll_interval_secs: Option<u64>,
 }
 
-/// Create an API MFA challenge for a CLI client (token auth).
+/// Preflight an exact CLI mutation and create or reuse its API MFA challenge.
 ///
-/// Prefer letting dangerous endpoints auto-create challenges; this endpoint is for
-/// explicit preflight handshakes.
+/// Registries advertise this version 1 flow through `step-up-auth` in the index
+/// `config.json`. Reactive challenges remain available to older clients.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/challenges",
