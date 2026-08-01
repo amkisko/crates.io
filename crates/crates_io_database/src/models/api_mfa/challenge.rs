@@ -35,7 +35,6 @@ pub struct ApiMfaChallenge {
     pub expires_at: DateTime<Utc>,
     pub id: String,
     pub idempotent_final: bool,
-    pub mutation_fingerprint: Vec<u8>,
     pub mutation_state: Option<String>,
     pub operation: String,
     pub operation_summary: String,
@@ -79,7 +78,6 @@ pub struct NewApiMfaChallenge {
     pub callback_url: Option<String>,
     pub operation: String,
     pub crate_name: Option<String>,
-    pub mutation_fingerprint: Vec<u8>,
     pub mutation_state: Option<String>,
     pub operation_summary: String,
     pub descriptor_json: Option<JsonValue>,
@@ -97,7 +95,6 @@ pub struct NewApiMfaChallenge {
 pub struct NewApiMfaChallengeOperation {
     pub operation: String,
     pub crate_name: Option<String>,
-    pub mutation_fingerprint: Vec<u8>,
     pub operation_summary: String,
     pub descriptor: Option<NewApiMfaMutationDescriptor>,
 }
@@ -429,7 +426,6 @@ impl NewApiMfaChallenge {
             callback_url,
             operation: operation.operation,
             crate_name: operation.crate_name,
-            mutation_fingerprint: operation.mutation_fingerprint,
             mutation_state: Some("pending".into()),
             operation_summary: operation.operation_summary,
             descriptor_json: Some(descriptor.descriptor_json),

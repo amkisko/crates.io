@@ -16,13 +16,22 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
     let mut conn = app.db_conn().await;
     let user_id = user.as_model().id;
 
+    let digest = vec![0u8; 32];
     diesel::insert_into(api_mfa_challenges::table)
         .values((
             api_mfa_challenges::id.eq("mut_keep_recent"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
-            api_mfa_challenges::mutation_fingerprint.eq(vec![1; 32]),
             api_mfa_challenges::operation_summary.eq("Publish keep"),
+            api_mfa_challenges::preflight_id.eq("pre_keep_recent"),
+            api_mfa_challenges::descriptor_json.eq(json!({ "operation": "publish" })),
+            api_mfa_challenges::request_method.eq("PUT"),
+            api_mfa_challenges::request_endpoint.eq("/api/v1/crates/new"),
+            api_mfa_challenges::request_sha256.eq(digest.clone()),
+            api_mfa_challenges::request_size.eq(0_i64),
+            api_mfa_challenges::allow_pending.eq(true),
+            api_mfa_challenges::poll_token.eq("poll_keep_recent"),
+            api_mfa_challenges::mutation_state.eq("pending"),
             api_mfa_challenges::expires_at.eq(Utc::now() + TimeDelta::minutes(5)),
             api_mfa_challenges::auth_state_json.eq(Some(json!({ "state": true }))),
         ))
@@ -34,8 +43,16 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
             api_mfa_challenges::id.eq("mut_clear_auth_state"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
-            api_mfa_challenges::mutation_fingerprint.eq(vec![2; 32]),
             api_mfa_challenges::operation_summary.eq("Publish clear"),
+            api_mfa_challenges::preflight_id.eq("pre_clear_auth_state"),
+            api_mfa_challenges::descriptor_json.eq(json!({ "operation": "publish" })),
+            api_mfa_challenges::request_method.eq("PUT"),
+            api_mfa_challenges::request_endpoint.eq("/api/v1/crates/new"),
+            api_mfa_challenges::request_sha256.eq(digest.clone()),
+            api_mfa_challenges::request_size.eq(0_i64),
+            api_mfa_challenges::allow_pending.eq(true),
+            api_mfa_challenges::poll_token.eq("poll_clear_auth_state"),
+            api_mfa_challenges::mutation_state.eq("pending"),
             api_mfa_challenges::expires_at.eq(Utc::now() - TimeDelta::hours(1)),
             api_mfa_challenges::auth_state_json.eq(Some(json!({ "state": true }))),
         ))
@@ -47,8 +64,16 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
             api_mfa_challenges::id.eq("mut_delete_old"),
             api_mfa_challenges::user_id.eq(user_id),
             api_mfa_challenges::operation.eq("publish"),
-            api_mfa_challenges::mutation_fingerprint.eq(vec![3; 32]),
             api_mfa_challenges::operation_summary.eq("Publish old"),
+            api_mfa_challenges::preflight_id.eq("pre_delete_old"),
+            api_mfa_challenges::descriptor_json.eq(json!({ "operation": "publish" })),
+            api_mfa_challenges::request_method.eq("PUT"),
+            api_mfa_challenges::request_endpoint.eq("/api/v1/crates/new"),
+            api_mfa_challenges::request_sha256.eq(digest),
+            api_mfa_challenges::request_size.eq(0_i64),
+            api_mfa_challenges::allow_pending.eq(true),
+            api_mfa_challenges::poll_token.eq("poll_delete_old"),
+            api_mfa_challenges::mutation_state.eq("expired"),
             api_mfa_challenges::expires_at.eq(Utc::now() - TimeDelta::days(2)),
         ))
         .execute(&mut conn)

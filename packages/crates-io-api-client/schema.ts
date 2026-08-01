@@ -1562,6 +1562,11 @@ export interface components {
              */
             subcategories?: components["schemas"]["Category"][] | null;
         };
+        /**
+         * @description State exposed to the browser verification page.
+         * @enum {string}
+         */
+        ChallengeStatus: "pending" | "ready" | "denied";
         Crate: {
             /**
              * @deprecated
@@ -2516,25 +2521,16 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        /** @description True once the browser passkey ceremony has acknowledged the operation. */
-                        acknowledged: boolean;
                         /** @description Hex SHA-256 of the publish archive, when this is a publish authorization. */
                         archive_sha256?: string | null;
-                        /** @description Opaque API MFA challenge identifier. */
-                        challenge_id: string;
                         crate_name?: string | null;
                         /** Format: date-time */
                         expires_at: string;
                         operation: string;
                         /** @description Server-generated description of the exact mutation being approved. */
                         operation_summary: string;
-                        /**
-                         * Format: int64
-                         * @description Suggested seconds between CLI polls while status is `pending`.
-                         */
-                        recommended_poll_interval_secs: number;
-                        /** @description `pending`, `ready`, or `denied`. */
-                        status: string;
+                        /** @description Current browser-verification state. */
+                        status: components["schemas"]["ChallengeStatus"];
                     };
                 };
             };
@@ -2575,7 +2571,7 @@ export interface operations {
                         grant_expires_in?: number | null;
                         /** @description Mutation record identifier sent on the final request. */
                         mutation_id: string;
-                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        /** @description URL the CLI should poll until authorization reaches a terminal or ready state. */
                         poll_url?: string | null;
                         /**
                          * Format: int64
@@ -2626,7 +2622,6 @@ export interface operations {
                     "application/json": {
                         /** @description Exact loopback URL registered by Cargo, used only as a wake-up signal. */
                         callback_url?: string | null;
-                        challenge_id: string;
                     };
                 };
             };
@@ -2736,7 +2731,7 @@ export interface operations {
                         grant_expires_in?: number | null;
                         /** @description Mutation record identifier sent on the final request. */
                         mutation_id: string;
-                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        /** @description URL the CLI should poll until authorization reaches a terminal or ready state. */
                         poll_url?: string | null;
                         /**
                          * Format: int64
@@ -2781,7 +2776,7 @@ export interface operations {
                         grant_expires_in?: number | null;
                         /** @description Mutation record identifier sent on the final request. */
                         mutation_id: string;
-                        /** @description URL the CLI should poll until `acknowledged` is true. */
+                        /** @description URL the CLI should poll until authorization reaches a terminal or ready state. */
                         poll_url?: string | null;
                         /**
                          * Format: int64
@@ -5493,6 +5488,7 @@ type ReadonlyArray<T> = [
 ] extends [
     unknown[]
 ] ? Readonly<Exclude<T, undefined>> : Readonly<Exclude<T, undefined>[]>;
+export const challengeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChallengeStatus"]> = ["pending", "ready", "denied"];
 export const endpointScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndpointScope"]> = ["publish-new", "publish-update", "trusted-publishing", "yank", "change-owners"];
 export const trustpubDataOneOf0ProviderValues: ReadonlyArray<Extract<FlattenedDeepRequired<components>["schemas"]["TrustpubData"], {
     provider: unknown;

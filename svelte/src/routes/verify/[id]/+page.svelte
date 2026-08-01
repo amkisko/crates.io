@@ -42,7 +42,7 @@
       meta = response.data;
       if (meta?.status === 'denied') {
         denied = true;
-      } else if (meta?.acknowledged) {
+      } else if (meta?.status === 'ready') {
         done = true;
       }
     } catch (error) {

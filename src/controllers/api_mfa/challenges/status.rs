@@ -9,7 +9,6 @@ use http::request::Parts;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::api_mfa::RECOMMENDED_POLL_INTERVAL_SECS;
 use crate::app::AppState;
 use crate::middleware::real_ip::RealIp;
 use crate::models::ApiMfaChallenge;
@@ -20,15 +19,23 @@ use crate::util::no_store;
 use super::MutationAuthorizationResponse;
 use super::mutation_response::challenge_denied_response;
 
+/// State exposed to the browser verification page.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeStatus {
+    /// Waiting for browser authorization.
+    Pending,
+    /// Browser authorization completed.
+    Ready,
+    /// Browser authorization was denied.
+    Denied,
+}
+
 /// Current state and operation details for an API MFA challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GetChallengeResponse {
-    /// Opaque API MFA challenge identifier.
-    pub challenge_id: String,
-    /// `pending`, `ready`, or `denied`.
-    pub status: String,
-    /// True once the browser passkey ceremony has acknowledged the operation.
-    pub acknowledged: bool,
+    /// Current browser-verification state.
+    pub status: ChallengeStatus,
     pub operation: String,
     /// Server-generated description of the exact mutation being approved.
     pub operation_summary: String,
@@ -36,8 +43,6 @@ pub struct GetChallengeResponse {
     /// Hex SHA-256 of the publish archive, when this is a publish authorization.
     pub archive_sha256: Option<String>,
     pub expires_at: DateTime<Utc>,
-    /// Suggested seconds between CLI polls while status is `pending`.
-    pub recommended_poll_interval_secs: u64,
 }
 
 /// Poll an API MFA challenge until the browser acknowledges it.
@@ -81,13 +86,12 @@ pub async fn get_api_mfa_challenge(
         )
         .await?;
 
-    let acknowledged = challenge.is_acknowledged();
     let status = if challenge.mutation_state.as_deref() == Some("denied") {
-        "denied"
-    } else if acknowledged {
-        "ready"
+        ChallengeStatus::Denied
+    } else if challenge.is_acknowledged() {
+        ChallengeStatus::Ready
     } else {
-        "pending"
+        ChallengeStatus::Pending
     };
     let archive_sha256 = challenge
         .descriptor_json
@@ -98,15 +102,12 @@ pub async fn get_api_mfa_challenge(
     Ok((
         no_store(),
         Json(GetChallengeResponse {
-            challenge_id: challenge.id,
-            status: status.into(),
-            acknowledged,
+            status,
             operation: challenge.operation,
             operation_summary: challenge.operation_summary,
             crate_name: challenge.crate_name,
             archive_sha256,
             expires_at: challenge.expires_at,
-            recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,
         }),
     ))
 }

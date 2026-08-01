@@ -262,6 +262,15 @@ expression: document
         ],
         "type": "object"
       },
+      "ChallengeStatus": {
+        "description": "State exposed to the browser verification page.",
+        "enum": [
+          "pending",
+          "ready",
+          "denied"
+        ],
+        "type": "string"
+      },
       "Crate": {
         "properties": {
           "badges": {

@@ -172,6 +172,13 @@ complete plain-text instructions, a mutation id, an independent poll-token URL,
 and a relative lifetime. The verification-page URL is part of `detail`, not a
 separate response field.
 
+Cargo-facing responses expose conservative relative durations such as
+`challenge_expires_in`, `grant_expires_in`, and `receive_lease_secs`; fields
+that do not apply to the current status or active extensions are omitted.
+crates.io stores authoritative absolute deadlines as `expires_at` timestamps
+and exposes one to its internal browser verification page for display. Those
+timestamps are not part of the Cargo protocol.
+
 A core-only record atomically consumes its ready grant after one complete exact
 request match and before endpoint execution. An activated `idempotent-final`
 record replaces that minimal transition with receive, execution, and terminal

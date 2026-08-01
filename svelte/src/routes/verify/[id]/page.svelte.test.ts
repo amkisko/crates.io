@@ -29,9 +29,7 @@ function installApiHandlers(worker: SetupWorker) {
   worker.use(
     http.get('/api/v1/auth/challenges/mut_test', () =>
       HttpResponse.json({
-        challenge_id: 'mut_test',
         status: 'pending',
-        acknowledged: false,
         operation: 'publish',
         operation_summary: 'Publish example 1.0.0',
         crate_name: 'example',
@@ -50,12 +48,10 @@ function installApiHandlers(worker: SetupWorker) {
     http.post('/api/v1/auth/challenges/mut_test/finish', () =>
       HttpResponse.json({
         callback_url: callbackUrl,
-        challenge_id: 'mut_test',
       }),
     ),
     http.post('/api/v1/auth/challenges/mut_test/deny', () =>
       HttpResponse.json({
-        challenge_id: 'mut_test',
         status: 'denied',
       }),
     ),

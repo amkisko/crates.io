@@ -262,6 +262,15 @@ expression: document
         ],
         "type": "object"
       },
+      "ChallengeStatus": {
+        "description": "State exposed to the browser verification page.",
+        "enum": [
+          "pending",
+          "ready",
+          "denied"
+        ],
+        "type": "string"
+      },
       "Crate": {
         "properties": {
           "badges": {
@@ -1848,20 +1857,12 @@ expression: document
                 "schema": {
                   "description": "Current state and operation details for an API MFA challenge.",
                   "properties": {
-                    "acknowledged": {
-                      "description": "True once the browser passkey ceremony has acknowledged the operation.",
-                      "type": "boolean"
-                    },
                     "archive_sha256": {
                       "description": "Hex SHA-256 of the publish archive, when this is a publish authorization.",
                       "type": [
                         "string",
                         "null"
                       ]
-                    },
-                    "challenge_id": {
-                      "description": "Opaque API MFA challenge identifier.",
-                      "type": "string"
                     },
                     "crate_name": {
                       "type": [
@@ -1880,25 +1881,16 @@ expression: document
                       "description": "Server-generated description of the exact mutation being approved.",
                       "type": "string"
                     },
-                    "recommended_poll_interval_secs": {
-                      "description": "Suggested seconds between CLI polls while status is `pending`.",
-                      "format": "int64",
-                      "minimum": 0,
-                      "type": "integer"
-                    },
                     "status": {
-                      "description": "`pending`, `ready`, or `denied`.",
-                      "type": "string"
+                      "$ref": "#/components/schemas/ChallengeStatus",
+                      "description": "Current browser-verification state."
                     }
                   },
                   "required": [
-                    "challenge_id",
                     "status",
-                    "acknowledged",
                     "operation",
                     "operation_summary",
-                    "expires_at",
-                    "recommended_poll_interval_secs"
+                    "expires_at"
                   ],
                   "type": "object"
                 }
@@ -1971,7 +1963,7 @@ expression: document
                       "type": "string"
                     },
                     "poll_url": {
-                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "description": "URL the CLI should poll until authorization reaches a terminal or ready state.",
                       "type": [
                         "string",
                         "null"
@@ -2070,14 +2062,8 @@ expression: document
                         "string",
                         "null"
                       ]
-                    },
-                    "challenge_id": {
-                      "type": "string"
                     }
                   },
-                  "required": [
-                    "challenge_id"
-                  ],
                   "type": "object"
                 }
               }
@@ -2310,7 +2296,7 @@ expression: document
                       "type": "string"
                     },
                     "poll_url": {
-                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "description": "URL the CLI should poll until authorization reaches a terminal or ready state.",
                       "type": [
                         "string",
                         "null"
@@ -2400,7 +2386,7 @@ expression: document
                       "type": "string"
                     },
                     "poll_url": {
-                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "description": "URL the CLI should poll until authorization reaches a terminal or ready state.",
                       "type": [
                         "string",
                         "null"

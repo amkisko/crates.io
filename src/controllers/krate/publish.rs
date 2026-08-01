@@ -267,13 +267,6 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
     let tarball_bytes = read_tarball_bytes(&mut reader, max_upload_size).await?;
     let content_length = tarball_bytes.len() as u64;
     let tarball_sha256 = Sha256::digest(&tarball_bytes);
-    let metadata_json = serde_json::to_vec(&metadata).map_err(|error| {
-        internal(format!(
-            "failed to serialize validated publish metadata: {error}"
-        ))
-    })?;
-    let metadata_sha256 = Sha256::digest(metadata_json);
-
     if let AuthType::Regular(auth) = &auth {
         ensure_api_mfa(
             auth,
@@ -286,7 +279,6 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
             ApiMfaOperation::publish(
                 &metadata.name,
                 &version_string,
-                &metadata_sha256,
                 &tarball_sha256,
                 content_length,
             ),

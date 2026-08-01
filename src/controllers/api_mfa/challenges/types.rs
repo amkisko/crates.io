@@ -1,6 +1,72 @@
 //! API MFA and mutation-authorization challenge wire types.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// An optional JSON field that preserves the distinction between absent and `null`.
+#[derive(Debug)]
+pub struct OptionalField<T> {
+    present: bool,
+    value: Option<T>,
+}
+
+impl<T> OptionalField<T> {
+    /// Returns whether the field occurred in the input object.
+    pub fn is_present(&self) -> bool {
+        self.present
+    }
+
+    /// Returns whether the field was absent from the input object.
+    pub fn is_absent(&self) -> bool {
+        !self.present
+    }
+
+    /// Borrows the non-null field value.
+    pub fn as_ref(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+
+    /// Borrows a string-like non-null field value.
+    pub fn as_deref(&self) -> Option<&T::Target>
+    where
+        T: std::ops::Deref,
+    {
+        self.value.as_deref()
+    }
+
+    /// Returns whether the field value is null or absent.
+    pub fn is_none(&self) -> bool {
+        self.value.is_none()
+    }
+
+    /// Returns whether the field contains a non-null value.
+    pub fn is_some(&self) -> bool {
+        self.value.is_some()
+    }
+}
+
+impl<T> Default for OptionalField<T> {
+    fn default() -> Self {
+        Self {
+            present: false,
+            value: None,
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for OptionalField<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Option::<T>::deserialize(deserializer).map(|value| Self {
+            present: true,
+            value,
+        })
+    }
+}
+
+impl<T: Serialize> Serialize for OptionalField<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.value.serialize(serializer)
+    }
+}
 
 /// Version 1 mutation-authorization preflight request.
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
@@ -11,11 +77,17 @@ pub struct MutationAuthorizationRequest {
     #[serde(rename = "crate")]
     pub crate_name: String,
     /// HTTP method of the ordinary mutation.
-    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "OptionalField::is_absent")]
+    #[schema(value_type = Option<String>)]
+    pub method: OptionalField<String>,
     /// Origin-form target of the ordinary mutation.
-    pub request_target: Option<String>,
+    #[serde(default, skip_serializing_if = "OptionalField::is_absent")]
+    #[schema(value_type = Option<String>)]
+    pub request_target: OptionalField<String>,
     /// Normalized media type of the ordinary mutation, or null when bodyless.
-    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "OptionalField::is_absent")]
+    #[schema(value_type = Option<String>)]
+    pub content_type: OptionalField<String>,
     /// Version involved in publish, yank, or unyank.
     pub version: Option<String>,
     /// Hex SHA-256 of the exact raw mutation request body.
@@ -39,7 +111,9 @@ pub struct MutationAuthorizationRequest {
     /// Protocol extensions Cargo can use for this invocation.
     pub requested_extensions: Vec<String>,
     /// Optional exact loopback callback URL carrying wake-up state.
-    pub callback: Option<MutationCallbackRequest>,
+    #[serde(default, skip_serializing_if = "OptionalField::is_absent")]
+    #[schema(value_type = Option<MutationCallbackRequest>)]
+    pub callback: OptionalField<MutationCallbackRequest>,
 }
 
 /// Loopback delivery metadata for a mutation preflight.
@@ -61,15 +135,21 @@ pub struct MutationAuthorizationResponse {
     /// Mutation record identifier sent on the final request.
     pub mutation_id: String,
     /// Complete human-readable instructions for satisfying the challenge.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// URL the CLI should poll until `acknowledged` is true.
+    /// URL the CLI should poll until authorization reaches a terminal or ready state.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_url: Option<String>,
     /// Conservative remaining pending lifetime in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub challenge_expires_in: Option<u64>,
     /// Conservative remaining ready-grant lifetime in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub grant_expires_in: Option<u64>,
     /// Remaining receive lease when `idempotent-final` is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub receive_lease_secs: Option<u64>,
     /// Suggested seconds between CLI polls of `poll_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recommended_poll_interval_secs: Option<u64>,
 }

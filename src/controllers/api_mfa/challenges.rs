@@ -53,6 +53,7 @@ async fn create_mutation_authorization_inner(
         body.allow_pending,
         &body.requested_extensions,
         body.callback.as_ref(),
+        body.callback.is_present(),
     )?;
     let max_archive_size = if requested_operation == "publish" {
         let crate_name = body.crate_name.trim();

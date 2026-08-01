@@ -89,7 +89,6 @@ pub struct FinishChallengeAuthRequest {
 pub struct FinishChallengeAuthResponse {
     /// Exact loopback URL registered by Cargo, used only as a wake-up signal.
     pub callback_url: Option<String>,
-    pub challenge_id: String,
 }
 
 /// Finish verification and make the mutation authorization ready.
@@ -163,7 +162,6 @@ pub async fn finish_api_mfa_challenge(
         no_store(),
         Json(FinishChallengeAuthResponse {
             callback_url: challenge.callback_url,
-            challenge_id: challenge.id,
         }),
     ))
 }

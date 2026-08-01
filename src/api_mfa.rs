@@ -11,7 +11,6 @@ use axum::response::Response;
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use http::{StatusCode, request::Parts};
-use sha2::{Digest, Sha256};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,7 +25,6 @@ pub const RECOMMENDED_POLL_INTERVAL_SECS: u64 = 5;
 pub struct ApiMfaOperation {
     pub kind: &'static str,
     pub crate_name: Option<String>,
-    pub mutation_fingerprint: Vec<u8>,
     pub summary: String,
     /// Server-parsed fields compared with an untrusted preflight descriptor.
     pub facts: serde_json::Value,
@@ -75,25 +73,10 @@ impl ApiMfaOperation {
         }
     }
 
-    fn new(
-        kind: &'static str,
-        crate_name: Option<String>,
-        summary: String,
-        mutation_fields: &[&[u8]],
-    ) -> Self {
-        let mut hasher = Sha256::new();
-        for field in std::iter::once(kind.as_bytes())
-            .chain(crate_name.as_deref().map(str::as_bytes))
-            .chain(mutation_fields.iter().copied())
-        {
-            hasher.update(field.len().to_be_bytes());
-            hasher.update(field);
-        }
-
+    fn new(kind: &'static str, crate_name: Option<String>, summary: String) -> Self {
         Self {
             kind,
             crate_name,
-            mutation_fingerprint: hasher.finalize().to_vec(),
             summary,
             facts: serde_json::Value::Null,
         }
@@ -108,7 +91,6 @@ impl ApiMfaOperation {
     pub fn publish(
         crate_name: &str,
         version: &str,
-        metadata_sha256: &[u8],
         tarball_sha256: &[u8],
         tarball_size: u64,
     ) -> Self {
@@ -116,7 +98,6 @@ impl ApiMfaOperation {
             "publish",
             Some(crate_name.to_owned()),
             format!("Publish {crate_name} {version}"),
-            &[version.as_bytes(), metadata_sha256, tarball_sha256],
         )
         .with_facts(serde_json::json!({
             "version": version,
@@ -127,12 +108,10 @@ impl ApiMfaOperation {
 
     /// Bind a yank approval to the exact version and optional public message.
     pub fn yank(crate_name: &str, version: &str, yank_message: Option<&str>) -> Self {
-        let message = yank_message.unwrap_or_default();
         Self::new(
             "yank",
             Some(crate_name.to_owned()),
             format!("Yank {crate_name} {version}"),
-            &[version.as_bytes(), message.as_bytes()],
         )
         .with_facts(serde_json::json!({
             "version": version,
@@ -146,7 +125,6 @@ impl ApiMfaOperation {
             "unyank",
             Some(crate_name.to_owned()),
             format!("Unyank {crate_name} {version}"),
-            &[version.as_bytes()],
         )
         .with_facts(serde_json::json!({ "version": version }))
     }
@@ -154,18 +132,10 @@ impl ApiMfaOperation {
     /// Bind an owner change to its direction and exact submitted owner list.
     pub fn change_owners(crate_name: &str, add: bool, owners: &[String]) -> Self {
         let direction = if add { "Add" } else { "Remove" };
-        let mut fields = Vec::with_capacity(owners.len() + 1);
-        fields.push(if add {
-            b"add".as_slice()
-        } else {
-            b"remove".as_slice()
-        });
-        fields.extend(owners.iter().map(String::as_bytes));
         Self::new(
             "owners",
             Some(crate_name.to_owned()),
             format!("{direction} owners for {crate_name}: {}", owners.join(", ")),
-            &fields,
         )
         .with_facts(serde_json::json!({
             "direction": if add { "add" } else { "remove" },
@@ -175,11 +145,6 @@ impl ApiMfaOperation {
 
     /// Toggle `trustpub_only` on crate settings (`PATCH /api/v1/crates/{name}`).
     pub fn change_trustpub_only(crate_name: &str, enabled: bool) -> Self {
-        let value = if enabled {
-            b"true".as_slice()
-        } else {
-            b"false".as_slice()
-        };
         Self::new(
             "change-trustpub-only",
             Some(crate_name.to_owned()),
@@ -187,21 +152,15 @@ impl ApiMfaOperation {
                 "{} Trusted Publishing-only mode for {crate_name}",
                 if enabled { "Enable" } else { "Disable" }
             ),
-            &[value],
         )
     }
 
     /// Bind Trusted Publishing configuration creation to its exact fields.
-    pub fn create_trusted_publishing(crate_name: &str, provider: &str, fields: &[&str]) -> Self {
-        let mut mutation_fields = Vec::with_capacity(fields.len() + 2);
-        mutation_fields.push(b"create".as_slice());
-        mutation_fields.push(provider.as_bytes());
-        mutation_fields.extend(fields.iter().map(|field| field.as_bytes()));
+    pub fn create_trusted_publishing(crate_name: &str, provider: &str) -> Self {
         Self::new(
             "change-trusted-publishing",
             Some(crate_name.to_owned()),
             format!("Create {provider} Trusted Publishing config for {crate_name}"),
-            &mutation_fields,
         )
     }
 
@@ -212,28 +171,24 @@ impl ApiMfaOperation {
             "change-trusted-publishing",
             Some(crate_name.to_owned()),
             format!("Delete {provider} Trusted Publishing config {id} for {crate_name}"),
-            &[b"delete", provider.as_bytes(), id.as_bytes()],
         )
     }
 
     /// Delete a crate (`DELETE /api/v1/crates/{name}`).
-    pub fn delete_crate(crate_name: &str, message: Option<&str>) -> Self {
+    pub fn delete_crate(crate_name: &str) -> Self {
         Self::new(
             "delete-crate",
             Some(crate_name.to_owned()),
             format!("Delete crate {crate_name}"),
-            &[message.unwrap_or_default().as_bytes()],
         )
     }
 
     /// Accept a crate owner invitation (cookie session).
-    pub fn accept_owner_invite(crate_name: &str, invitation_id: i32) -> Self {
-        let invitation_id = invitation_id.to_string();
+    pub fn accept_owner_invite(crate_name: &str) -> Self {
         Self::new(
             "accept-owner-invite",
             Some(crate_name.to_owned()),
             format!("Accept owner invitation for {crate_name}"),
-            &[invitation_id.as_bytes()],
         )
     }
 }
@@ -468,9 +423,6 @@ async fn validate_idempotent_mutation(
         ));
     }
 
-    // The authorization record is bound to the descriptor fingerprint rather
-    // than a fingerprint reconstructed from only the parsed operation.
-    operation.mutation_fingerprint = challenge.mutation_fingerprint;
     Ok(Some(context))
 }
 
@@ -525,7 +477,7 @@ mod tests {
 
     #[test]
     fn protocol_finals_are_exact_server_derived_routes() {
-        let publish = ApiMfaOperation::publish("demo", "1.0.0", &[0; 32], &[1; 32], 42);
+        let publish = ApiMfaOperation::publish("demo", "1.0.0", &[1; 32], 42);
         assert!(publish.is_protocol_final(&request_parts(http::Method::PUT, "/api/v1/crates/new")));
 
         let yank = ApiMfaOperation::yank("demo", "1.0.0", None);

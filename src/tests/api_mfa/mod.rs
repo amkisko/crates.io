@@ -42,7 +42,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         initial.json()["active_extensions"],
         json!(["idempotent-final", "loopback-callback"])
     );
-    assert!(initial.json()["receive_lease_secs"].is_null());
+    assert!(initial.json().get("receive_lease_secs").is_none());
     let challenge_id = initial.json()["mutation_id"].as_str().unwrap().to_owned();
     let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
@@ -75,6 +75,15 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .await;
     assert_eq!(ready_response.status(), 200, "{}", ready_response.text());
     assert_eq!(ready_response.json()["receive_lease_secs"], 30 * 60);
+    assert!(ready_response.json().get("detail").is_none());
+    assert!(ready_response.json().get("poll_url").is_none());
+    assert!(ready_response.json().get("challenge_expires_in").is_none());
+    assert!(
+        ready_response
+            .json()
+            .get("recommended_poll_interval_secs")
+            .is_none()
+    );
     let ready = ApiMfaChallenge::find(&challenge_id, &conn)
         .await
         .unwrap()
@@ -272,7 +281,9 @@ async fn mutation_id_rejects_a_different_raw_publish_body() {
     let rejected = token.run::<Value>(request.with_body(different)).await;
     assert_eq!(rejected.status(), 400, "{}", rejected.text());
     assert!(
-        rejected.text().contains("preflight size"),
+        rejected
+            .text()
+            .contains("Content-Length does not match its preflight descriptor"),
         "{}",
         rejected.text()
     );
@@ -472,6 +483,71 @@ async fn core_preflight_derives_final_endpoint_facts() {
         )
         .await;
     assert_eq!(retry.status(), 409, "{}", retry.text());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inactive_extension_fields_are_rejected_even_when_null() {
+    let (_, _, _user, token) = TestApp::full().with_token().await;
+    let body = PublishBuilder::new("preflight_inactive_fields", "1.0.0").body();
+    let mut descriptor = publish_preflight_descriptor("preflight_inactive_fields", "1.0.0", &body);
+    let descriptor = descriptor.as_object_mut().unwrap();
+    descriptor.remove("method");
+    descriptor.remove("request_target");
+    descriptor.remove("content_type");
+    descriptor.insert("requested_extensions".into(), json!(["future-extension"]));
+
+    for field in ["method", "request_target", "content_type"] {
+        let mut request = descriptor.clone();
+        request.insert(field.into(), Value::Null);
+        let response = token
+            .run::<Value>(
+                token
+                    .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                    .with_body(serde_json::to_vec(&request).unwrap().into()),
+            )
+            .await;
+        assert_eq!(response.status(), 400, "{field}: {}", response.text());
+        assert!(response.text().contains("require idempotent-final"));
+    }
+
+    let mut request = descriptor.clone();
+    request.insert("callback".into(), Value::Null);
+    let response = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(serde_json::to_vec(&request).unwrap().into()),
+        )
+        .await;
+    assert_eq!(response.status(), 400, "{}", response.text());
+    assert!(
+        response
+            .text()
+            .contains("requires the active `loopback-callback` extension")
+    );
+
+    let mut descriptor =
+        publish_preflight_descriptor("preflight_inactive_fields", "1.0.0", &body);
+    for content_type in [None, Some(Value::Null)] {
+        let descriptor = descriptor.as_object_mut().unwrap();
+        descriptor.remove("content_type");
+        if let Some(content_type) = content_type {
+            descriptor.insert("content_type".into(), content_type);
+        }
+        let response = token
+            .run::<Value>(
+                token
+                    .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                    .with_body(serde_json::to_vec(descriptor).unwrap().into()),
+            )
+            .await;
+        assert_eq!(response.status(), 400, "{}", response.text());
+        assert!(
+            response
+                .text()
+                .contains("requires publish content_type")
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

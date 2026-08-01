@@ -14,7 +14,6 @@ pub(super) struct ValidatedMutationDescriptor {
     operation: &'static str,
     crate_name: String,
     summary: String,
-    fingerprint: Vec<u8>,
     pub(super) stored: NewApiMfaMutationDescriptor,
     pub(super) idempotent_final: bool,
 }
@@ -24,7 +23,6 @@ impl ValidatedMutationDescriptor {
         ApiMfaOperation {
             kind: self.operation,
             crate_name: Some(self.crate_name.clone()),
-            mutation_fingerprint: self.fingerprint.clone(),
             summary: self.summary.clone(),
             facts: self
                 .stored
@@ -66,7 +64,9 @@ pub(super) fn validate_mutation_descriptor(
         ));
     }
     if !idempotent_final
-        && (body.method.is_some() || body.request_target.is_some() || body.content_type.is_some())
+        && (body.method.is_present()
+            || body.request_target.is_present()
+            || body.content_type.is_present())
     {
         return Err(bad_request(
             "method, request_target, and content_type require idempotent-final",
@@ -84,6 +84,11 @@ pub(super) fn validate_mutation_descriptor(
 
     let (kind, summary, method, request_target, content_type) = match operation {
         "publish" => {
+            if body.direction.is_some() || body.owners.is_some() {
+                return Err(bad_request(
+                    "publish must not include owner-change descriptor fields",
+                ));
+            }
             let version = required_descriptor_field(body.version.as_deref(), "version")?;
             semver::Version::parse(version)
                 .map_err(|_| bad_request("version is not valid semver"))?;
@@ -93,6 +98,11 @@ pub(super) fn validate_mutation_descriptor(
                 "/api/v1/crates/new",
                 "request_target",
             )?;
+            if idempotent_final && body.content_type.is_none() {
+                return Err(bad_request(
+                    "active idempotent-final requires publish content_type",
+                ));
+            }
             validate_derived_field(
                 body.content_type.as_deref(),
                 "application/octet-stream",
@@ -128,6 +138,15 @@ pub(super) fn validate_mutation_descriptor(
             )
         }
         "yank" | "unyank" => {
+            if body.archive_sha256.is_some()
+                || body.archive_size.is_some()
+                || body.direction.is_some()
+                || body.owners.is_some()
+            {
+                return Err(bad_request(format!(
+                    "{operation} must not include fields from another operation"
+                )));
+            }
             let version = required_descriptor_field(body.version.as_deref(), "version")?;
             semver::Version::parse(version)
                 .map_err(|_| bad_request("version is not valid semver"))?;
@@ -162,6 +181,14 @@ pub(super) fn validate_mutation_descriptor(
             )
         }
         "owners" => {
+            if body.version.is_some()
+                || body.archive_sha256.is_some()
+                || body.archive_size.is_some()
+            {
+                return Err(bad_request(
+                    "owner changes must not include publish or yank descriptor fields",
+                ));
+            }
             if request_size > 64 * 1024 {
                 return Err(bad_request("owner-change request body is too large"));
             }
@@ -178,6 +205,11 @@ pub(super) fn validate_mutation_descriptor(
                 &expected_endpoint,
                 "request_target",
             )?;
+            if idempotent_final && body.content_type.is_none() {
+                return Err(bad_request(
+                    "active idempotent-final requires owner-change content_type",
+                ));
+            }
             validate_derived_field(
                 body.content_type.as_deref(),
                 "application/json",
@@ -242,12 +274,10 @@ pub(super) fn validate_mutation_descriptor(
         }
     }
     let descriptor_json = serde_json::Value::Object(descriptor);
-    let fingerprint = Sha256::digest(serde_json::to_vec(&descriptor_json)?).to_vec();
     Ok(ValidatedMutationDescriptor {
         operation: kind,
         crate_name: crate_name.to_owned(),
         summary,
-        fingerprint,
         stored: NewApiMfaMutationDescriptor {
             descriptor_json,
             request_method: method,

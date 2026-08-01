@@ -75,6 +75,7 @@ pub(super) fn validate_preflight_fields(
     allow_pending: bool,
     requested_extensions: &[String],
     callback: Option<&MutationCallbackRequest>,
+    callback_present: bool,
 ) -> AppResult<ValidatedPreflight> {
     let preflight_id = required_descriptor_field(Some(preflight_id), "preflight_id")?;
     if !(22..=128).contains(&preflight_id.len())
@@ -125,6 +126,11 @@ pub(super) fn validate_preflight_fields(
     let loopback_active = active_extensions
         .iter()
         .any(|extension| extension == LOOPBACK_CALLBACK_EXTENSION);
+    if callback_present && !loopback_active {
+        return Err(bad_request(
+            "callback requires the active `loopback-callback` extension",
+        ));
+    }
     if callback_url.is_some() != loopback_active {
         return Err(bad_request(
             "callback requires the active `loopback-callback` extension and vice versa",
@@ -243,7 +249,6 @@ pub(super) async fn insert_preflight_or_reuse(
         NewApiMfaChallengeOperation {
             operation: operation.kind.to_owned(),
             crate_name: operation.crate_name.clone(),
-            mutation_fingerprint: operation.mutation_fingerprint.clone(),
             operation_summary: operation.summary.clone(),
             descriptor: Some(descriptor.stored),
         },
