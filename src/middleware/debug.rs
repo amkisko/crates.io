@@ -51,7 +51,7 @@ mod tests {
     use super::is_sensitive_header;
 
     #[test]
-    fn redacts_step_up_credentials() {
+    fn redacts_api_mfa_credentials() {
         assert!(is_sensitive_header(
             &"cargo-step-up-callback-secret".parse().unwrap()
         ));

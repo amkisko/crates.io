@@ -1,6 +1,6 @@
 //! All routes related to managing owners of a crate
 
-use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
+use crate::api_mfa::{ApiMfaOperation, begin_mutation_execution, ensure_api_mfa};
 use crate::controllers::helpers::authorization::Rights;
 use crate::controllers::krate::CratePath;
 use crate::models::krate::OwnerRemoveError;
@@ -12,12 +12,14 @@ use crate::models::{
 use crate::rate_limiter::LimitedAction;
 use crate::util::errors::{AppResult, BoxedAppError, bad_request, crate_not_found, custom};
 use crate::views::EncodableOwner;
+use crate::worker::jobs::SendOwnerInviteEmail;
 use crate::{App, app::AppState};
 use crate::{auth::AuthCheck, email::EmailMessage};
 use axum::Json;
 use chrono::Utc;
 use crates_io_encryption::TokenEncryption;
 use crates_io_github::{GitHubAuth, GitHubClient, GitHubError};
+use crates_io_worker::BackgroundJob;
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use http::StatusCode;
@@ -213,7 +215,7 @@ async fn modify_owners(
 
     let user = auth.user();
 
-    let (msg, emails) = conn
+    let (response, emails) = conn
         .transaction(async |conn| {
             let krate: Crate = Crate::by_name(&crate_name)
                 .first(conn)
@@ -239,6 +241,8 @@ async fn modify_owners(
                     ));
                 }
             }
+
+            let mutation = begin_mutation_execution(&parts, conn).await?;
 
             // The set of emails to send out after invite processing is complete and
             // the database transaction has committed.
@@ -267,21 +271,34 @@ async fn modify_owners(
                             if let Some(recipient) =
                                 invitee.verified_email(conn).await.ok().flatten()
                             {
-                                let email = EmailMessage::from_template(
-                                    "owner_invite",
-                                    context! {
-                                        inviter => user.gh_login,
-                                        domain => app.emails.domain,
-                                        crate_name => krate.name,
-                                        token => token.expose_secret()
-                                    },
-                                );
+                                if let Some(mutation) = mutation
+                                    .as_ref()
+                                    .filter(|mutation| mutation.idempotent_final)
+                                {
+                                    SendOwnerInviteEmail::new(
+                                        mutation.id.clone(),
+                                        invitee.id,
+                                        krate.id,
+                                    )
+                                    .enqueue(conn)
+                                    .await?;
+                                } else {
+                                    let email = EmailMessage::from_template(
+                                        "owner_invite",
+                                        context! {
+                                            inviter => user.gh_login,
+                                            domain => app.emails.domain,
+                                            crate_name => krate.name,
+                                            token => token.expose_secret()
+                                        },
+                                    );
 
-                                match email {
-                                    Ok(email_msg) => emails.push((recipient, email_msg)),
-                                    Err(error) => warn!(
-                                        "Failed to render owner invite email template: {error}"
-                                    ),
+                                    match email {
+                                        Ok(email_msg) => emails.push((recipient, email_msg)),
+                                        Err(error) => warn!(
+                                            "Failed to render owner invite email template: {error}"
+                                        ),
+                                    }
                                 }
                             }
                         }
@@ -319,7 +336,16 @@ async fn modify_owners(
                 "owners successfully removed".to_owned()
             };
 
-            Ok((comma_sep_msg, emails))
+            let response = ModifyResponse {
+                msg: comma_sep_msg,
+                ok: true,
+            };
+            if let Some(mutation) = mutation {
+                mutation
+                    .finish_json(StatusCode::OK, &response, conn)
+                    .await?;
+            }
+            Ok((response, emails))
         })
         .await?;
 
@@ -331,7 +357,7 @@ async fn modify_owners(
         }
     }
 
-    Ok(Json(ModifyResponse { msg, ok: true }))
+    Ok(Json(response))
 }
 
 /// Invites `login` as an owner of this crate, returning the created

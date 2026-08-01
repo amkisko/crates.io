@@ -36,6 +36,7 @@ pub struct ApiMfaChallenge {
     pub expires_at: DateTime<Utc>,
     pub hashed_otp: Option<Vec<u8>>,
     pub id: String,
+    pub idempotent_final: bool,
     pub localhost_callback_secret_hash: Option<Vec<u8>>,
     pub localhost_port: Option<i32>,
     pub mutation_fingerprint: Vec<u8>,
@@ -59,11 +60,25 @@ pub struct ApiMfaChallenge {
     pub verified_at: Option<DateTime<Utc>>,
 }
 
+/// Minimal mutation state loaded by the unauthenticated poll endpoint.
+#[derive(Debug, Queryable, Selectable)]
+#[diesel(table_name = api_mfa_challenges, check_for_backend(diesel::pg::Pg))]
+pub struct MutationPollStatus {
+    pub id: String,
+    pub mutation_state: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub receive_expires_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub idempotent_final: bool,
+}
+
 /// Insertable row for a new API MFA challenge.
 #[derive(Debug, Insertable)]
 #[diesel(table_name = api_mfa_challenges, check_for_backend(diesel::pg::Pg))]
 pub struct NewApiMfaChallenge {
     pub id: String,
+    pub idempotent_final: bool,
     pub user_id: i32,
     pub api_token_id: Option<i32>,
     pub allow_pending: Option<bool>,
@@ -260,6 +275,23 @@ impl ApiMfaChallenge {
         Ok(updated > 0)
     }
 
+    /// Consumes a core-only grant after its single final request succeeds.
+    pub async fn finish_core_execution(&self, mut conn: &AsyncPgConnection) -> QueryResult<bool> {
+        let updated = diesel::update(
+            api_mfa_challenges::table
+                .find(&self.id)
+                .filter(api_mfa_challenges::idempotent_final.eq(false))
+                .filter(api_mfa_challenges::mutation_state.eq("executing")),
+        )
+        .set((
+            api_mfa_challenges::mutation_state.eq("expired"),
+            api_mfa_challenges::expires_at.eq(Utc::now()),
+        ))
+        .execute(&mut conn)
+        .await?;
+        Ok(updated > 0)
+    }
+
     /// Denies a pending mutation authorization.
     pub async fn deny(&self, mut conn: &AsyncPgConnection) -> QueryResult<bool> {
         let updated = diesel::update(
@@ -318,10 +350,10 @@ impl ApiMfaChallenge {
     pub async fn find_by_poll_token(
         poll_token: &str,
         mut conn: &AsyncPgConnection,
-    ) -> QueryResult<Option<Self>> {
+    ) -> QueryResult<Option<MutationPollStatus>> {
         api_mfa_challenges::table
             .filter(api_mfa_challenges::poll_token.eq(poll_token))
-            .select(Self::as_select())
+            .select(MutationPollStatus::as_select())
             .first(&mut conn)
             .await
             .optional()
@@ -643,6 +675,7 @@ impl NewApiMfaChallenge {
         let descriptor = operation.descriptor;
         Self {
             id: ApiMfaChallenge::generate_id(),
+            idempotent_final: false,
             user_id,
             api_token_id,
             allow_pending: None,
@@ -682,11 +715,13 @@ impl NewApiMfaChallenge {
         preflight_id: String,
         allow_pending: bool,
         callback_url: Option<String>,
+        idempotent_final: bool,
     ) -> Self {
         let mut challenge = Self::new(user_id, Some(api_token_id), operation, None, None);
         challenge.id = ApiMfaChallenge::generate_mutation_id();
         challenge.allow_pending = Some(allow_pending);
         challenge.callback_url = callback_url;
+        challenge.idempotent_final = idempotent_final;
         challenge.poll_token = Some(ApiMfaChallenge::generate_poll_token());
         challenge.preflight_id = Some(preflight_id);
         challenge.mutation_state = Some("pending".into());

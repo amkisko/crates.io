@@ -68,11 +68,11 @@ Website session / crates.io cookie:
 Trusted Publishing (`cio_tp_…`) OIDC token:
 
 - Trusted Publishing is the automation path; API MFA is the interactive-token path. OIDC publish skips MFA either way (OIDC identity is the second factor) so CI is not blocked on a passkey prompt. Non-OIDC CI that still uses a long-lived API token needs a human MFA step (or Trusted Publishing / a future scoped automation token).
-- TrustPub only becomes available after the crate already exists. The first publish (and other bootstrap ownership work) still needs a long-lived API token or a cookie session — the window where a stolen token is most dangerous. API MFA covers that bootstrap window; the same step-up can later cover other unsafe operations that still need human supervision (yank, owners, delete, TrustPub config, and similar).
+- TrustPub only becomes available after the crate already exists. The first publish (and other bootstrap ownership work) still needs a long-lived API token or a cookie session — the window where a stolen token is most dangerous. API MFA covers that bootstrap window; mutation authorization can later cover other unsafe operations that still need human supervision (yank, owners, delete, TrustPub config, and similar).
 
 Passkeys vs token scopes / identity:
 
-- OAuth login remains account identity. Passkeys are account-wide second factors for step-up (approve and mutate); they are not a login replacement and have no capability scopes in v1. Least privilege stays on API token scopes. Passkey `name` and `last_used_at` (plus register/delete in the security activity feed) are hygiene only.
+- OAuth login remains account identity. Passkeys are account-wide second factors for settings step-up and the current mutation-verification method; they are not a login replacement and have no capability scopes in v1. Least privilege stays on API token scopes. Passkey `name` and `last_used_at` (plus register/delete in the security activity feed) are hygiene only.
 
 Multi-owner / team crates:
 
@@ -105,7 +105,7 @@ Acceptable factors share these properties:
 - Normal use involves human presence (user gesture, biometric, PIN + touch) at verification time.
 - Crates.io records a ceremony trace (challenge → acknowledgment / grant / OTP) linked to the dangerous API call.
 
-WebAuthn passkeys are the supported mechanism for per-operation step-up today.
+WebAuthn passkeys are the supported verification method for mutation authorization today.
 
 Email OTP is not an API MFA factor for publish, yank, or owner actions. It is only a bootstrap / recovery step-up for settings changes (enable MFA, first or recovery passkey enrollment, disable MFA when passkeys are unavailable, and staging a verified-email change). Possession of a verified inbox is weaker than a presence-bound passkey; it blocks session-hijack paths without replacing the human-in-the-loop rule for dangerous API calls.
 
@@ -141,26 +141,22 @@ Additional properties:
   create an abandoned challenge.
 - Poll responses use `pending`, `ready`, `denied`, or `expired`.
 
-## Capability advertisement and mutation preflight
-
-The registry advertises the latest core protocol version implemented by its
-deployed code. Optional behavior is advertised independently:
-
-```json
-{
-  "mutation-authorization": {
-    "version": 1,
-    "extensions": ["idempotent-final", "loopback-callback"]
-  }
-}
-```
+## Mutation preflight and extension negotiation
 
 Cargo sends an authenticated `POST /api/v1/auth/mutation-challenges` before
 the ordinary request. The body contains a fresh `preflight_id`,
-`allow_pending`, the raw-body digest and size, and operation-specific facts.
-Publish also binds the archive digest and size. When `idempotent-final` is
-advertised, Cargo additionally sends the exact method, request target, and
-content type needed for safe final-request replay.
+`protocol_version: 1`, `allow_pending`, a `requested_extensions` array, the
+raw-body digest and size, and operation-specific facts. Publish also binds the
+archive digest and size. The registry stores and echoes the supported subset as
+`active_extensions`; Cargo relies on an extension only after that confirmation.
+When `idempotent-final` is activated, Cargo additionally sends the exact method,
+request target, and content type needed for safe final-request replay.
+
+No index capability block is used. A definitive preflight `404 Not Found`
+means mutation authorization is not implemented, so Cargo sends the ordinary
+mutation. Transport errors, other statuses, and malformed responses fail
+without fallback. Protected ordinary endpoints still require an exact ready
+record; preflight discovery is not the security boundary.
 
 The response is `ready` (200), `pending` (202), or
 `interaction_required` (403). The last result is used when `allow_pending` is
@@ -169,18 +165,35 @@ complete plain-text instructions, a mutation id, an independent poll-token URL,
 and a relative lifetime. The verification-page URL is part of `detail`, not a
 separate response field.
 
+A core-only record atomically consumes its ready grant after one complete exact
+request match and before endpoint execution. An activated `idempotent-final`
+record replaces that minimal transition with receive, execution, and terminal
+states. Its ready response includes `receive_lease_secs`, which bounds Cargo's
+automatic retry window without itself granting mutation authority.
+
 For `idempotent-final`, the mutation middleware authenticates the mutation id
 before buffering the body, verifies the credential, method, request target,
 content type, declared and actual size, digest, and parsed operation fields
-against the stored descriptor, serializes concurrent attempts, and replays a
-completed response instead of executing the mutation twice.
+against the stored descriptor, and returns `425 Too Early` to a concurrent
+attempt. The endpoint changes `receiving` to `executing` and stores its bounded
+JSON response inside the same database transaction as the mutation effect. A
+committed retry therefore replays the response, while a rolled-back or crashed
+transaction leaves the record receivable. The middleware never holds a
+database connection while the endpoint runs. Publish follow-up and index jobs
+are queued in that transaction, and owner-invite email delivery uses the same
+transactional job outbox when this extension is active.
+
+Core-only records use the same exact request validation but consume the grant
+without retaining a response. `idempotent-final` is active only when requested,
+confirmed, and accompanied by its descriptor fields. The server must not
+activate it until every covered endpoint uses transactional outcome storage.
 
 ## CLI handshake (primary flow)
 
 1. Register a passkey under Settings → API MFA and enable enforcement.
 2. Cargo preflights the exact mutation. Each logical invocation has its own
    `preflight_id`; only an ambiguous retry reuses it.
-3. When `loopback-callback` is advertised, interactive Cargo listens at an
+3. Interactive Cargo can request `loopback-callback` and listen at an
    exact URL such as
    `http://127.0.0.1:{port}/cargo/registry-authorization?state={random}` and
    includes it in preflight. Polling remains the fallback; remote users select
@@ -281,11 +294,12 @@ Service gauge: `cratesio_service_api_mfa_challenges_pending`.
 
 ## Cargo integration
 
-Cargo selects the highest mutually supported version from the
-`mutation-authorization` envelope and preflights listed operations. The
-loopback channel only accelerates polling and never carries a server proof or
-final-request credential. Use `poll` for an SSH session whose browser runs on
-another machine.
+Cargo preflights each supported mutation unless authorization is disabled. It
+requests extensions it implements and uses only those confirmed by the
+preflight response. The loopback channel only
+accelerates polling and never carries a server proof or final-request
+credential. Use `poll` for an SSH session whose browser runs on another
+machine.
 
 While Cargo lacks built-in handshake support, an opted-in user must:
 
@@ -331,9 +345,9 @@ Settings changes and successful challenge acknowledgments are recorded in the ow
 
 ## Related improvement vectors (out of v1)
 
-Treat API MFA as the interactive publish step-up layer only. Separate tracks remain:
+Treat API MFA as the interactive mutation-authorization layer only. Separate tracks remain:
 
-- Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutate; it does not bind the published tarball to a long-term publisher key. Step-up MFA and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound step-up or for signed package bytes.
+- Package / index signing (artifact attestation): MFA proves a recent human ceremony for a mutation; it does not bind the published tarball to a long-term publisher key. Mutation authorization and package signing compose; neither replaces the other. Transport or long-lived key possession (including SSH agents) is not a substitute for presence-bound verification or for signed package bytes.
 - Tighter ceremony binding: publish acknowledgment already includes metadata and
   tarball hashes. The loopback callback only wakes Cargo; the server-side grant
   is token- and mutation-scoped. Keep browser Authorize separate from token

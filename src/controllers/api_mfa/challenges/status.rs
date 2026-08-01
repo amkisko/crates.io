@@ -1,0 +1,210 @@
+//! Legacy challenge status, denial, and ceremony rate limiting.
+
+use axum::Json;
+use axum::extract::Path;
+use axum_extra::TypedHeader;
+use axum_extra::headers::CacheControl;
+use chrono::{DateTime, Utc};
+use http::request::Parts;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+use crate::api_mfa::RECOMMENDED_POLL_INTERVAL_SECS;
+use crate::app::AppState;
+use crate::auth::{AuthCheck, AuthHeader, Authentication};
+use crate::middleware::real_ip::RealIp;
+use crate::models::ApiMfaChallenge;
+use crate::rate_limiter::LimitedAction;
+use crate::util::errors::{AppResult, bad_request, forbidden, not_found, server_error};
+use crate::util::no_store;
+
+use super::CreateChallengeResponse;
+use super::mutation_response::challenge_denied_response;
+
+/// Current state and operation details for an API MFA challenge.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GetChallengeResponse {
+    /// Opaque API MFA challenge identifier.
+    pub challenge_id: String,
+    /// `pending`, `acknowledged`, or `denied`.
+    pub status: String,
+    /// True once the browser passkey ceremony has acknowledged the operation.
+    pub acknowledged: bool,
+    /// Alias of `acknowledged` for older clients.
+    pub verified: bool,
+    pub operation: String,
+    /// Server-generated description of the exact mutation being approved.
+    pub operation_summary: String,
+    pub crate_name: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub localhost_port: Option<i32>,
+    /// Suggested seconds between CLI polls while status is `pending`.
+    pub recommended_poll_interval_secs: u64,
+}
+
+/// Poll an API MFA challenge until the browser acknowledges it.
+///
+/// The opaque `challenge_id` is a capability URL: the verify page can load
+/// metadata without a crates.io cookie. API token clients (CLI poll loops) are
+/// rate-limited per user; unauthenticated browsers are rate-limited per IP.
+/// Aside from rate-limit bucket updates this handler is read-only.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/challenges/{id}",
+    params(("id" = String, Path, description = "Challenge ID")),
+    tag = "users",
+    extensions(("x-internal" = json!(true))),
+    responses((status = 200, description = "Successful Response", body = inline(GetChallengeResponse))),
+)]
+pub async fn get_api_mfa_challenge(
+    app: AppState,
+    Path(id): Path<String>,
+    req: Parts,
+) -> AppResult<(TypedHeader<CacheControl>, Json<GetChallengeResponse>)> {
+    // Rate-limit buckets need a write connection; challenge rows are only read.
+    //
+    // Unauthenticated polls are limited by the challenge *owner* id. Synthetic
+    // negative IP ids cannot be stored in `publish_limit_buckets` (FK → users).
+    let mut conn = app.db_write().await?;
+
+    let has_auth_header = AuthHeader::optional_from_request_parts(&req)
+        .await?
+        .is_some();
+
+    let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
+        return Err(not_found());
+    };
+
+    // Optional API token: CLI poll with binding + per-user rate limit.
+    if has_auth_header {
+        let auth = AuthCheck::default().check(&req, &mut conn).await?;
+        authorize_challenge_read(&auth, &challenge)?;
+        if auth.api_token().is_some() {
+            app.rate_limiter
+                .check_rate_limit(
+                    auth.user_id(),
+                    LimitedAction::ApiMfaChallengePoll,
+                    &mut conn,
+                )
+                .await?;
+            app.instance_metrics.api_mfa_challenge_polls_total.inc();
+        }
+    } else {
+        let bucket_key = challenge_rate_limit_key(&challenge.id, &req)?;
+        app.rate_limiter
+            .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengePoll, &mut conn)
+            .await?;
+        app.rate_limiter
+            .check_rate_limit(
+                challenge.user_id,
+                LimitedAction::ApiMfaChallengeAggregate,
+                &mut conn,
+            )
+            .await?;
+    }
+
+    let acknowledged = challenge.is_acknowledged();
+    let status = if challenge.mutation_state.as_deref() == Some("denied") {
+        "denied"
+    } else if acknowledged {
+        "acknowledged"
+    } else {
+        "pending"
+    };
+    Ok((
+        no_store(),
+        Json(GetChallengeResponse {
+            challenge_id: challenge.id,
+            status: status.into(),
+            acknowledged,
+            verified: acknowledged,
+            operation: challenge.operation,
+            operation_summary: challenge.operation_summary,
+            crate_name: challenge.crate_name,
+            expires_at: challenge.expires_at,
+            localhost_port: challenge.localhost_port,
+            recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,
+        }),
+    ))
+}
+
+/// Deny a pending mutation authorization from its verification page.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/challenges/{id}/deny",
+    params(("id" = String, Path, description = "Challenge ID")),
+    tag = "users",
+    extensions(("x-internal" = json!(true))),
+    responses((status = 200, description = "Mutation authorization denied", body = inline(CreateChallengeResponse))),
+)]
+pub async fn deny_api_mfa_challenge(
+    app: AppState,
+    Path(id): Path<String>,
+    req: Parts,
+) -> AppResult<(TypedHeader<CacheControl>, Json<CreateChallengeResponse>)> {
+    let mut conn = app.db_write().await?;
+    let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
+        return Err(not_found());
+    };
+    if challenge.mutation_state.is_none() {
+        return Err(bad_request("only mutation authorizations can be denied"));
+    }
+
+    rate_limit_challenge_ceremony(&app, &challenge, &req, &mut conn).await?;
+    if challenge.mutation_state.as_deref() != Some("denied") && !challenge.deny(&conn).await? {
+        return Err(bad_request(
+            "this mutation authorization is no longer pending",
+        ));
+    }
+
+    let challenge = ApiMfaChallenge::find(&id, &conn)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok((no_store(), Json(challenge_denied_response(&challenge))))
+}
+
+fn authorize_challenge_read(auth: &Authentication, challenge: &ApiMfaChallenge) -> AppResult<()> {
+    if challenge.user_id != auth.user_id() {
+        return Err(not_found());
+    }
+
+    if let Some(token) = auth.api_token()
+        && challenge.api_token_id != Some(token.id)
+    {
+        return Err(forbidden("this challenge belongs to a different API token"));
+    }
+
+    Ok(())
+}
+
+pub(super) async fn rate_limit_challenge_ceremony(
+    app: &AppState,
+    challenge: &ApiMfaChallenge,
+    req: &Parts,
+    conn: &mut diesel_async::AsyncPgConnection,
+) -> AppResult<()> {
+    let bucket_key = challenge_rate_limit_key(&challenge.id, req)?;
+    app.rate_limiter
+        .check_key_rate_limit(&bucket_key, LimitedAction::ApiMfaChallengeCreate, conn)
+        .await?;
+    app.rate_limiter
+        .check_rate_limit(
+            challenge.user_id,
+            LimitedAction::ApiMfaChallengeAggregate,
+            conn,
+        )
+        .await?;
+    Ok(())
+}
+
+pub(super) fn challenge_rate_limit_key(challenge_id: &str, req: &Parts) -> AppResult<String> {
+    let real_ip = req
+        .extensions
+        .get::<RealIp>()
+        .ok_or_else(|| server_error("request is missing its resolved client IP"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(challenge_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(real_ip.to_string().as_bytes());
+    Ok(hex::encode(hasher.finalize()))
+}

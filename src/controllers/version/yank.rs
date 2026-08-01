@@ -2,11 +2,13 @@
 
 use super::CrateVersionPath;
 use super::update::{authenticate, perform_version_yank_update};
-use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
+use crate::api_mfa::{ApiMfaOperation, begin_mutation_execution, ensure_api_mfa};
 use crate::app::AppState;
 use crate::controllers::helpers::OkResponse;
 use crate::rate_limiter::LimitedAction;
 use crate::util::errors::AppResult;
+use diesel_async::AsyncConnection;
+use http::StatusCode;
 use http::request::Parts;
 
 /// Yank a crate version.
@@ -91,21 +93,31 @@ async fn modify_yank(
     )
     .await?;
 
-    state
-        .rate_limiter
-        .check_rate_limit(auth.user_id(), LimitedAction::YankUnyank, &mut conn)
+    conn.transaction(async |conn| {
+        state
+            .rate_limiter
+            .check_rate_limit(auth.user_id(), LimitedAction::YankUnyank, conn)
+            .await?;
+
+        let mutation = begin_mutation_execution(&req, conn).await?;
+        perform_version_yank_update(
+            &state,
+            conn,
+            &mut version,
+            &krate,
+            &auth,
+            Some(yanked),
+            None,
+        )
         .await?;
 
-    perform_version_yank_update(
-        &state,
-        &mut conn,
-        &mut version,
-        &krate,
-        &auth,
-        Some(yanked),
-        None,
-    )
-    .await?;
-
-    Ok(OkResponse::new())
+        let response = OkResponse::new();
+        if let Some(mutation) = mutation {
+            mutation
+                .finish_json(StatusCode::OK, &response, conn)
+                .await?;
+        }
+        Ok(response)
+    })
+    .await
 }

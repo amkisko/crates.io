@@ -1,7 +1,8 @@
 use crate::util::TestApp;
 use chrono::{TimeDelta, Utc};
 use crates_io::schema::{
-    api_mfa_challenges, api_mfa_grants, cli_login_sessions, users, webauthn_ceremony_states,
+    api_mfa_challenges, api_mfa_grants, api_mfa_rate_limit_buckets, cli_login_sessions, users,
+    webauthn_ceremony_states,
 };
 use crates_io::worker::jobs::api_mfa::PurgeExpiredApiMfa;
 use crates_io_worker::BackgroundJob;
@@ -91,6 +92,24 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
         .execute(&mut conn)
         .await?;
 
+    diesel::insert_into(api_mfa_rate_limit_buckets::table)
+        .values(&[
+            (
+                api_mfa_rate_limit_buckets::bucket_key.eq("delete-old"),
+                api_mfa_rate_limit_buckets::action.eq(4),
+                api_mfa_rate_limit_buckets::tokens.eq(1),
+                api_mfa_rate_limit_buckets::last_refill.eq(Utc::now() - TimeDelta::days(2)),
+            ),
+            (
+                api_mfa_rate_limit_buckets::bucket_key.eq("keep-recent"),
+                api_mfa_rate_limit_buckets::action.eq(4),
+                api_mfa_rate_limit_buckets::tokens.eq(1),
+                api_mfa_rate_limit_buckets::last_refill.eq(Utc::now()),
+            ),
+        ])
+        .execute(&mut conn)
+        .await?;
+
     diesel::insert_into(cli_login_sessions::table)
         .values((
             cli_login_sessions::id.eq("login_keep"),
@@ -145,6 +164,13 @@ async fn purge_expired_api_mfa_rows() -> anyhow::Result<()> {
         .load(&mut conn)
         .await?;
     assert_eq!(cli_ids, vec!["login_keep".to_string()]);
+
+    let rate_limit_bucket_keys: Vec<String> = api_mfa_rate_limit_buckets::table
+        .select(api_mfa_rate_limit_buckets::bucket_key)
+        .order(api_mfa_rate_limit_buckets::bucket_key)
+        .load(&mut conn)
+        .await?;
+    assert_eq!(rate_limit_bucket_keys, vec!["keep-recent".to_string()]);
 
     // Keep the users row referenced so FK cleanup is tidy when the schema drops.
     let _: bool = users::table

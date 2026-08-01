@@ -51,7 +51,6 @@ pub const ALLOWED_CHALLENGE_OPERATIONS: &[&str] = &[
     "yank",
     "unyank",
     "owners",
-    "change-owners",
     "change-trustpub-only",
     "change-trusted-publishing",
     "delete-crate",
@@ -173,7 +172,7 @@ impl ApiMfaOperation {
         });
         fields.extend(owners.iter().map(String::as_bytes));
         Self::new(
-            "change-owners",
+            "owners",
             Some(crate_name.to_owned()),
             format!("{direction} owners for {crate_name}: {}", owners.join(", ")),
             &fields,
@@ -302,7 +301,7 @@ enum EnsureOutcome {
 /// Ensures requests satisfy API MFA when the user has it enabled.
 ///
 /// Applies to both API tokens and website cookie sessions for publish, yank,
-/// change-owners, crate delete, Trusted Publishing config changes, and
+/// owner changes, crate delete, Trusted Publishing config changes, and
 /// `trustpub_only` toggles. Trusted Publishing OIDC tokens are not routed
 /// through this helper.
 ///
@@ -326,7 +325,7 @@ pub async fn ensure_api_mfa(
         // The ready mutation record is the exact credential-and-request-bound
         // grant. Its receive lease is independent of legacy general-purpose
         // API MFA grants.
-        context.authorize_execution(conn).await?;
+        context.validate_execution();
         return Ok(());
     }
     if !deps.enforcement_enabled {
@@ -388,6 +387,18 @@ pub async fn ensure_api_mfa(
         .observe(started.elapsed().as_secs_f64());
 
     result
+}
+
+/// Begins a validated Cargo mutation inside the endpoint's effect transaction.
+pub async fn begin_mutation_execution(
+    parts: &Parts,
+    conn: &AsyncPgConnection,
+) -> AppResult<Option<Arc<IdempotentMutation>>> {
+    let context = parts.extensions.get::<Arc<IdempotentMutation>>().cloned();
+    if let Some(context) = &context {
+        context.begin_execution(conn).await?;
+    }
+    Ok(context)
 }
 
 #[derive(Debug)]
@@ -582,7 +593,7 @@ async fn ensure_api_mfa_inner(
 
 /// Builds absolute verification and poll URLs from their respective origins.
 ///
-/// The verification page follows the WebAuthn RP origin, while polling stays on
+/// The verification page follows the `WebAuthn` RP origin, while polling stays on
 /// the registry API origin so Cargo can enforce same-origin requests.
 pub fn public_mfa_urls(webauthn: &WebauthnConfig, challenge_id: &str) -> (String, String) {
     let verification_base = webauthn.rp_origin.as_str().trim_end_matches('/');

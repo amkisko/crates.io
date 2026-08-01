@@ -88,14 +88,22 @@ fn build_openapi_router() -> utoipa_axum::router::OpenApiRouter<AppState> {
         .routes(routes!(api_mfa::authorize::start_api_mfa_authorize))
         .routes(routes!(api_mfa::authorize::finish_api_mfa_authorize))
         .routes(routes!(api_mfa::challenges::create_api_mfa_challenge))
-        .routes(routes!(api_mfa::challenges::create_mutation_authorization))
-        .routes(routes!(api_mfa::challenges::poll_mutation_authorization))
-        .routes(routes!(api_mfa::challenges::get_api_mfa_challenge))
-        .routes(routes!(api_mfa::challenges::deny_api_mfa_challenge))
-        .routes(routes!(api_mfa::challenges::start_api_mfa_challenge))
-        .routes(routes!(api_mfa::challenges::finish_api_mfa_challenge))
         .routes(routes!(
-            api_mfa::challenges::recover_api_mfa_challenge_callback
+            api_mfa::challenges::mutation_preflight::create_mutation_authorization
+        ))
+        .routes(routes!(
+            api_mfa::challenges::mutation_poll::poll_mutation_authorization
+        ))
+        .routes(routes!(api_mfa::challenges::status::get_api_mfa_challenge))
+        .routes(routes!(api_mfa::challenges::status::deny_api_mfa_challenge))
+        .routes(routes!(
+            api_mfa::challenges::ceremony::start_api_mfa_challenge
+        ))
+        .routes(routes!(
+            api_mfa::challenges::ceremony::finish_api_mfa_challenge
+        ))
+        .routes(routes!(
+            api_mfa::challenges::recovery::recover_api_mfa_challenge_callback
         ))
         .routes(routes!(
             crate_owner_invitation::list_crate_owner_invitations_for_user

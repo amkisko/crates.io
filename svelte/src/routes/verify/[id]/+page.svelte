@@ -189,7 +189,7 @@
         return crateName ? `Confirm yank ${crateName}` : 'Confirm yank';
       case 'unyank':
         return crateName ? `Confirm unyank ${crateName}` : 'Confirm unyank';
-      case 'change-owners':
+      case 'owners':
         return crateName ? `Confirm owner change for ${crateName}` : 'Confirm owner change';
       case 'delete-crate':
         return crateName ? `Confirm delete ${crateName}` : 'Confirm delete';

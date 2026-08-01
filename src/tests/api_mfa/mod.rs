@@ -7,7 +7,7 @@ use crates_io::models::{
 };
 use crates_io::schema::{api_mfa_challenges, api_tokens, users};
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use http::Method;
 use insta::assert_snapshot;
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
     let mut descriptor = publish_preflight_descriptor("preflight_replay", "1.0.0", &body);
     let callback_url = "http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef";
     descriptor["callback"] = json!({ "url": callback_url });
+    descriptor["requested_extensions"] = json!(["idempotent-final", "loopback-callback"]);
     let initial = token
         .run::<Value>(
             token
@@ -39,12 +40,17 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .await;
     assert_eq!(initial.status(), 202);
     initial.assert_cache_control("no-store");
+    assert_eq!(
+        initial.json()["active_extensions"],
+        json!(["idempotent-final", "loopback-callback"])
+    );
     let challenge_id = initial.json()["mutation_id"].as_str().unwrap().to_owned();
     let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(challenge.request_size, Some(body.len() as i64));
+    assert!(challenge.idempotent_final);
     assert_eq!(challenge.mutation_state.as_deref(), Some("pending"));
     assert_eq!(challenge.callback_url.as_deref(), Some(callback_url));
     assert_eq!(
@@ -61,6 +67,19 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .unwrap()
         .unwrap();
     assert_eq!(ready.mutation_state.as_deref(), Some("ready"));
+    ready.begin_receiving(&conn).await.unwrap().unwrap();
+    let rolled_back = conn
+        .transaction::<(), diesel::result::Error, _>(async |conn| {
+            assert!(ready.begin_execution(conn).await?);
+            Err(diesel::result::Error::RollbackTransaction)
+        })
+        .await;
+    assert!(rolled_back.is_err());
+    let after_rollback = ApiMfaChallenge::find(&challenge_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_rollback.mutation_state.as_deref(), Some("receiving"));
     let body_len = body.len().to_string();
     let mut direct_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     direct_request.header("Content-Type", "application/octet-stream");
@@ -86,8 +105,14 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         token.run::<crates_io::views::GoodCrate>(first_request.with_body(body.clone())),
         token.run::<crates_io::views::GoodCrate>(concurrent_request.with_body(body.clone())),
     );
-    assert_eq!(first.status(), 200, "{}", first.text());
-    assert_eq!(concurrent.status(), 200, "{}", concurrent.text());
+    let statuses = [first.status(), concurrent.status()];
+    assert!(statuses.contains(&http::StatusCode::OK), "{statuses:?}");
+    assert!(
+        statuses
+            .iter()
+            .all(|status| matches!(*status, http::StatusCode::OK | http::StatusCode::TOO_EARLY)),
+        "{statuses:?}"
+    );
 
     let mut replay = token.request_builder(Method::PUT, "/api/v1/crates/new");
     replay.header("Cargo-Mutation-Id", &challenge_id);
@@ -212,6 +237,7 @@ fn publish_preflight_descriptor(name: &str, version: &str, body: &[u8]) -> Value
         "protocol_version": 1,
         "preflight_id": "pf_0123456789abcdefghijklmnopqr",
         "allow_pending": true,
+        "requested_extensions": ["idempotent-final"],
         "operation": "publish",
         "method": "PUT",
         "request_target": "/api/v1/crates/new",
@@ -227,13 +253,14 @@ fn publish_preflight_descriptor(name: &str, version: &str, body: &[u8]) -> Value
 
 #[tokio::test(flavor = "multi_thread")]
 async fn core_preflight_derives_final_endpoint_facts() {
-    let (_app, _, _user, token) = TestApp::full().with_token().await;
+    let (app, _, _user, token) = TestApp::full().with_token().await;
     let body = PublishBuilder::new("preflight_derived", "1.0.0").body();
     let mut descriptor = publish_preflight_descriptor("preflight_derived", "1.0.0", &body);
     let descriptor = descriptor.as_object_mut().unwrap();
     descriptor.remove("method");
     descriptor.remove("request_target");
     descriptor.remove("content_type");
+    descriptor.insert("requested_extensions".into(), json!(["future-extension"]));
 
     let ready = token
         .run::<Value>(
@@ -244,6 +271,28 @@ async fn core_preflight_derives_final_endpoint_facts() {
         .await;
     assert_eq!(ready.status(), 200, "{}", ready.text());
     assert_eq!(ready.json()["status"], "ready");
+    assert_eq!(ready.json()["active_extensions"], json!([]));
+    let mutation_id = ready.json()["mutation_id"].as_str().unwrap().to_owned();
+
+    let body_len = body.len().to_string();
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Cargo-Mutation-Id", &mutation_id);
+    request.header("Content-Type", "application/octet-stream");
+    request.header("Content-Length", &body_len);
+    let response = token
+        .run::<crates_io::views::GoodCrate>(request.with_body(body))
+        .await;
+    assert_eq!(response.status(), 200, "{}", response.text());
+
+    let conn = app.db_conn().await;
+    let stored = ApiMfaChallenge::find(&mutation_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!stored.idempotent_final);
+    assert_eq!(stored.mutation_state.as_deref(), Some("expired"));
+    assert!(stored.response_body.is_none());
+    assert!(stored.completed_at.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -80,7 +80,7 @@ impl LimitedAction {
             // distributed aggregate traffic for one challenge owner.
             LimitedAction::ApiMfaChallengeAggregate => 1,
             // Allows normal retries and short release bursts while bounding
-            // repeated maximum-size uploads before step-up completes.
+            // repeated maximum-size uploads before mutation authorization completes.
             LimitedAction::PublishRequest => 2,
         }
     }

@@ -1,6 +1,6 @@
 //! Functionality related to publishing a new crate or version of a crate.
 
-use crate::api_mfa::{ApiMfaOperation, ensure_api_mfa};
+use crate::api_mfa::{ApiMfaOperation, begin_mutation_execution, ensure_api_mfa};
 use crate::app::AppState;
 use crate::auth::{AuthCheck, AuthHeader, Authentication};
 use crate::worker::jobs::{
@@ -297,7 +297,7 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
     }
 
     if let Some(user_id) = auth.user_id() {
-        // Step-up handshakes and failed OTP attempts must not consume the mutation
+        // Authorization handshakes and failed legacy OTP attempts must not consume the mutation
         // bucket; otherwise an attacker with a challenge ID can exhaust the
         // legitimate publisher's allowance before verification completes.
         let rate_limit_action = match existing_crate {
@@ -517,6 +517,8 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
         if is_reserved_name(persist.name, conn).await? {
             return Err(bad_request("cannot upload a crate with a reserved name"));
         }
+
+        let mutation = begin_mutation_execution(&req, conn).await?;
 
         let krate = if let Some(user) = auth.user() {
             // To avoid race conditions, we try to insert
@@ -762,7 +764,7 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
             other: vec![],
         };
 
-        Ok(Json(GoodCrate {
+        let response = GoodCrate {
             krate: EncodableCrate::from_minimal(
                 krate,
                 default_version.or(Some(version_string)).as_deref(),
@@ -774,7 +776,13 @@ pub async fn publish(app: AppState, req: Parts, body: Body) -> AppResult<Json<Go
                 None,
             ),
             warnings,
-        }))
+        };
+        if let Some(mutation) = mutation {
+            mutation
+                .finish_json(StatusCode::OK, &response, conn)
+                .await?;
+        }
+        Ok(Json(response))
     }).await
 }
 

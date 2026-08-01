@@ -47,6 +47,7 @@ impl RunnerExt for Runner<Arc<Environment>> {
             .register_job_type::<jobs::UpdateUserFromGithub>()
             .register_job_type::<jobs::SendTokenExpiryNotifications>()
             .register_job_type::<jobs::SendPublishNotificationsJob>()
+            .register_job_type::<jobs::SendOwnerInviteEmail>()
             .register_job_type::<jobs::rss::SyncCrateFeed>()
             .register_job_type::<jobs::rss::SyncCratesFeed>()
             .register_job_type::<jobs::rss::SyncUpdatesFeed>()

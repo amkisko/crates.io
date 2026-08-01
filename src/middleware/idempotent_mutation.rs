@@ -8,13 +8,16 @@ use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use diesel::sql_types::{BigInt, Text};
-use diesel_async::{AsyncConnection, RunQueryDsl};
-use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use http::{HeaderValue, Method, StatusCode, header};
+use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Maximum terminal body retained for an idempotent mutation response.
+const MAX_TERMINAL_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// Header carrying the preflight mutation record identifier.
 pub const CARGO_MUTATION_ID_HEADER: &str = "cargo-mutation-id";
@@ -32,39 +35,104 @@ pub struct IdempotentMutation {
     pub request_sha256: Vec<u8>,
     /// Number of received raw request-body bytes.
     pub request_size: i64,
-    authorized: AtomicBool,
+    /// Whether this record promises terminal response replay.
+    pub idempotent_final: bool,
+    validated: AtomicBool,
+    executing: AtomicBool,
+    completed: AtomicBool,
 }
 
 impl IdempotentMutation {
-    /// Enters execution after endpoint parsing has matched the preflight.
-    pub async fn authorize_execution(
+    /// Marks the parsed endpoint operation as matching the raw preflight descriptor.
+    pub fn validate_execution(&self) {
+        self.validated.store(true, Ordering::Release);
+    }
+
+    /// Enters execution inside the endpoint's effect transaction.
+    pub async fn begin_execution(
         &self,
         conn: &diesel_async::AsyncPgConnection,
     ) -> crate::util::errors::AppResult<()> {
+        if !self.validated.load(Ordering::Acquire) {
+            return Err(server_error(
+                "mutation execution began before endpoint validation",
+            ));
+        }
         let challenge = ApiMfaChallenge::find(&self.id, conn)
             .await?
             .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
         if !challenge.begin_execution(conn).await? {
-            return Err(bad_request(
-                "Cargo-Mutation-Id is not in a receivable state",
-            ));
+            return Err(Box::new(MutationExecutionInProgress));
         }
-        self.authorized.store(true, Ordering::Release);
+        self.executing.store(true, Ordering::Release);
         Ok(())
     }
 
     fn execution_authorized(&self) -> bool {
-        AtomicBool::load(&self.authorized, Ordering::Acquire)
+        self.executing.load(Ordering::Acquire)
+    }
+
+    /// Stores a JSON terminal response in the endpoint's effect transaction.
+    pub async fn finish_json<T: Serialize>(
+        &self,
+        status: StatusCode,
+        value: &T,
+        conn: &diesel_async::AsyncPgConnection,
+    ) -> crate::util::errors::AppResult<()> {
+        if !self.execution_authorized() {
+            return Err(server_error("mutation execution was not started"));
+        }
+        let challenge = ApiMfaChallenge::find(&self.id, conn)
+            .await?
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+        let stored = if self.idempotent_final {
+            let body = serde_json::to_vec(value).map_err(server_error)?;
+            if body.len() > MAX_TERMINAL_RESPONSE_BYTES {
+                return Err(server_error(
+                    "mutation response exceeds replay storage limit",
+                ));
+            }
+            challenge
+                .store_terminal_response(
+                    i32::from(status.as_u16()),
+                    json!([["content-type", "application/json"]]),
+                    body,
+                    conn,
+                )
+                .await?
+        } else {
+            challenge.finish_core_execution(conn).await?
+        };
+        if !stored {
+            return Err(server_error(
+                "Cargo-Mutation-Id outcome could not be committed",
+            ));
+        }
+        self.completed.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn execution_completed(&self) -> bool {
+        self.completed.load(Ordering::Acquire)
     }
 }
 
-#[derive(diesel::QueryableByName)]
-struct AdvisoryLock {
-    #[diesel(sql_type = BigInt)]
-    lock_key: i64,
+#[derive(Debug)]
+struct MutationExecutionInProgress;
+
+impl fmt::Display for MutationExecutionInProgress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("mutation execution is already in progress")
+    }
 }
 
-/// Serializes requests sharing a mutation ID and stores their terminal response.
+impl crate::util::errors::AppError for MutationExecutionInProgress {
+    fn response(&self) -> Response {
+        execution_in_progress_response()
+    }
+}
+
+/// Validates bounded mutation requests and dispatches them to transactional endpoints.
 pub async fn middleware(State(app): State<AppState>, request: Request, next: Next) -> Response {
     let Some(id) = request
         .headers()
@@ -92,33 +160,22 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
         Ok(conn) => conn,
         Err(error) => return server_error(error).into_response(),
     };
-    // Token lookup updates `last_used_at`; finish that transaction before the
-    // advisory-lock transaction so the ordinary endpoint can authenticate the
-    // same token without waiting on our row lock.
+    // Token lookup updates `last_used_at`; release this connection before the
+    // ordinary endpoint authenticates the same token.
     let token_id = match authenticate_api_token_id(&request_parts, &mut conn).await {
         Ok(token_id) => token_id,
         Err(error) => return error.into_response(),
     };
+    drop(conn);
 
-    let result = conn
-        .transaction::<Response, crate::util::errors::BoxedAppError, _>(async move |conn| {
-            let lock = diesel::sql_query(
-                "SELECT hashtextextended($1, 0) AS lock_key, \
-                 pg_advisory_xact_lock(hashtextextended($1, 0))",
-            )
-            .bind::<Text, _>(&id)
-            .get_result::<AdvisoryLock>(conn)
-            .await?;
-            let _ = lock.lock_key;
-
-            // Lifecycle updates use a separate connection so they commit
-            // while this transaction retains only the per-id advisory lock.
+    let result: Result<Response, crate::util::errors::BoxedAppError> =
+        async move {
             let state_conn = app.db_write().await?;
 
             // Resolve the preflight before accepting its body. This bounds the
             // allocation by the authenticated descriptor and rejects unknown
             // mutation IDs without buffering attacker-selected bytes.
-            let challenge = ApiMfaChallenge::find(&id, &state_conn)
+            let mut challenge = ApiMfaChallenge::find(&id, &state_conn)
                 .await?
                 .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
             if challenge.api_token_id != Some(token_id) {
@@ -167,12 +224,23 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             let state = challenge.mutation_state.as_deref().ok_or_else(|| {
                 bad_request("Cargo-Mutation-Id is not a versioned mutation record")
             })?;
-            match state {
-                "ready" => {
-                    if challenge.begin_receiving(&state_conn).await?.is_none() {
-                        return Err(bad_request("Cargo-Mutation-Id grant is expired"));
-                    }
+            if state == "ready" {
+                if let Some(deadline) = challenge.begin_receiving(&state_conn).await? {
+                    challenge.mutation_state = Some("receiving".into());
+                    challenge.receive_expires_at = Some(deadline);
+                } else {
+                    // Another request can win the ready -> receiving CAS between
+                    // our load and update. Observe its state instead of
+                    // misreporting that race as an expired grant.
+                    challenge = ApiMfaChallenge::find(&id, &state_conn)
+                        .await?
+                        .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
                 }
+            }
+            let state = challenge.mutation_state.as_deref().ok_or_else(|| {
+                bad_request("Cargo-Mutation-Id is not a versioned mutation record")
+            })?;
+            match state {
                 "receiving" => {
                     if challenge
                         .receive_expires_at
@@ -187,6 +255,7 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
                 "pending" => return Err(bad_request("Cargo-Mutation-Id is not ready")),
                 "denied" => return Err(bad_request("Cargo-Mutation-Id was denied")),
                 "expired" => return Err(bad_request("Cargo-Mutation-Id is expired")),
+                "ready" => return Err(bad_request("Cargo-Mutation-Id grant is expired")),
                 _ => {
                     return Err(server_error(
                         "Cargo-Mutation-Id has an invalid lifecycle state",
@@ -212,7 +281,10 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
                     .to_owned(),
                 request_sha256: Sha256::digest(&bytes).to_vec(),
                 request_size: challenge.request_size.unwrap_or_default(),
-                authorized: AtomicBool::new(false),
+                idempotent_final: challenge.idempotent_final,
+                validated: AtomicBool::new(false),
+                executing: AtomicBool::new(false),
+                completed: AtomicBool::new(false),
             });
             if challenge.request_method.as_deref() != Some(context.method.as_str())
                 || challenge.request_endpoint.as_deref() != Some(context.endpoint.as_str())
@@ -230,28 +302,16 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             request.extensions_mut().insert(context.clone());
 
             let response = next.run(request).await;
-            if !context.execution_authorized() || response.status().is_server_error() {
+            if !context.execution_authorized() || !response.status().is_success() {
                 return Ok(response);
             }
-
-            let (parts, body) = response.into_parts();
-            let bytes = to_bytes(body, usize::MAX).await.map_err(server_error)?;
-            let headers = replay_headers(&parts.headers);
-            let stored = challenge
-                .store_terminal_response(
-                    i32::from(parts.status.as_u16()),
-                    headers,
-                    bytes.to_vec(),
-                    conn,
-                )
-                .await?;
-            if !stored {
-                return Err(server_error(
-                    "Cargo-Mutation-Id terminal response could not be stored",
-                ));
+            if context.execution_completed() {
+                return Ok(response);
             }
-            Ok(Response::from_parts(parts, Body::from(bytes)))
-        })
+            Err(server_error(
+                "mutation endpoint returned success without committing its outcome",
+            ))
+        }
         .await;
 
     result.unwrap_or_else(IntoResponse::into_response)
@@ -267,16 +327,6 @@ fn execution_in_progress_response() -> Response {
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     response
-}
-
-fn replay_headers(headers: &HeaderMap) -> serde_json::Value {
-    json!(
-        headers
-            .iter()
-            .filter(|(name, _)| name == &http::header::CONTENT_TYPE)
-            .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?)))
-            .collect::<Vec<_>>()
-    )
 }
 
 /// Rebuilds a stored terminal response.

@@ -1,5 +1,7 @@
 use crate::models::{ApiMfaEmailOtp, CliLoginSession};
-use crate::schema::{api_mfa_challenges, api_mfa_grants, webauthn_ceremony_states};
+use crate::schema::{
+    api_mfa_challenges, api_mfa_grants, api_mfa_rate_limit_buckets, webauthn_ceremony_states,
+};
 use crate::worker::Environment;
 use chrono::{TimeDelta, Utc};
 use crates_io_worker::BackgroundJob;
@@ -24,6 +26,7 @@ use tracing::info;
 /// - Ceremony states: deleted once expired
 /// - Email OTPs: deleted once expired or consumed
 /// - CLI login sessions: deleted once expired or consumed (ciphertext cleared first)
+/// - Inactive API MFA rate-limit buckets: kept for 24 hours after their last refill
 ///
 /// Also clears `auth_state_json` on expired challenges immediately so JSONB TOAST
 /// does not linger until the 24h challenge purge.
@@ -75,6 +78,14 @@ impl BackgroundJob for PurgeExpiredApiMfa {
 
         let cli_login_deleted = CliLoginSession::purge_expired(&conn).await?;
 
+        let bucket_cutoff = Utc::now() - TimeDelta::days(1);
+        let rate_limit_buckets_deleted = diesel::delete(
+            api_mfa_rate_limit_buckets::table
+                .filter(api_mfa_rate_limit_buckets::last_refill.lt(bucket_cutoff)),
+        )
+        .execute(&mut conn)
+        .await?;
+
         info!(
             auth_states_cleared,
             challenges_deleted,
@@ -82,6 +93,7 @@ impl BackgroundJob for PurgeExpiredApiMfa {
             ceremonies_deleted,
             email_otps_deleted,
             cli_login_deleted,
+            rate_limit_buckets_deleted,
             "Purged expired API MFA and CLI login rows"
         );
 
