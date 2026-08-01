@@ -94,7 +94,7 @@
         return;
       }
 
-      notifications.success('Acknowledged. You may return to the command line.');
+      notifications.success('Operation authorized. Cargo may continue.');
     } catch (error) {
       notifications.error(error instanceof Error ? error.message : 'Verification failed.');
     } finally {
@@ -142,15 +142,15 @@
     let crateName = challenge.crate_name;
     switch (challenge.operation) {
       case 'publish':
-        return crateName ? `Confirm publish ${crateName}` : 'Confirm publish';
+        return crateName ? `Authorize publishing ${crateName}` : 'Authorize publishing';
       case 'yank':
-        return crateName ? `Confirm yank ${crateName}` : 'Confirm yank';
+        return crateName ? `Authorize yanking ${crateName}` : 'Authorize yanking';
       case 'unyank':
-        return crateName ? `Confirm unyank ${crateName}` : 'Confirm unyank';
+        return crateName ? `Authorize unyanking ${crateName}` : 'Authorize unyanking';
       case 'owners':
-        return crateName ? `Confirm owner change for ${crateName}` : 'Confirm owner change';
+        return crateName ? `Authorize owner change for ${crateName}` : 'Authorize owner change';
       default:
-        return crateName ? `Confirm action for ${crateName}` : 'Confirm action';
+        return crateName ? `Authorize action for ${crateName}` : 'Authorize action';
     }
   }
 
@@ -158,7 +158,7 @@
     if (denied) {
       return 'Authorization denied';
     } else if (done) {
-      return callbackDeliveryFailed ? 'Cargo was not reached' : 'Passkey verified';
+      return callbackDeliveryFailed ? 'Cargo was not reached' : 'Operation authorized';
     }
     if (loadError) {
       return 'Verification failed';
@@ -166,7 +166,7 @@
     if (meta) {
       return confirmHeading(meta);
     }
-    return 'Confirm action';
+    return 'Authorize action';
   });
 
   $effect(() => {
@@ -190,12 +190,17 @@
   {:else if done}
     {#if meta}
       <p class="summary" data-test-operation-summary>
-        Confirmed {meta.operation_summary[0].toLocaleLowerCase() + meta.operation_summary.slice(1)}
+        Authorized: {meta.operation_summary}
       </p>
+      {#if meta.archive_sha256}
+        <p class="archive-digest" data-test-archive-digest>
+          Archive SHA-256: <code>{meta.archive_sha256}</code>
+        </p>
+      {/if}
     {/if}
     {#if callbackDeliveryFailed}
       <div role="alert" data-test-callback-error>
-        <p>Passkey verified, but Cargo could not be reached.</p>
+        <p>The operation is authorized, but Cargo could not be reached.</p>
         <p>Keep the Cargo command running, then retry the connection.</p>
       </div>
       <div class="actions">
@@ -214,10 +219,17 @@
         </button>
       </div>
     {:else}
-      <p role="status" data-test-verify-success>You may close this window and return to the command line.</p>
+      <p role="status" data-test-verify-success>
+        This operation is authorized. Cargo must still send it to the registry. You may close this window.
+      </p>
     {/if}
   {:else if meta}
     <p class="summary" data-test-operation-summary>{meta.operation_summary}</p>
+    {#if meta.archive_sha256}
+      <p class="archive-digest" data-test-archive-digest>
+        Archive SHA-256: <code>{meta.archive_sha256}</code>
+      </p>
+    {/if}
     <p class="expiry">
       Expires <time datetime={meta.expires_at}>{new Date(meta.expires_at).toLocaleString()}</time>
     </p>
@@ -253,6 +265,14 @@
   .summary {
     margin: 0 0 var(--space-2xs);
     color: var(--grey600);
+  }
+
+  .archive-digest {
+    margin: 0 0 var(--space-2xs);
+
+    code {
+      overflow-wrap: anywhere;
+    }
   }
 
   .expiry {

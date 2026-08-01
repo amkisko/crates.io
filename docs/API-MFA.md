@@ -152,16 +152,18 @@ Cargo sends an authenticated `POST /api/v1/auth/mutation-challenges` before
 the ordinary request. The body contains a fresh `preflight_id`,
 `protocol_version: 1`, `allow_pending`, a `requested_extensions` array, the
 raw-body digest and size, and operation-specific facts. Publish also binds the
-archive digest and size. The registry stores and echoes the supported subset as
+archive digest and size; the verification page displays that archive digest for
+independent comparison. The registry stores and echoes the supported subset as
 `active_extensions`; Cargo relies on an extension only after that confirmation.
-When `idempotent-final` is activated, Cargo additionally sends the exact method,
-request target, and content type needed for safe final-request replay.
+When `idempotent-final` is activated, Cargo additionally sends the exact
+method, request target, and content type needed for safe final-request replay.
 
 No index capability block is used. A definitive preflight `404 Not Found`
 means mutation authorization is not implemented, so Cargo sends the ordinary
-mutation. Transport errors, other statuses, and malformed responses fail
-without fallback. Protected ordinary endpoints still require an exact ready
-record; preflight discovery is not the security boundary.
+mutation unless an explicit mode requires an unavailable extension. Transport
+errors, other statuses, and malformed responses fail without fallback.
+Protected ordinary endpoints still require an exact ready record; preflight
+discovery is not the security boundary.
 
 The response is `ready` (200), `pending` (202), or
 `interaction_required` (403). The last result is used when `allow_pending` is
@@ -176,6 +178,14 @@ record replaces that minimal transition with receive, execution, and terminal
 states. Its ready response includes `receive_lease_secs`, which bounds Cargo's
 automatic retry window without itself granting mutation authority.
 
+crates.io advertises a 1,800-second (30-minute) receive lease. The middleware
+starts that lease only after checking the bound credential, live grant, HTTP
+method, exact request target, media type, absence of content encoding, and
+declared body length. It then reads at most the preflighted body length and
+checks the raw digest before endpoint parsing. A mismatch found before claim
+leaves the record `ready`; an incomplete or digest-mismatched body can consume
+time only within the already bounded receive lease.
+
 For `idempotent-final`, the mutation middleware authenticates the mutation id
 before buffering the body, verifies the credential, method, request target,
 content type, declared and actual size, digest, and parsed operation fields
@@ -187,6 +197,12 @@ transaction leaves the record receivable. The middleware never holds a
 database connection while the endpoint runs. Publish follow-up and index jobs
 are queued in that transaction, and owner-invite email delivery uses the same
 transactional job outbox when this extension is active.
+
+The `receiving` to `executing` transition and terminal response write occur in
+the endpoint's mutation transaction. A process or database failure before
+commit therefore rolls `executing` back to `receiving`; a successful commit
+stores `terminal` with the effect. A persistently visible `executing` record is
+an invariant violation, not a state the cleanup job should reset blindly.
 
 Core-only records use the same exact request validation but consume the grant
 without retaining a response. `idempotent-final` is active only when requested,
@@ -210,8 +226,8 @@ activate it until every covered endpoint uses transactional outcome storage.
 6. Cargo sends the original request with its ordinary credential and only
    `Cargo-Mutation-Id`. The registry-side exact grant authorizes that mutation.
 
-Core `CARGO_REGISTRY_MUTATION_AUTHORIZATION_CHANNEL` and
-`--mutation-authorization-channel` values are `auto`, `poll`, and `disabled`;
+Core `CARGO_REGISTRY_MUTATION_AUTHORIZATION_MODE` and
+`--mutation-authorization-mode` values are `auto`, `poll`, and `disabled`;
 `loopback-callback` adds `loopback`. Automatic non-interactive mode preflights
 with `allow_pending: false`.
 

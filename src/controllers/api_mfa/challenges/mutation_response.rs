@@ -22,7 +22,7 @@ pub(super) fn challenge_created_response(
         status: "pending".into(),
         detail: Some(format!(
             "Additional authentication is required. Open this link to verify with your passkey:\n\n\
-             {verification_page_url}\n\nAfter verification, retry the request."
+             {verification_page_url}\n\nCargo will continue after authorization."
         )),
         poll_url: Some(poll_url),
         protocol_version: 1,

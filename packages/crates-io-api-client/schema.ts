@@ -2518,6 +2518,13 @@ export interface operations {
                     "application/json": {
                         /** @description True once the browser passkey ceremony has acknowledged the operation. */
                         acknowledged: boolean;
+                        /** @description Hex SHA-256 of the publish archive, when this is a publish authorization. */
+                        archive_sha256?: string | null;
+                        /**
+                         * Format: int64
+                         * @description Size of the publish archive in bytes.
+                         */
+                        archive_size?: number | null;
                         /** @description Opaque API MFA challenge identifier. */
                         challenge_id: string;
                         crate_name?: string | null;

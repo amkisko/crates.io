@@ -6,10 +6,10 @@ use crates_io::schema::users;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use regex::regex;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use url::Url;
-use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 const TEST_ORIGIN: &str = "http://localhost:8888";
@@ -139,12 +139,10 @@ async fn disable_api_mfa_requires_passkey_or_email_otp() {
         .put::<Value>("/api/v1/me/mfa", json!({ "enabled": false }).to_string())
         .await;
     assert_eq!(denied.status(), 400);
-    assert!(
-        denied.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("passkey verification or email code required")
-    );
+    assert!(denied.json()["errors"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("passkey verification or email code required"));
 
     let mut conn = user.app().db_conn().await;
     let still_enabled: bool = users::table
@@ -210,12 +208,10 @@ async fn enable_api_mfa_requires_email_otp() {
         .put::<Value>("/api/v1/me/mfa", json!({ "enabled": true }).to_string())
         .await;
     assert_eq!(denied.status(), 400);
-    assert!(
-        denied.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("email verification code required")
-    );
+    assert!(denied.json()["errors"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("email verification code required"));
 
     let _user = enable_api_mfa(&app, &user).await;
 }
@@ -228,12 +224,10 @@ async fn register_first_passkey_requires_email_otp() {
         .post::<Value>("/api/v1/me/mfa/passkeys/start", "{}")
         .await;
     assert_eq!(denied.status(), 400);
-    assert!(
-        denied.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("email verification code required")
-    );
+    assert!(denied.json()["errors"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("email verification code required"));
 
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
     register_passkey(&app, &user, &mut authenticator, "first", None).await;
@@ -256,12 +250,10 @@ async fn register_additional_passkey_requires_step_up_when_mfa_enabled() {
         .post::<Value>("/api/v1/me/mfa/passkeys/start", "{}")
         .await;
     assert_eq!(denied.status(), 400);
-    assert!(
-        denied.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("passkey verification required")
-    );
+    assert!(denied.json()["errors"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("passkey verification required"));
 
     let assertion = authenticate(&user, &mut authenticator).await;
     register_passkey(&app, &user, &mut authenticator, "second", Some(assertion)).await;
@@ -316,12 +308,10 @@ async fn delete_passkey_requires_step_up_when_mfa_enabled() {
         )
         .await;
     assert_eq!(denied.status(), 400);
-    assert!(
-        denied.json()["errors"][0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("passkey verification or email code required")
-    );
+    assert!(denied.json()["errors"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("passkey verification or email code required"));
 
     let assertion = authenticate(&user, &mut authenticator).await;
     user.delete_with_body::<Value>(

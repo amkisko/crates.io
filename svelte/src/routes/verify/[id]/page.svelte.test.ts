@@ -23,6 +23,7 @@ vi.mock('./localhost-callback', async importOriginal => ({
 }));
 
 const callbackUrl = 'http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef';
+const archiveSha256 = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 function installApiHandlers(worker: SetupWorker) {
   worker.use(
@@ -34,6 +35,8 @@ function installApiHandlers(worker: SetupWorker) {
         operation: 'publish',
         operation_summary: 'Publish example 1.0.0',
         crate_name: 'example',
+        archive_sha256: archiveSha256,
+        archive_size: 1234,
         expires_at: '2099-01-01T00:00:00Z',
       }),
     ),
@@ -92,9 +95,13 @@ describe('/verify/[id]', () => {
     mockPasskey();
 
     await render(PageTestWrapper);
+    await expect.element(page.getByRole('heading', { name: 'Authorize publishing example' })).toBeInTheDocument();
+    await expect.element(page.getByCSS('[data-test-archive-digest]')).toHaveTextContent(archiveSha256);
     await page.getByCSS('[data-test-verify-passkey]').click();
 
-    await expect.element(page.getByCSS('[data-test-verify-success]')).toBeInTheDocument();
+    await expect
+      .element(page.getByCSS('[data-test-verify-success]'))
+      .toHaveTextContent('This operation is authorized. Cargo must still send it to the registry.');
     expect(callback).toHaveBeenCalledWith(callbackUrl);
   });
 

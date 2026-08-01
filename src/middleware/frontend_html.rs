@@ -26,16 +26,20 @@ const PATH_PREFIX_CRATES: &str = "/crates/";
 const TEMPLATE_NAME: &str = "index";
 const TEMPLATE_PATH: &str = "svelte/build/200.html";
 
-/// The [`Shared`] allows for multiple tasks to wait on a single future, [`BoxFuture`] allows
-/// us to name the type in the declaration of static variables, and the [`Arc`] ensures
-/// the [`minijinja::Environment`] doesn't get cloned each request.
-type TemplateEnvFut = Shared<BoxFuture<'static, Arc<minijinja::Environment<'static>>>>;
+/// Render environment and the verification page's build-derived CSP.
+struct FrontendTemplate {
+    env: minijinja::Environment<'static>,
+    verification_csp: Option<HeaderValue>,
+}
+
+/// The [`Shared`] allows multiple tasks to wait on one initialization future.
+type TemplateEnvFut = Shared<BoxFuture<'static, Arc<FrontendTemplate>>>;
 type TemplateCache = moka::future::Cache<Cow<'static, str>, String>;
 
 /// Initializes [`minijinja::Environment`] given the SvelteKit fallback
 /// document at [`TEMPLATE_PATH`]. This should only be done once as it will
 /// load said file from persistent storage.
-async fn init_template_env() -> Arc<minijinja::Environment<'static>> {
+async fn init_template_env() -> Arc<FrontendTemplate> {
     let mut env = minijinja::Environment::empty();
 
     let template = tokio::fs::read_to_string(TEMPLATE_PATH)
@@ -46,10 +50,44 @@ async fn init_template_env() -> Arc<minijinja::Environment<'static>> {
             )
         });
 
+    let verification_csp = verification_csp(&template);
+
     env.add_template_owned(TEMPLATE_NAME, template)
         .expect("Error loading template");
 
-    Arc::new(env)
+    Arc::new(FrontendTemplate {
+        env,
+        verification_csp,
+    })
+}
+
+/// Builds the verification page policy from SvelteKit's generated inline-script hashes.
+fn verification_csp(template: &str) -> Option<HeaderValue> {
+    const META_PREFIX: &str = "<meta http-equiv=\"content-security-policy\" content=\"";
+
+    let policy = template.split_once(META_PREFIX)?.1.split_once('"')?.0;
+    let script_hashes = policy
+        .split(';')
+        .find_map(|directive| {
+            let mut sources = directive.split_whitespace();
+            (sources.next() == Some("script-src")).then(|| {
+                sources
+                    .filter(|source| source.starts_with("'sha256-") && source.ends_with('\''))
+                    .collect::<Vec<_>>()
+            })
+        })?
+        .join(" ");
+    if script_hashes.is_empty() {
+        return None;
+    }
+
+    let policy = format!(
+        "default-src 'none'; base-uri 'none'; connect-src 'self'; \
+         font-src 'self'; form-action 'self'; frame-ancestors 'none'; \
+         img-src 'self' data: http://127.0.0.1:*; object-src 'none'; \
+         script-src 'self' {script_hashes}; style-src 'self' 'unsafe-inline'"
+    );
+    HeaderValue::try_from(policy).ok()
 }
 
 /// Initializes the [`moka::future::Cache`] used to cache the rendered HTML.
@@ -90,17 +128,13 @@ pub async fn serve(state: AppState, request: Request, next: Next) -> Response {
         let html_cache = RENDERED_HTML_CACHE
             .get_or_init(|| init_html_cache(state.config.frontend.html_render_cache_max_capacity));
 
+        let template = (&*TEMPLATE_ENV).clone().await;
         let render_result = html_cache
             .entry_by_ref(&og_image_url)
             .or_try_insert_with::<_, minijinja::Error>(async {
-                // `LazyLock::deref` blocks as long as its initializer is running in another thread.
-                // Note that this won't take long, as the constructed Futures are not awaited
-                // during initialization.
-                let template_env = &*TEMPLATE_ENV;
-
                 // Render the HTML given the OG image URL
-                let env = template_env.clone().await;
-                let html = env
+                let html = template
+                    .env
                     .get_template(TEMPLATE_NAME)?
                     .render(minijinja::context! { og_image_url})?;
 
@@ -111,7 +145,17 @@ pub async fn serve(state: AppState, request: Request, next: Next) -> Response {
         match render_result {
             Ok(entry) => {
                 // Serve the static page to bootstrap the frontend
-                axum::response::Html(entry.into_value()).into_response()
+                let mut response = axum::response::Html(entry.into_value()).into_response();
+                if path.starts_with("/verify/") {
+                    let Some(verification_csp) = &template.verification_csp else {
+                        tracing::error!("Svelte fallback document has no hash-based script policy");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    };
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_SECURITY_POLICY, verification_csp.clone());
+                }
+                response
             }
             Err(err) => {
                 tracing::error!("Error rendering HTML: {:?}", err);
@@ -141,7 +185,7 @@ fn extract_crate_name(path: &str) -> Option<&str> {
 mod tests {
     use googletest::{assert_that, prelude::eq};
 
-    use crate::middleware::frontend_html::extract_crate_name;
+    use crate::middleware::frontend_html::{extract_crate_name, verification_csp};
 
     #[test]
     fn test_extract_crate_name() {
@@ -159,5 +203,21 @@ mod tests {
         for (path, expected) in PATHS.iter().copied() {
             assert_that!(extract_crate_name(path), eq(expected));
         }
+    }
+
+    #[test]
+    fn verification_csp_allows_only_first_party_scripts_and_generated_hashes() {
+        let html = r#"<meta http-equiv="content-security-policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' 'sha256-first=' 'sha256-second='; style-src 'self' 'unsafe-inline'">"#;
+        let csp = verification_csp(html).unwrap();
+        let csp = csp.to_str().unwrap();
+
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("connect-src 'self'"));
+        assert!(csp.contains("http://127.0.0.1:*"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("script-src 'self' 'sha256-first=' 'sha256-second='"));
+        assert!(!csp.contains("unsafe-eval"));
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(!csp.contains("https://"));
     }
 }

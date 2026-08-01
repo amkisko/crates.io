@@ -1852,6 +1852,21 @@ expression: document
                       "description": "True once the browser passkey ceremony has acknowledged the operation.",
                       "type": "boolean"
                     },
+                    "archive_sha256": {
+                      "description": "Hex SHA-256 of the publish archive, when this is a publish authorization.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "archive_size": {
+                      "description": "Size of the publish archive in bytes.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
                     "challenge_id": {
                       "description": "Opaque API MFA challenge identifier.",
                       "type": "string"

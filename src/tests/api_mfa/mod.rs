@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn publish_preflight_binds_and_replays_one_mutation() {
-    let (app, _, user, token) = TestApp::full().with_token().await;
+    let (app, anon, user, token) = TestApp::full().with_token().await;
     let mut conn = app.db_conn().await;
     diesel::update(users::table.find(user.as_model().id))
         .set(users::api_mfa_enabled.eq(true))
@@ -42,6 +42,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         initial.json()["active_extensions"],
         json!(["idempotent-final", "loopback-callback"])
     );
+    assert!(initial.json()["receive_lease_secs"].is_null());
     let challenge_id = initial.json()["mutation_id"].as_str().unwrap().to_owned();
     let challenge = ApiMfaChallenge::find_active(&challenge_id, &conn)
         .await
@@ -55,8 +56,26 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         challenge.request_sha256,
         Some(Sha256::digest(&body).to_vec())
     );
+    let browser_status = anon
+        .get::<Value>(&format!("/api/v1/auth/challenges/{challenge_id}"))
+        .await
+        .good();
+    assert_eq!(
+        browser_status["archive_sha256"],
+        descriptor["archive_sha256"]
+    );
+    assert_eq!(browser_status["archive_size"], descriptor["archive_size"]);
 
     challenge.mark_verified(&conn).await.unwrap();
+    let ready_response = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(ready_response.status(), 200, "{}", ready_response.text());
+    assert_eq!(ready_response.json()["receive_lease_secs"], 30 * 60);
     let ready = ApiMfaChallenge::find(&challenge_id, &conn)
         .await
         .unwrap()
@@ -182,6 +201,42 @@ async fn browser_can_deny_a_pending_mutation_authorization() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn noninteractive_preflight_creates_no_pending_record() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let body = PublishBuilder::new("preflight_noninteractive", "1.0.0").body();
+    let mut descriptor = publish_preflight_descriptor("preflight_noninteractive", "1.0.0", &body);
+    descriptor["allow_pending"] = json!(false);
+
+    let response = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(response.status(), 403, "{}", response.text());
+    assert_eq!(response.json()["status"], "interaction_required");
+    assert!(response.json()["mutation_id"].is_null());
+    assert!(response.json()["poll_url"].is_null());
+
+    let count: i64 = api_mfa_challenges::table
+        .filter(api_mfa_challenges::user_id.eq(user.as_model().id))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutation_id_rejects_a_different_raw_publish_body() {
     let (_app, _, user, token) = TestApp::full().with_token().await;
     let other_token = user.db_new_token("other-mutation-token").await;
@@ -224,6 +279,110 @@ async fn mutation_id_rejects_a_different_raw_publish_body() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_id_rejects_content_encoding_without_claiming() {
+    let (app, _, _user, token) = TestApp::full().with_token().await;
+    let body = PublishBuilder::new("preflight_content_encoding", "1.0.0").body();
+    let descriptor = publish_preflight_descriptor("preflight_content_encoding", "1.0.0", &body);
+    let ready = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(ready.status(), 200, "{}", ready.text());
+    let mutation_id = ready.json()["mutation_id"].as_str().unwrap().to_owned();
+    let body_len = body.len().to_string();
+
+    let mut encoded = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    encoded.header("Cargo-Mutation-Id", &mutation_id);
+    encoded.header("Content-Type", "application/octet-stream");
+    encoded.header("Content-Encoding", "gzip");
+    encoded.header("Content-Length", &body_len);
+    let rejected = token.run::<Value>(encoded.with_body(body.clone())).await;
+    assert_eq!(rejected.status(), 400, "{}", rejected.text());
+    assert!(
+        rejected.text().contains("does not permit Content-Encoding"),
+        "{}",
+        rejected.text()
+    );
+
+    let conn = app.db_conn().await;
+    let stored = ApiMfaChallenge::find(&mutation_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.mutation_state.as_deref(), Some("ready"));
+    assert!(stored.receive_expires_at.is_none());
+    drop(conn);
+
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Cargo-Mutation-Id", &mutation_id);
+    request.header("Content-Type", "application/octet-stream");
+    request.header("Content-Length", &body_len);
+    let published = token
+        .run::<crates_io::views::GoodCrate>(request.with_body(body))
+        .await;
+    assert_eq!(published.status(), 200, "{}", published.text());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_id_rejects_method_or_target_without_claiming() {
+    let (app, _, _user, token) = TestApp::full().with_token().await;
+    let body = PublishBuilder::new("preflight_claim_order", "1.0.0").body();
+    let descriptor = publish_preflight_descriptor("preflight_claim_order", "1.0.0", &body);
+    let ready = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(ready.status(), 200, "{}", ready.text());
+    let mutation_id = ready.json()["mutation_id"].as_str().unwrap().to_owned();
+    let body_len = body.len().to_string();
+
+    for (method, target) in [
+        (Method::POST, "/api/v1/crates/new"),
+        (
+            Method::PUT,
+            "/api/v1/crates/preflight_claim_order/1.0.0/unyank",
+        ),
+    ] {
+        let mut request = token.request_builder(method, target);
+        request.header("Cargo-Mutation-Id", &mutation_id);
+        request.header("Content-Type", "application/octet-stream");
+        request.header("Content-Length", &body_len);
+        let rejected = token.run::<Value>(request.with_body(body.clone())).await;
+        assert_eq!(rejected.status(), 400, "{}", rejected.text());
+        assert!(
+            rejected
+                .text()
+                .contains("method or request target does not match"),
+            "{}",
+            rejected.text()
+        );
+
+        let conn = app.db_conn().await;
+        let stored = ApiMfaChallenge::find(&mutation_id, &conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.mutation_state.as_deref(), Some("ready"));
+        assert!(stored.receive_expires_at.is_none());
+    }
+
+    let mut request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    request.header("Cargo-Mutation-Id", &mutation_id);
+    request.header("Content-Type", "application/octet-stream");
+    request.header("Content-Length", &body_len);
+    let published = token
+        .run::<crates_io::views::GoodCrate>(request.with_body(body))
+        .await;
+    assert_eq!(published.status(), 200, "{}", published.text());
+}
+
 fn publish_preflight_descriptor(name: &str, version: &str, body: &[u8]) -> Value {
     let metadata_size = u32::from_le_bytes(body[..4].try_into().unwrap()) as usize;
     let archive_size_offset = 4 + metadata_size;
@@ -262,6 +421,7 @@ async fn core_preflight_derives_final_endpoint_facts() {
     descriptor.remove("request_target");
     descriptor.remove("content_type");
     descriptor.insert("requested_extensions".into(), json!(["future-extension"]));
+    descriptor.insert("future_extension_hint".into(), json!("ignored"));
 
     let ready = token
         .run::<Value>(

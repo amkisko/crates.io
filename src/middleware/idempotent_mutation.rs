@@ -241,6 +241,24 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             ));
         }
 
+        let request_method = request_parts.method.clone();
+        let request_endpoint = request_parts
+            .uri
+            .path_and_query()
+            .map(|target| target.as_str())
+            .unwrap_or_else(|| request_parts.uri.path())
+            .to_owned();
+        if challenge.request_method.as_deref() != Some(request_method.as_str())
+            || challenge.request_endpoint.as_deref() != Some(request_endpoint.as_str())
+        {
+            return Err(bad_request(
+                "mutation method or request target does not match its preflight descriptor",
+            ));
+        }
+
+        // Claim only after authenticating the credential and validating every
+        // bounded request fact available before reading the body. The receive
+        // lease then bounds body receipt and digest validation.
         let state = challenge
             .mutation_state
             .as_deref()
@@ -297,13 +315,8 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
         }
         let context = Arc::new(IdempotentMutation {
             id: id.clone(),
-            method: request_parts.method.clone(),
-            endpoint: request_parts
-                .uri
-                .path_and_query()
-                .map(|target| target.as_str())
-                .unwrap_or_else(|| request_parts.uri.path())
-                .to_owned(),
+            method: request_method,
+            endpoint: request_endpoint,
             request_sha256: Sha256::digest(&bytes).to_vec(),
             request_size: challenge.request_size.unwrap_or_default(),
             idempotent_final: challenge.idempotent_final,
@@ -311,10 +324,7 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             executing: AtomicBool::new(false),
             completed: AtomicBool::new(false),
         });
-        if challenge.request_method.as_deref() != Some(context.method.as_str())
-            || challenge.request_endpoint.as_deref() != Some(context.endpoint.as_str())
-            || challenge.request_sha256.as_deref() != Some(context.request_sha256.as_slice())
-        {
+        if challenge.request_sha256.as_deref() != Some(context.request_sha256.as_slice()) {
             return Err(bad_request(
                 "mutation request does not match its preflight descriptor",
             ));
