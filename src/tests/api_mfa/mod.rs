@@ -27,7 +27,9 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
     let body = PublishBuilder::new("preflight_replay", "1.0.0")
         .add_file("preflight_replay-1.0.0/large.txt", "payload")
         .body();
-    let descriptor = publish_preflight_descriptor("preflight_replay", "1.0.0", &body);
+    let mut descriptor = publish_preflight_descriptor("preflight_replay", "1.0.0", &body);
+    let callback_url = "http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef";
+    descriptor["callback"] = json!({ "url": callback_url });
     let initial = token
         .run::<Value>(
             token
@@ -44,6 +46,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .unwrap();
     assert_eq!(challenge.request_size, Some(body.len() as i64));
     assert_eq!(challenge.mutation_state.as_deref(), Some("pending"));
+    assert_eq!(challenge.callback_url.as_deref(), Some(callback_url));
     assert_eq!(
         challenge.request_sha256,
         Some(Sha256::digest(&body).to_vec())
@@ -272,7 +275,6 @@ async fn publish_returns_operation_challenge_link() {
 
     let challenge_id = error["challenge_id"].as_str().unwrap();
     assert!(challenge_id.starts_with("stp_"));
-    assert!(error.get("verification_url").is_none());
     assert!(
         error["poll_url"]
             .as_str()
@@ -771,7 +773,6 @@ async fn explicit_callback_challenge_requires_and_binds_secret() {
         )
         .await
         .good();
-    assert!(response.get("verification_url").is_none());
     assert!(response["detail"].as_str().unwrap().contains(&format!(
         "/verify/{}",
         response["challenge_id"].as_str().unwrap()

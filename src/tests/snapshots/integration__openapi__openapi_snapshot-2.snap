@@ -891,7 +891,7 @@ expression: document
         "description": "Loopback delivery metadata for a mutation preflight.",
         "properties": {
           "url": {
-            "description": "Exact `http://127.0.0.1:{port}/cargo/registry-authorization` URL.",
+            "description": "Exact loopback URL with one random `state` query parameter.",
             "type": "string"
           }
         },

@@ -743,11 +743,11 @@ pub(crate) fn step_up_required_error(
     challenge: &ApiMfaChallenge,
     operation: &ApiMfaOperation,
 ) -> BoxedAppError {
-    let (verification_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
+    let (verification_page_url, poll_url) = public_mfa_urls(webauthn, &challenge.id);
 
     let detail = format!(
         "Additional authentication is required. Open this link to verify with your passkey:\n\n\
-         {verification_url}\n\nAfter verification, retry the request."
+         {verification_page_url}\n\nAfter verification, retry the request."
     );
 
     ApiMfaRequired {
@@ -829,9 +829,12 @@ mod tests {
         let mut config = WebauthnConfig::for_testing();
         config.rp_origin = "http://localhost:5173".parse().unwrap();
 
-        let (verification_url, poll_url) = public_mfa_urls(&config, "stp_test");
+        let (verification_page_url, poll_url) = public_mfa_urls(&config, "stp_test");
 
-        assert_eq!(verification_url, "http://localhost:5173/verify/stp_test");
+        assert_eq!(
+            verification_page_url,
+            "http://localhost:5173/verify/stp_test"
+        );
         assert_eq!(
             poll_url,
             "http://localhost:8888/api/v1/auth/challenges/stp_test"

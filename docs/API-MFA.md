@@ -84,17 +84,24 @@ Multi-owner / team crates:
 
 Upstream identity-provider account 2FA does not protect a leaked cargo token.
 
-## Design intention: human-in-the-loop signature
+## Design intention: human-in-the-loop authorization
 
 API MFA requires a recent, interactive second factor for each dangerous action. Possession of another long-lived secret is insufficient.
 
-Publishers must use a passkey, or another factor with equivalent properties: a key, token, or service that produces a cryptographic signature for this specific operation and normally requires manual interaction on the user's machine (confirm, touch, or presence). The verify page is a separate browser step: open the URL, complete the authenticator prompt, leave a server-side acknowledgment tied to that ceremony.
+Publishers must use a passkey, or another factor with equivalent properties:
+a key, token, or service that authenticates the user to crates.io and normally
+requires manual interaction on the user's machine (confirm, touch, or
+presence). The verify page is a separate browser step: open the URL, complete
+the authenticator prompt, and leave a server-side acknowledgment tied to that
+ceremony and the stored mutation descriptor. WebAuthn does not sign the
+human-readable operation summary.
 
 The goal is to make a silent publish from a stolen cargo token require a recent interactive second factor. Full automation remains possible in principle (headless WebAuthn, remote authenticators, malware on the machine); this design only removes the easy paths.
 
 Acceptable factors share these properties:
 
-- Signature (or equivalent proof) is single-use and bound to this challenge / operation.
+- The proof is single-use and bound to a registry challenge; the registry binds
+  that challenge to the stored operation.
 - Normal use involves human presence (user gesture, biometric, PIN + touch) at verification time.
 - Crates.io records a ceremony trace (challenge → acknowledgment / grant / OTP) linked to the dangerous API call.
 
@@ -102,7 +109,12 @@ WebAuthn passkeys are the supported mechanism for per-operation step-up today.
 
 Email OTP is not an API MFA factor for publish, yank, or owner actions. It is only a bootstrap / recovery step-up for settings changes (enable MFA, first or recovery passkey enrollment, disable MFA when passkeys are unavailable, and staging a verified-email change). Possession of a verified inbox is weaker than a presence-bound passkey; it blocks session-hijack paths without replacing the human-in-the-loop rule for dangerous API calls.
 
-SSH pubkey authentication is out of scope as an API MFA factor. SSH auth proves key possession to an SSH server; API MFA needs a crates.io-bound signature over the publish/yank/owner challenge, a per-operation presence step on the machine that is about to act, and a server-side ceremony record for that `challenge_id`. Agent-backed SSH (`ssh-agent`, CI keys, forwarded agents) typically supplies only silent key use. Accepting "can SSH as this user" would treat another long-lived key as MFA and miss the human-in-the-loop rule above.
+SSH pubkey authentication is out of scope as an API MFA factor. SSH auth proves
+key possession to an SSH server; API MFA needs fresh crates.io authentication,
+an intentional presence step, and a server-side ceremony record bound to the
+stored mutation. Agent-backed SSH (`ssh-agent`, CI keys, forwarded agents)
+typically supplies only silent key use. Accepting "can SSH as this user" would
+treat another long-lived key as MFA and miss the human-in-the-loop rule above.
 
 Any future factor (hardware token protocol, external signing service, etc.) must keep per-operation proof, intentional user interaction in the common case, and an auditable acknowledgment path. Silent pubkey possession alone is insufficient.
 
@@ -119,69 +131,71 @@ Completion for one request must not authorize a modified publication or a differ
 Additional properties:
 
 - Mutation ids and independent poll tokens are unguessable and short-lived.
-- Cargo keeps callback state locally and adds it to the structured verification
-  URL fragment. The page removes the fragment after capture and sends the state
-  only to the registered `127.0.0.1` listener.
+- When the optional loopback extension is used, Cargo keeps callback state
+  locally and preflights the exact `127.0.0.1` callback URL containing that
+  state. The verification page obtains this URL from the stored record.
 - `poll_url` must share the registry API origin; Cargo refuses cross-origin
   poll URLs and does not follow poll redirects. `detail` contains the complete
-  verification instructions. Cargo uses only the structured same-origin
-  `verification_url` for callback augmentation.
+  bounded plain-text verification instructions; it is displayed as inert text.
 - Non-interactive automatic mode uses `allow_pending: false`, so it cannot
   create an abandoned challenge.
 - Poll responses use `pending`, `ready`, `denied`, or `expired`.
 
-## Version advertisement and mutation preflight
+## Capability advertisement and mutation preflight
 
-The registry advertises version 1 only after each listed operation implements
-both preflight and idempotent final requests:
+The registry advertises the latest core protocol version implemented by its
+deployed code. Optional behavior is advertised independently:
 
 ```json
 {
   "mutation-authorization": {
-    "versions": [1],
-    "operations": ["publish", "yank", "unyank", "owners"]
+    "version": 1,
+    "extensions": ["idempotent-final", "loopback-callback"]
   }
 }
 ```
 
 Cargo sends an authenticated `POST /api/v1/auth/mutation-challenges` before
 the ordinary request. The body contains a fresh `preflight_id`,
-`allow_pending`, and the exact method, request target, content type, raw-body
-digest and size, plus operation-specific facts. Publish also binds the archive
-digest and size.
+`allow_pending`, the raw-body digest and size, and operation-specific facts.
+Publish also binds the archive digest and size. When `idempotent-final` is
+advertised, Cargo additionally sends the exact method, request target, and
+content type needed for safe final-request replay.
 
 The response is `ready` (200), `pending` (202), or
 `interaction_required` (403). The last result is used when `allow_pending` is
 false; it creates no record or actionable URL. Pending responses contain
-complete plain-text instructions, a mutation id, a structured verification
-URL, an independent poll-token URL, and a relative lifetime.
+complete plain-text instructions, a mutation id, an independent poll-token URL,
+and a relative lifetime. The verification-page URL is part of `detail`, not a
+separate response field.
 
-The mutation middleware authenticates the mutation id before buffering the
-body, verifies the credential, method, request target, content type, declared
-and actual size, digest, and parsed operation fields against the stored
-descriptor, serializes concurrent attempts, and replays a completed response
-instead of executing the mutation twice.
+For `idempotent-final`, the mutation middleware authenticates the mutation id
+before buffering the body, verifies the credential, method, request target,
+content type, declared and actual size, digest, and parsed operation fields
+against the stored descriptor, serializes concurrent attempts, and replays a
+completed response instead of executing the mutation twice.
 
 ## CLI handshake (primary flow)
 
 1. Register a passkey under Settings → API MFA and enable enforcement.
 2. Cargo preflights the exact mutation. Each logical invocation has its own
    `preflight_id`; only an ambiguous retry reuses it.
-3. Interactive Cargo registers
-   `http://127.0.0.1:{port}/cargo/registry-authorization` and keeps polling as a
-   fallback. Remote users select `poll`.
-4. Cargo adds client-generated `callback_state` only to the structured
-   verification URL fragment. The page removes the fragment after capture and,
-   after passkey verification, navigates to the stored loopback URL with
-   `?state=...`.
+3. When `loopback-callback` is advertised, interactive Cargo listens at an
+   exact URL such as
+   `http://127.0.0.1:{port}/cargo/registry-authorization?state={random}` and
+   includes it in preflight. Polling remains the fallback; remote users select
+   `poll`.
+4. After passkey verification, the page obtains the registered callback URL
+   from the stored record and requests it unchanged.
 5. The callback is only a wake-up signal. Cargo immediately polls and continues
    only after `ready`. Polling uses no primary credential.
 6. Cargo sends the original request with its ordinary credential and only
    `Cargo-Mutation-Id`. The registry-side exact grant authorizes that mutation.
 
-`CARGO_REGISTRY_MUTATION_AUTHORIZATION_CHANNEL` and
-`--registry-authorization` accept `auto`, `loopback`, `poll`, and `disabled`.
-Automatic non-interactive mode preflights with `allow_pending: false`.
+Core `CARGO_REGISTRY_MUTATION_AUTHORIZATION_CHANNEL` and
+`--registry-authorization` values are `auto`, `poll`, and `disabled`;
+`loopback-callback` adds `loopback`. Automatic non-interactive mode preflights
+with `allow_pending: false`.
 
 ## Enforced endpoints
 

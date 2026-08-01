@@ -13,7 +13,7 @@ const callback = vi.hoisted(() => vi.fn());
 vi.mock('$app/state', () => ({
   page: {
     params: { id: 'stp_test' },
-    url: new URL('https://crates.io/verify/stp_test#callback_secret=0123456789abcdef0123456789abcdef'),
+    url: new URL('https://crates.io/verify/stp_test'),
   },
 }));
 
@@ -22,7 +22,7 @@ vi.mock('./localhost-callback', async importOriginal => ({
   deliverLocalhostCallback: callback,
 }));
 
-const callbackUrl = 'http://127.0.0.1:34567/?code=TestOtp1&state=0123456789abcdef0123456789abcdef';
+const callbackUrl = 'http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef';
 
 function installApiHandlers(worker: SetupWorker) {
   worker.use(
@@ -49,7 +49,7 @@ function installApiHandlers(worker: SetupWorker) {
     http.post('/api/v1/auth/challenges/stp_test/finish', () =>
       HttpResponse.json({
         otp: 'TestOtp1',
-        localhost_callback_url: 'http://127.0.0.1:34567/?code=TestOtp1',
+        localhost_callback_url: callbackUrl,
         grant_expires_at: '2099-01-01T00:00:00Z',
       }),
     ),
@@ -88,7 +88,7 @@ describe('/verify/[id]', () => {
     vi.restoreAllMocks();
   });
 
-  test('reports callback success only after Cargo receives the OTP', async ({ worker }) => {
+  test('reports callback success only after Cargo receives the wake-up', async ({ worker }) => {
     installApiHandlers(worker);
     callback.mockImplementation(async () => {});
     mockPasskey();

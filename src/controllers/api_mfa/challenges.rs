@@ -71,7 +71,7 @@ pub struct CreateChallengeRequest {
     pub preflight_id: Option<String>,
     /// Whether the registry may create a pending authorization record.
     pub allow_pending: Option<bool>,
-    /// Optional exact loopback callback URL.
+    /// Optional exact loopback callback URL carrying wake-up state.
     pub callback: Option<MutationCallbackRequest>,
     /// Optional localhost port (1024–65535) for proof delivery to the CLI.
     ///
@@ -83,7 +83,7 @@ pub struct CreateChallengeRequest {
 /// Loopback delivery metadata for a mutation preflight.
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct MutationCallbackRequest {
-    /// Exact `http://127.0.0.1:{port}/cargo/registry-authorization` URL.
+    /// Exact loopback URL with one random `state` query parameter.
     pub url: String,
 }
 
@@ -102,8 +102,6 @@ pub struct CreateChallengeResponse {
     pub detail: Option<String>,
     /// URL the CLI should poll until `acknowledged` is true.
     pub poll_url: Option<String>,
-    /// Structured same-origin verification URL.
-    pub verification_url: Option<String>,
     /// Server-generated operation label.
     pub operation: Option<String>,
     /// Crate associated with the operation.
@@ -396,7 +394,7 @@ fn challenge_created_response(
     webauthn: &crate::config::WebauthnConfig,
     challenge: &ApiMfaChallenge,
 ) -> CreateChallengeResponse {
-    let (verification_url, poll_url) = mutation_authorization_urls(webauthn, challenge);
+    let (verification_page_url, poll_url) = mutation_authorization_urls(webauthn, challenge);
     let challenge_expires_in = (challenge.expires_at - Utc::now())
         .num_seconds()
         .clamp(1, 300) as u64;
@@ -405,10 +403,9 @@ fn challenge_created_response(
         challenge_id: challenge.id.clone(),
         detail: Some(format!(
             "Additional authentication is required. Open this link to verify with your passkey:\n\n\
-             {verification_url}\n\nAfter verification, retry the request."
+             {verification_page_url}\n\nAfter verification, retry the request."
         )),
         poll_url: Some(poll_url),
-        verification_url: Some(verification_url),
         protocol_version: Some(1),
         mutation_id: Some(challenge.id.clone()),
         operation: Some(challenge.operation.clone()),
@@ -429,7 +426,6 @@ fn challenge_ready_response(challenge: &ApiMfaChallenge) -> CreateChallengeRespo
         mutation_id: Some(challenge.id.clone()),
         detail: None,
         poll_url: None,
-        verification_url: None,
         operation: None,
         crate_name: None,
         operation_summary: None,
@@ -464,7 +460,6 @@ fn challenge_expired_response(challenge: &ApiMfaChallenge) -> CreateChallengeRes
         mutation_id: Some(challenge.id.clone()),
         detail: Some("The registry authorization request expired.".into()),
         poll_url: None,
-        verification_url: None,
         operation: None,
         crate_name: None,
         operation_summary: None,
@@ -483,7 +478,6 @@ fn challenge_denied_response(challenge: &ApiMfaChallenge) -> CreateChallengeResp
         mutation_id: Some(challenge.id.clone()),
         detail: Some("The registry authorization request was denied.".into()),
         poll_url: None,
-        verification_url: None,
         operation: None,
         crate_name: None,
         operation_summary: None,
@@ -554,17 +548,24 @@ fn validate_callback_url(raw: &str) -> AppResult<String> {
     let port = url
         .port()
         .ok_or_else(|| bad_request("callback.url must contain an explicit port"))?;
+    let state = url.query().and_then(|query| query.strip_prefix("state="));
+    let valid_state = state.is_some_and(|state| {
+        (22..=128).contains(&state.len())
+            && state
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    });
     if url.scheme() != "http"
         || url.host_str() != Some("127.0.0.1")
         || !(1024..=65535).contains(&port)
         || url.path() != "/cargo/registry-authorization"
-        || url.query().is_some()
+        || !valid_state
         || url.fragment().is_some()
         || !url.username().is_empty()
         || url.password().is_some()
     {
         return Err(bad_request(
-            "callback.url must be http://127.0.0.1:{port}/cargo/registry-authorization",
+            "callback.url must be http://127.0.0.1:{port}/cargo/registry-authorization?state={random}",
         ));
     }
     Ok(raw.to_owned())
@@ -1311,10 +1312,10 @@ pub struct FinishChallengeAuthRequest {
 pub struct FinishChallengeAuthResponse {
     /// One-time proof for the CLI to send as `Cargo-Step-Up-Proof`.
     pub otp: String,
-    /// Optional loopback URL where the browser can deliver the proof.
+    /// Optional exact loopback URL where the browser can wake Cargo.
     ///
-    /// This URL excludes callback state. The browser adds its fragment-held
-    /// callback secret locally, so the registry never reflects that secret.
+    /// Mutation preflights register a URL containing state. Legacy challenges
+    /// receive fragment-held state from the browser.
     pub localhost_callback_url: Option<String>,
     /// Expiry of the exact token-and-operation-scoped polling fallback grant.
     pub grant_expires_at: DateTime<Utc>,
@@ -1457,15 +1458,15 @@ pub async fn finish_api_mfa_challenge(
 /// Loopback callback details recovered for an acknowledged challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RecoverChallengeCallbackResponse {
-    /// Loopback URL without callback state. The browser adds state locally.
+    /// Legacy loopback URL without callback state. The browser adds state locally.
     pub localhost_callback_url: String,
     pub challenge_id: String,
 }
 
 /// Recover a verified callback after a browser reload or transient delivery failure.
 ///
-/// The callback secret lives only in the verification URL fragment and request
-/// header. The server stores only its hash.
+/// The legacy callback secret lives only in the verification URL fragment and
+/// request header. The server stores only its hash.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/challenges/{id}/recover",
@@ -1540,4 +1541,27 @@ fn open_callback_otp(
         .decrypt(&ciphertext)
         .map(|otp| otp.expose_secret().to_owned())
         .map_err(|err| server_error(format!("failed to open API MFA callback OTP: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_callback_url;
+
+    #[test]
+    fn mutation_callback_requires_one_bounded_state_value() {
+        let valid = "http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef";
+        assert_eq!(validate_callback_url(valid).unwrap(), valid);
+
+        for invalid in [
+            "http://127.0.0.1:34567/cargo/registry-authorization",
+            "http://127.0.0.1:34567/cargo/registry-authorization?state=short",
+            "http://127.0.0.1:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef&state=other",
+            "http://localhost:34567/cargo/registry-authorization?state=0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(
+                validate_callback_url(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
 }

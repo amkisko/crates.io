@@ -4,19 +4,18 @@ const MAX_CALLBACK_PORT = 65_535;
 type ImageFactory = () => Pick<HTMLImageElement, 'addEventListener' | 'src'>;
 type Fetch = typeof globalThis.fetch;
 
-/** Adds client-held callback state to a registry-provided loopback URL. */
+/** Adds fragment-held state to a legacy registry-provided loopback URL. */
 export function addLocalhostCallbackState(callbackUrl: string, callbackSecret: string): string {
   let url = new URL(callbackUrl);
   let port = Number(url.port);
   let legacyCallback = url.pathname === '/' && Boolean(url.searchParams.get('code'));
-  let mutationCallback = url.pathname === '/cargo/registry-authorization' && url.searchParams.size === 0;
   let valid =
     url.protocol === 'http:' &&
     url.hostname === '127.0.0.1' &&
     Number.isInteger(port) &&
     port >= MIN_CALLBACK_PORT &&
     port <= MAX_CALLBACK_PORT &&
-    (legacyCallback || mutationCallback) &&
+    legacyCallback &&
     !url.searchParams.has('state');
   if (!valid) {
     throw new Error('Invalid Cargo callback URL');

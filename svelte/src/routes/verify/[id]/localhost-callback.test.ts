@@ -9,12 +9,6 @@ describe('addLocalhostCallbackState', () => {
     );
   });
 
-  it('constructs the mutation-authorization wake-up URL', () => {
-    expect(addLocalhostCallbackState('http://127.0.0.1:34567/cargo/registry-authorization', 'callback-state')).toBe(
-      'http://127.0.0.1:34567/cargo/registry-authorization?state=callback-state',
-    );
-  });
-
   it.each([
     'https://127.0.0.1:34567/?code=TestOtp1',
     'http://localhost:34567/?code=TestOtp1',

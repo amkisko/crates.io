@@ -891,7 +891,7 @@ expression: document
         "description": "Loopback delivery metadata for a mutation preflight.",
         "properties": {
           "url": {
-            "description": "Exact `http://127.0.0.1:{port}/cargo/registry-authorization` URL.",
+            "description": "Exact loopback URL with one random `state` query parameter.",
             "type": "string"
           }
         },
@@ -1865,7 +1865,7 @@ expression: document
                       },
                       {
                         "$ref": "#/components/schemas/MutationCallbackRequest",
-                        "description": "Optional exact loopback callback URL."
+                        "description": "Optional exact loopback callback URL carrying wake-up state."
                       }
                     ]
                   },
@@ -2070,13 +2070,6 @@ expression: document
                     "status": {
                       "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
-                    },
-                    "verification_url": {
-                      "description": "Structured same-origin verification URL.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
                     }
                   },
                   "required": [
@@ -2304,13 +2297,6 @@ expression: document
                     "status": {
                       "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
-                    },
-                    "verification_url": {
-                      "description": "Structured same-origin verification URL.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
                     }
                   },
                   "required": [
@@ -2379,7 +2365,7 @@ expression: document
                       "type": "string"
                     },
                     "localhost_callback_url": {
-                      "description": "Optional loopback URL where the browser can deliver the proof.\n\nThis URL excludes callback state. The browser adds its fragment-held\ncallback secret locally, so the registry never reflects that secret.",
+                      "description": "Optional exact loopback URL where the browser can wake Cargo.\n\nMutation preflights register a URL containing state. Legacy challenges\nreceive fragment-held state from the browser.",
                       "type": [
                         "string",
                         "null"
@@ -2402,7 +2388,7 @@ expression: document
             "description": "Successful Response"
           }
         },
-        "summary": "Finish challenge verification, issue OTP + grant.",
+        "summary": "Finish verification, making a mutation ready or issuing a legacy OTP and grant.",
         "tags": [
           "users"
         ]
@@ -2410,7 +2396,7 @@ expression: document
     },
     "/api/v1/auth/challenges/{id}/recover": {
       "post": {
-        "description": "The callback secret lives only in the verification URL fragment and request\nheader. The server stores only its hash.",
+        "description": "The legacy callback secret lives only in the verification URL fragment and\nrequest header. The server stores only its hash.",
         "operationId": "recover_api_mfa_challenge_callback",
         "parameters": [
           {
@@ -2434,7 +2420,7 @@ expression: document
                       "type": "string"
                     },
                     "localhost_callback_url": {
-                      "description": "Loopback URL without callback state. The browser adds state locally.",
+                      "description": "Legacy loopback URL without callback state. The browser adds state locally.",
                       "type": "string"
                     }
                   },
@@ -2533,7 +2519,7 @@ expression: document
                       },
                       {
                         "$ref": "#/components/schemas/MutationCallbackRequest",
-                        "description": "Optional exact loopback callback URL."
+                        "description": "Optional exact loopback callback URL carrying wake-up state."
                       }
                     ]
                   },
@@ -2738,13 +2724,6 @@ expression: document
                     "status": {
                       "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
-                    },
-                    "verification_url": {
-                      "description": "Structured same-origin verification URL.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
                     }
                   },
                   "required": [
@@ -2853,13 +2832,6 @@ expression: document
                     "status": {
                       "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
-                    },
-                    "verification_url": {
-                      "description": "Structured same-origin verification URL.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
                     }
                   },
                   "required": [
