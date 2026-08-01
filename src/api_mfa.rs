@@ -573,14 +573,16 @@ async fn ensure_api_mfa_inner(
     )))
 }
 
-/// Builds absolute verification and poll URLs from the `WebAuthn` RP origin.
+/// Builds absolute verification and poll URLs from their respective origins.
 ///
-/// The verify page is a top-level capability URL and does not require a crates.io cookie.
+/// The verification page follows the WebAuthn RP origin, while polling stays on
+/// the registry API origin so Cargo can enforce same-origin requests.
 pub fn public_mfa_urls(webauthn: &WebauthnConfig, challenge_id: &str) -> (String, String) {
-    let base = webauthn.rp_origin.as_str().trim_end_matches('/');
+    let verification_base = webauthn.rp_origin.as_str().trim_end_matches('/');
+    let api_base = webauthn.api_origin.as_str().trim_end_matches('/');
     (
-        format!("{base}/verify/{challenge_id}"),
-        format!("{base}/api/v1/auth/challenges/{challenge_id}"),
+        format!("{verification_base}/verify/{challenge_id}"),
+        format!("{api_base}/api/v1/auth/challenges/{challenge_id}"),
     )
 }
 
@@ -809,4 +811,23 @@ pub(crate) fn mfa_callback_secret_from_headers(parts: &Parts) -> AppResult<Optio
         ));
     }
     Ok(Some(secret.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_mfa_urls_keep_polling_on_the_registry_api_origin() {
+        let mut config = WebauthnConfig::for_testing();
+        config.rp_origin = "http://localhost:5173".parse().unwrap();
+
+        let (verification_url, poll_url) = public_mfa_urls(&config, "stp_test");
+
+        assert_eq!(verification_url, "http://localhost:5173/verify/stp_test");
+        assert_eq!(
+            poll_url,
+            "http://localhost:8888/api/v1/auth/challenges/stp_test"
+        );
+    }
 }
