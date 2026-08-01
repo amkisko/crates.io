@@ -2,37 +2,43 @@
 
 set -e
 
-if [ -d tmp/index-bare ]; then
-    echo tmp/index-bare already exists, exiting
-    exit 0
+repo_root=$(pwd)
+index_bare="$repo_root/tmp/index-bare"
+mkdir -p "$repo_root/tmp"
+index_tmp=$(mktemp -d "$repo_root/tmp/index-tmp.XXXXXX")
+trap 'rm -rf "$index_tmp"' EXIT
+
+if [ -d "$index_bare" ]; then
+    echo "Updating existing repository in tmp/index-bare..."
+    git clone -q "$index_bare" "$index_tmp"
+else
+    echo "Initializing repository in tmp/index-bare..."
+    git init -q --bare --initial-branch=master "$index_bare"
+    git init -q --initial-branch=master "$index_tmp"
 fi
 
-mkdir -p tmp
-rm -rf tmp/index-bare tmp/index-tmp
-
-echo "Initializing repository in tmp/index-bare..."
-git init -q --bare --initial-branch=master tmp/index-bare
-
-echo "Creating temporary clone in tmp/index-tmp..."
-git init -q --initial-branch=master tmp/index-tmp
-cd tmp/index-tmp
+cd "$index_tmp"
 cat > config.json <<-EOF
 {
   "dl": "http://localhost:8888/api/v1/crates",
-  "api": "http://localhost:8888/"
+  "api": "http://localhost:8888/",
+  "step-up-auth": 1
 }
 EOF
 git add config.json
-git commit -qm 'Initial commit'
-git remote add origin file://`pwd`/../index-bare
-git push -q origin master -u > /dev/null
-cd ../..
-
-# Remove the temporary checkout
-rm -rf tmp/index-tmp
+if git diff --cached --quiet; then
+    echo "Local registry config is already up to date."
+else
+    git commit -qm 'Configure local registry'
+    if ! git remote get-url origin >/dev/null 2>&1; then
+        git remote add origin "file://$index_bare"
+    fi
+    git push -q origin master -u >/dev/null
+fi
+cd "$repo_root"
 
 # Allow the index to be exported via HTTP during local development
-touch tmp/index-bare/git-daemon-export-ok
+touch "$index_bare/git-daemon-export-ok"
 
 cat - <<-EOF
 Your local git index is ready to go!
