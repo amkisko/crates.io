@@ -8,8 +8,8 @@ mod webauthn_credential;
 
 pub use ceremony::{KIND_AUTHENTICATION, KIND_REGISTRATION, WebauthnCeremonyState};
 pub use challenge::{
-    ApiMfaChallenge, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge,
-    NewApiMfaChallengeOperation, NewApiMfaMutationDescriptor,
+    ApiMfaChallenge, DEFAULT_CHALLENGE_DURATION_SECS, MAX_PENDING_CHALLENGES_PER_USER,
+    NewApiMfaChallenge, NewApiMfaChallengeOperation, NewApiMfaMutationDescriptor,
 };
 pub use email_otp::{ApiMfaEmailOtp, DEFAULT_EMAIL_OTP_DURATION_SECS};
 pub use grant::{ApiMfaGrant, NewApiMfaGrant};

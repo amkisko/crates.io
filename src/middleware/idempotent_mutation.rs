@@ -10,7 +10,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use diesel::sql_types::{BigInt, Text};
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use http::{HeaderMap, Method, StatusCode};
+use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -36,9 +36,21 @@ pub struct IdempotentMutation {
 }
 
 impl IdempotentMutation {
-    /// Allows the middleware to retain the endpoint's terminal response.
-    pub fn authorize_execution(&self) {
+    /// Enters execution after endpoint parsing has matched the preflight.
+    pub async fn authorize_execution(
+        &self,
+        conn: &diesel_async::AsyncPgConnection,
+    ) -> crate::util::errors::AppResult<()> {
+        let challenge = ApiMfaChallenge::find(&self.id, conn)
+            .await?
+            .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
+        if !challenge.begin_execution(conn).await? {
+            return Err(bad_request(
+                "Cargo-Mutation-Id is not in a receivable state",
+            ));
+        }
         self.authorized.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn execution_authorized(&self) -> bool {
@@ -99,15 +111,16 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             .await?;
             let _ = lock.lock_key;
 
+            // Lifecycle updates use a separate connection so they commit
+            // while this transaction retains only the per-id advisory lock.
+            let state_conn = app.db_write().await?;
+
             // Resolve the preflight before accepting its body. This bounds the
             // allocation by the authenticated descriptor and rejects unknown
             // mutation IDs without buffering attacker-selected bytes.
-            let challenge = ApiMfaChallenge::find(&id, conn)
+            let challenge = ApiMfaChallenge::find(&id, &state_conn)
                 .await?
                 .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
-            if challenge.expires_at <= chrono::Utc::now() && challenge.completed_at.is_none() {
-                return Err(bad_request("Cargo-Mutation-Id is expired"));
-            }
             if challenge.api_token_id != Some(token_id) {
                 return Err(bad_request(
                     "Cargo-Mutation-Id belongs to a different credential",
@@ -150,6 +163,36 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
                     "mutation Content-Type does not match its preflight descriptor",
                 ));
             }
+
+            let state = challenge.mutation_state.as_deref().ok_or_else(|| {
+                bad_request("Cargo-Mutation-Id is not a versioned mutation record")
+            })?;
+            match state {
+                "ready" => {
+                    if challenge.begin_receiving(&state_conn).await?.is_none() {
+                        return Err(bad_request("Cargo-Mutation-Id grant is expired"));
+                    }
+                }
+                "receiving" => {
+                    if challenge
+                        .receive_expires_at
+                        .is_none_or(|deadline| deadline <= chrono::Utc::now())
+                    {
+                        challenge.expire_receiving(&state_conn).await?;
+                        return Err(bad_request("Cargo-Mutation-Id receive lease is expired"));
+                    }
+                }
+                "executing" => return Ok(execution_in_progress_response()),
+                "terminal" => {}
+                "pending" => return Err(bad_request("Cargo-Mutation-Id is not ready")),
+                "denied" => return Err(bad_request("Cargo-Mutation-Id was denied")),
+                "expired" => return Err(bad_request("Cargo-Mutation-Id is expired")),
+                _ => {
+                    return Err(server_error(
+                        "Cargo-Mutation-Id has an invalid lifecycle state",
+                    ));
+                }
+            }
             let bytes = to_bytes(request_body, expected_size)
                 .await
                 .map_err(|_| bad_request("mutation request exceeds its preflight size"))?;
@@ -182,6 +225,7 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             if let Some(response) = replay_response(&challenge) {
                 return Ok(response);
             }
+            drop(state_conn);
             let mut request = Request::from_parts(request_parts, Body::from(bytes));
             request.extensions_mut().insert(context.clone());
 
@@ -193,7 +237,7 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
             let (parts, body) = response.into_parts();
             let bytes = to_bytes(body, usize::MAX).await.map_err(server_error)?;
             let headers = replay_headers(&parts.headers);
-            challenge
+            let stored = challenge
                 .store_terminal_response(
                     i32::from(parts.status.as_u16()),
                     headers,
@@ -201,11 +245,28 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
                     conn,
                 )
                 .await?;
+            if !stored {
+                return Err(server_error(
+                    "Cargo-Mutation-Id terminal response could not be stored",
+                ));
+            }
             Ok(Response::from_parts(parts, Body::from(bytes)))
         })
         .await;
 
     result.unwrap_or_else(IntoResponse::into_response)
+}
+
+fn execution_in_progress_response() -> Response {
+    let mut response = (
+        StatusCode::TOO_EARLY,
+        "mutation execution is already in progress",
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response
 }
 
 fn replay_headers(headers: &HeaderMap) -> serde_json::Value {

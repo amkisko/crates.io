@@ -11,8 +11,9 @@ use crate::auth::{AuthCheck, AuthHeader, Authentication};
 use crate::middleware::real_ip::RealIp;
 use crate::models::token::EndpointScope;
 use crate::models::{
-    ApiMfaChallenge, Crate, MAX_PENDING_CHALLENGES_PER_USER, NewApiMfaChallenge,
-    NewApiMfaChallengeOperation, NewApiMfaGrant, NewApiMfaMutationDescriptor, WebauthnCredential,
+    ApiMfaChallenge, Crate, DEFAULT_CHALLENGE_DURATION_SECS, MAX_PENDING_CHALLENGES_PER_USER,
+    NewApiMfaChallenge, NewApiMfaChallengeOperation, NewApiMfaGrant, NewApiMfaMutationDescriptor,
+    WebauthnCredential,
 };
 use crate::rate_limiter::LimitedAction;
 use crate::util::errors::{AppResult, bad_request, forbidden, not_found, server_error};
@@ -89,7 +90,7 @@ pub struct MutationCallbackRequest {
 /// Instructions and timing information for a newly created API MFA challenge.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CreateChallengeResponse {
-    /// `pending` for a manual challenge or `acknowledged` when mutation may start.
+    /// Mutation protocol state, or the legacy manual challenge state.
     pub status: String,
     /// Opaque step-up challenge identifier.
     pub challenge_id: String,
@@ -253,6 +254,11 @@ pub async fn create_api_mfa_challenge(
     if let Some(existing) = existing {
         if let (Some(protocol), Some(descriptor)) = (&protocol, &descriptor) {
             validate_preflight_retry(&existing, protocol, descriptor)?;
+            if existing.mutation_state.as_deref() == Some("denied")
+                && existing.expires_at > Utc::now()
+            {
+                return Ok((no_store(), Json(challenge_denied_response(&existing))).into_response());
+            }
             if existing.is_acknowledged() {
                 if existing.completed_at.is_none() && grant_expires_in(&existing).is_none() {
                     return Ok(
@@ -341,20 +347,7 @@ pub async fn create_api_mfa_challenge(
     }
 
     if requested_operation != "manual" && !requires_pending {
-        conn.transaction(async |conn| {
-            challenge.mark_ready(conn).await?;
-            NewApiMfaGrant::for_operation(
-                user.id,
-                token.id,
-                operation.kind.to_owned(),
-                operation.crate_name.clone(),
-                operation.mutation_fingerprint.clone(),
-            )
-            .insert(conn)
-            .await?;
-            Ok::<_, diesel::result::Error>(())
-        })
-        .await?;
+        challenge.mark_ready(&conn).await?;
         return Ok((no_store(), Json(challenge_ready_response(&challenge))).into_response());
     }
 
@@ -448,7 +441,17 @@ fn challenge_ready_response(challenge: &ApiMfaChallenge) -> CreateChallengeRespo
 }
 
 fn grant_expires_in(challenge: &ApiMfaChallenge) -> Option<u64> {
-    let deadline = challenge.verified_at? + chrono::TimeDelta::seconds(300);
+    if challenge.mutation_state.as_deref() == Some("terminal") {
+        return Some(300);
+    }
+    if challenge.mutation_state.as_deref() == Some("executing") {
+        return Some(1);
+    }
+    let deadline = if challenge.mutation_state.as_deref() == Some("receiving") {
+        challenge.receive_expires_at?
+    } else {
+        challenge.verified_at? + chrono::TimeDelta::seconds(300)
+    };
     let remaining = (deadline - Utc::now()).num_seconds();
     (remaining > 0).then_some(remaining.min(300) as u64)
 }
@@ -460,6 +463,25 @@ fn challenge_expired_response(challenge: &ApiMfaChallenge) -> CreateChallengeRes
         protocol_version: Some(1),
         mutation_id: Some(challenge.id.clone()),
         detail: Some("The registry authorization request expired.".into()),
+        poll_url: None,
+        verification_url: None,
+        operation: None,
+        crate_name: None,
+        operation_summary: None,
+        challenge_expires_in: None,
+        grant_expires_in: None,
+        expires_at: challenge.expires_at,
+        recommended_poll_interval_secs: None,
+    }
+}
+
+fn challenge_denied_response(challenge: &ApiMfaChallenge) -> CreateChallengeResponse {
+    CreateChallengeResponse {
+        status: "denied".into(),
+        challenge_id: challenge.id.clone(),
+        protocol_version: Some(1),
+        mutation_id: Some(challenge.id.clone()),
+        detail: Some("The registry authorization request was denied.".into()),
         poll_url: None,
         verification_url: None,
         operation: None,
@@ -627,9 +649,6 @@ fn validate_mutation_descriptor(
     }
     let crate_name = required_descriptor_field(body.crate_name.as_deref(), "crate")?;
     crates_io_validation::validate_crate_name("crate", crate_name).map_err(bad_request)?;
-    let method = required_descriptor_field(body.method.as_deref(), "method")?.to_uppercase();
-    let request_target =
-        required_descriptor_field(body.request_target.as_deref(), "request_target")?;
     let request_sha256 = decode_sha256(
         required_descriptor_field(body.request_sha256.as_deref(), "request_sha256")?,
         "request_sha256",
@@ -639,19 +658,22 @@ fn validate_mutation_descriptor(
         .filter(|size| *size >= 0)
         .ok_or_else(|| bad_request("request_size must be a non-negative integer"))?;
 
-    let (kind, summary) = match operation {
+    let (kind, summary, method, request_target, content_type) = match operation {
         "publish" => {
             let version = required_descriptor_field(body.version.as_deref(), "version")?;
             semver::Version::parse(version)
                 .map_err(|_| bad_request("version is not valid semver"))?;
-            if method != "PUT" || request_target != "/api/v1/crates/new" {
-                return Err(bad_request("publish must describe PUT /api/v1/crates/new"));
-            }
-            if body.content_type.as_deref() != Some("application/octet-stream") {
-                return Err(bad_request(
-                    "publish content_type must be application/octet-stream",
-                ));
-            }
+            validate_derived_method(body.method.as_deref(), "PUT")?;
+            validate_derived_field(
+                body.request_target.as_deref(),
+                "/api/v1/crates/new",
+                "request_target",
+            )?;
+            validate_derived_field(
+                body.content_type.as_deref(),
+                "application/octet-stream",
+                "content_type",
+            )?;
             decode_sha256(
                 required_descriptor_field(body.archive_sha256.as_deref(), "archive_sha256")?,
                 "archive_sha256",
@@ -673,7 +695,13 @@ fn validate_mutation_descriptor(
                     "publish request overhead exceeds the metadata limit",
                 ));
             }
-            ("publish", format!("Publish {crate_name} {version}"))
+            (
+                "publish",
+                format!("Publish {crate_name} {version}"),
+                "PUT".to_owned(),
+                "/api/v1/crates/new".to_owned(),
+                Some("application/octet-stream"),
+            )
         }
         "yank" | "unyank" => {
             let version = required_descriptor_field(body.version.as_deref(), "version")?;
@@ -682,11 +710,12 @@ fn validate_mutation_descriptor(
             let action = operation;
             let expected_method = if operation == "yank" { "DELETE" } else { "PUT" };
             let expected_endpoint = format!("/api/v1/crates/{crate_name}/{version}/{action}");
-            if method != expected_method || request_target != expected_endpoint {
-                return Err(bad_request(format!(
-                    "{operation} descriptor method or request_target does not match its fields"
-                )));
-            }
+            validate_derived_method(body.method.as_deref(), expected_method)?;
+            validate_derived_field(
+                body.request_target.as_deref(),
+                &expected_endpoint,
+                "request_target",
+            )?;
             if body.content_type.is_some() {
                 return Err(bad_request(format!(
                     "{operation} content_type must be null"
@@ -709,6 +738,9 @@ fn validate_mutation_descriptor(
                     "unyank"
                 },
                 format!("{verb} {crate_name} {version}"),
+                expected_method.to_owned(),
+                expected_endpoint,
+                None,
             )
         }
         "owners" => {
@@ -722,14 +754,17 @@ fn validate_mutation_descriptor(
                 _ => return Err(bad_request("direction must be `add` or `remove`")),
             };
             let expected_endpoint = format!("/api/v1/crates/{crate_name}/owners");
-            if method != expected_method || request_target != expected_endpoint {
-                return Err(bad_request(
-                    "owners descriptor method or request_target does not match its fields",
-                ));
-            }
-            if body.content_type.as_deref() != Some("application/json") {
-                return Err(bad_request("owners content_type must be application/json"));
-            }
+            validate_derived_method(body.method.as_deref(), expected_method)?;
+            validate_derived_field(
+                body.request_target.as_deref(),
+                &expected_endpoint,
+                "request_target",
+            )?;
+            validate_derived_field(
+                body.content_type.as_deref(),
+                "application/json",
+                "content_type",
+            )?;
             let owners = body
                 .owners
                 .as_ref()
@@ -741,6 +776,9 @@ fn validate_mutation_descriptor(
             (
                 "owners",
                 format!("{verb} owners for {crate_name}: {}", owners.join(", ")),
+                expected_method.to_owned(),
+                expected_endpoint,
+                Some("application/json"),
             )
         }
         _ => {
@@ -753,15 +791,12 @@ fn validate_mutation_descriptor(
     let mut descriptor = serde_json::Map::from_iter([
         ("protocol_version".to_owned(), serde_json::json!(1)),
         ("operation".to_owned(), serde_json::json!(kind)),
-        ("method".to_owned(), serde_json::json!(method)),
+        ("method".to_owned(), serde_json::json!(&method)),
         (
             "request_target".to_owned(),
-            serde_json::json!(request_target),
+            serde_json::json!(&request_target),
         ),
-        (
-            "content_type".to_owned(),
-            serde_json::json!(body.content_type),
-        ),
+        ("content_type".to_owned(), serde_json::json!(content_type)),
         ("crate".to_owned(), serde_json::json!(crate_name)),
         (
             "request_sha256".to_owned(),
@@ -798,11 +833,29 @@ fn validate_mutation_descriptor(
         stored: NewApiMfaMutationDescriptor {
             descriptor_json,
             request_method: method,
-            request_endpoint: request_target.to_owned(),
+            request_endpoint: request_target,
             request_sha256,
             request_size,
         },
     })
+}
+
+fn validate_derived_method(supplied: Option<&str>, expected: &str) -> AppResult<()> {
+    if supplied.is_some_and(|supplied| !supplied.trim().eq_ignore_ascii_case(expected)) {
+        return Err(bad_request(format!(
+            "method contradicts the server-derived value `{expected}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_derived_field(supplied: Option<&str>, expected: &str, field: &str) -> AppResult<()> {
+    if supplied.is_some_and(|supplied| supplied.trim() != expected) {
+        return Err(bad_request(format!(
+            "{field} contradicts the server-derived value `{expected}`"
+        )));
+    }
+    Ok(())
 }
 
 fn required_descriptor_field<'a>(value: Option<&'a str>, name: &str) -> AppResult<&'a str> {
@@ -904,7 +957,7 @@ async fn insert_preflight_or_reuse(
 pub struct GetChallengeResponse {
     /// Opaque step-up challenge identifier.
     pub challenge_id: String,
-    /// `pending` until passkey succeeds, then `acknowledged`.
+    /// `pending`, `acknowledged`, or `denied`.
     pub status: String,
     /// True once the browser passkey ceremony has acknowledged the operation.
     pub acknowledged: bool,
@@ -923,8 +976,10 @@ pub struct GetChallengeResponse {
 /// Read-only mutation-authorization status returned through a poll token.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PollMutationAuthorizationResponse {
-    /// One of `pending`, `ready`, or `expired`.
+    /// One of `pending`, `ready`, `denied`, or `expired`.
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub challenge_expires_in: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -961,46 +1016,60 @@ pub async fn poll_mutation_authorization(
     app.instance_metrics.api_mfa_challenge_polls_total.inc();
 
     let now = Utc::now();
-    let response = if challenge.completed_at.is_some() {
-        PollMutationAuthorizationResponse {
-            status: "ready".into(),
-            challenge_expires_in: None,
-            grant_expires_in: Some(300),
-            recommended_poll_interval_secs: None,
-        }
-    } else if challenge.is_acknowledged() {
-        if let Some(grant_expires_in) = grant_expires_in(&challenge) {
+    let response =
+        if challenge.mutation_state.as_deref() == Some("denied") && challenge.expires_at > now {
             PollMutationAuthorizationResponse {
-                status: "ready".into(),
-                challenge_expires_in: None,
-                grant_expires_in: Some(grant_expires_in),
-                recommended_poll_interval_secs: None,
-            }
-        } else {
-            PollMutationAuthorizationResponse {
-                status: "expired".into(),
+                status: "denied".into(),
+                detail: Some("The registry authorization request was denied.".into()),
                 challenge_expires_in: None,
                 grant_expires_in: None,
                 recommended_poll_interval_secs: None,
             }
-        }
-    } else if challenge.expires_at <= now {
-        PollMutationAuthorizationResponse {
-            status: "expired".into(),
-            challenge_expires_in: None,
-            grant_expires_in: None,
-            recommended_poll_interval_secs: None,
-        }
-    } else {
-        PollMutationAuthorizationResponse {
-            status: "pending".into(),
-            challenge_expires_in: Some(
-                (challenge.expires_at - now).num_seconds().clamp(1, 300) as u64
-            ),
-            grant_expires_in: None,
-            recommended_poll_interval_secs: Some(RECOMMENDED_POLL_INTERVAL_SECS),
-        }
-    };
+        } else if challenge.completed_at.is_some() {
+            PollMutationAuthorizationResponse {
+                status: "ready".into(),
+                detail: None,
+                challenge_expires_in: None,
+                grant_expires_in: Some(300),
+                recommended_poll_interval_secs: None,
+            }
+        } else if challenge.is_acknowledged() {
+            if let Some(grant_expires_in) = grant_expires_in(&challenge) {
+                PollMutationAuthorizationResponse {
+                    status: "ready".into(),
+                    detail: None,
+                    challenge_expires_in: None,
+                    grant_expires_in: Some(grant_expires_in),
+                    recommended_poll_interval_secs: None,
+                }
+            } else {
+                PollMutationAuthorizationResponse {
+                    status: "expired".into(),
+                    detail: None,
+                    challenge_expires_in: None,
+                    grant_expires_in: None,
+                    recommended_poll_interval_secs: None,
+                }
+            }
+        } else if challenge.expires_at <= now {
+            PollMutationAuthorizationResponse {
+                status: "expired".into(),
+                detail: None,
+                challenge_expires_in: None,
+                grant_expires_in: None,
+                recommended_poll_interval_secs: None,
+            }
+        } else {
+            PollMutationAuthorizationResponse {
+                status: "pending".into(),
+                detail: None,
+                challenge_expires_in: Some(
+                    (challenge.expires_at - now).num_seconds().clamp(1, 300) as u64,
+                ),
+                grant_expires_in: None,
+                recommended_poll_interval_secs: Some(RECOMMENDED_POLL_INTERVAL_SECS),
+            }
+        };
     Ok((no_store(), Json(response)))
 }
 
@@ -1066,15 +1135,18 @@ pub async fn get_api_mfa_challenge(
     }
 
     let acknowledged = challenge.is_acknowledged();
+    let status = if challenge.mutation_state.as_deref() == Some("denied") {
+        "denied"
+    } else if acknowledged {
+        "acknowledged"
+    } else {
+        "pending"
+    };
     Ok((
         no_store(),
         Json(GetChallengeResponse {
             challenge_id: challenge.id,
-            status: if acknowledged {
-                "acknowledged".into()
-            } else {
-                "pending".into()
-            },
+            status: status.into(),
             acknowledged,
             verified: acknowledged,
             operation: challenge.operation,
@@ -1085,6 +1157,41 @@ pub async fn get_api_mfa_challenge(
             recommended_poll_interval_secs: RECOMMENDED_POLL_INTERVAL_SECS,
         }),
     ))
+}
+
+/// Deny a pending mutation authorization from its verification page.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/challenges/{id}/deny",
+    params(("id" = String, Path, description = "Challenge ID")),
+    tag = "users",
+    extensions(("x-internal" = json!(true))),
+    responses((status = 200, description = "Mutation authorization denied", body = inline(CreateChallengeResponse))),
+)]
+pub async fn deny_api_mfa_challenge(
+    app: AppState,
+    Path(id): Path<String>,
+    req: Parts,
+) -> AppResult<(TypedHeader<CacheControl>, Json<CreateChallengeResponse>)> {
+    let mut conn = app.db_write().await?;
+    let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
+        return Err(not_found());
+    };
+    if challenge.mutation_state.is_none() {
+        return Err(bad_request("only mutation authorizations can be denied"));
+    }
+
+    rate_limit_challenge_ceremony(&app, &challenge, &req, &mut conn).await?;
+    if challenge.mutation_state.as_deref() != Some("denied") && !challenge.deny(&conn).await? {
+        return Err(bad_request(
+            "this mutation authorization is no longer pending",
+        ));
+    }
+
+    let challenge = ApiMfaChallenge::find(&id, &conn)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok((no_store(), Json(challenge_denied_response(&challenge))))
 }
 
 fn authorize_challenge_read(auth: &Authentication, challenge: &ApiMfaChallenge) -> AppResult<()> {
@@ -1161,6 +1268,9 @@ pub async fn start_api_mfa_challenge(
     let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
         return Err(not_found());
     };
+    if challenge.mutation_state.as_deref() == Some("denied") {
+        return Err(bad_request("this mutation authorization was denied"));
+    }
     if challenge.verified_at.is_some() {
         return Err(bad_request("this challenge is already acknowledged"));
     }
@@ -1211,7 +1321,7 @@ pub struct FinishChallengeAuthResponse {
     pub challenge_id: String,
 }
 
-/// Finish challenge verification, issue OTP + grant.
+/// Finish verification, making a mutation ready or issuing a legacy OTP and grant.
 ///
 /// Unauthenticated: passkey assertion for the challenge owner's credentials is
 /// the only factor (no crates.io cookie). `cargo login` must already have
@@ -1236,6 +1346,9 @@ pub async fn finish_api_mfa_challenge(
     let Some(challenge) = ApiMfaChallenge::find_active(&id, &conn).await? else {
         return Err(not_found());
     };
+    if challenge.mutation_state.as_deref() == Some("denied") {
+        return Err(bad_request("this mutation authorization was denied"));
+    }
     if challenge.verified_at.is_some() {
         return Err(bad_request("this challenge is already acknowledged"));
     }
@@ -1275,8 +1388,8 @@ pub async fn finish_api_mfa_challenge(
         bad_request("challenge is missing api_token_id; cannot issue a token-bound grant")
     })?;
 
-    // Ack + scoped grant in one transaction so callback and poll are always
-    // interchangeable completion channels for the exact token + operation.
+    // Commit legacy grants or the exact mutation record's ready state in one
+    // transaction so callback and poll observe the same completion outcome.
     let grant_expires_at: Option<DateTime<Utc>> = conn
         .transaction(async |conn| {
             if !challenge
@@ -1286,16 +1399,22 @@ pub async fn finish_api_mfa_challenge(
                 return Ok::<_, diesel::result::Error>(None);
             }
 
-            let grant = NewApiMfaGrant::for_operation(
-                challenge.user_id,
-                grant_token_id,
-                challenge.operation.clone(),
-                challenge.crate_name.clone(),
-                challenge.mutation_fingerprint.clone(),
-            )
-            .insert(conn)
-            .await?;
-            Ok(Some(grant.expires_at))
+            if challenge.preflight_id.is_some() {
+                Ok(Some(
+                    Utc::now() + chrono::TimeDelta::seconds(DEFAULT_CHALLENGE_DURATION_SECS),
+                ))
+            } else {
+                let grant = NewApiMfaGrant::for_operation(
+                    challenge.user_id,
+                    grant_token_id,
+                    challenge.operation.clone(),
+                    challenge.crate_name.clone(),
+                    challenge.mutation_fingerprint.clone(),
+                )
+                .insert(conn)
+                .await?;
+                Ok(Some(grant.expires_at))
+            }
         })
         .await?;
 

@@ -24,8 +24,8 @@ cat > config.json <<-EOF
   "dl": "http://localhost:8888/api/v1/crates",
   "api": "${registry_api_url%/}/",
   "mutation-authorization": {
-    "versions": [1],
-    "operations": ["publish", "yank", "unyank", "owners"]
+    "version": 1,
+    "extensions": ["loopback-callback"]
   }
 }
 EOF

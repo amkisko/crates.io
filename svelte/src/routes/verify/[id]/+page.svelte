@@ -18,6 +18,7 @@
   let busy = $state(false);
   let loading = $state(true);
   let done = $state(false);
+  let denied = $state(false);
   let localhostCallbackUrl = $state<string | null>(null);
   let callbackDeliveryBusy = $state(false);
   let callbackDeliveryFailed = $state(false);
@@ -50,7 +51,9 @@
         throw new Error('Challenge not found or expired');
       }
       meta = response.data;
-      if (meta?.acknowledged) {
+      if (meta?.status === 'denied') {
+        denied = true;
+      } else if (meta?.acknowledged) {
         done = true;
         if (meta.localhost_port && callbackSecret) {
           try {
@@ -125,6 +128,25 @@
     }
   }
 
+  async function deny() {
+    busy = true;
+    try {
+      let response = await fetch(`/api/v1/auth/challenges/${challengeId}/deny`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        let body = await response.json().catch(() => null);
+        throw new Error(body?.errors?.[0]?.detail ?? 'Failed to deny authorization');
+      }
+      denied = true;
+      notifications.success('Authorization denied. You may return to the command line.');
+    } catch (error) {
+      notifications.error(error instanceof Error ? error.message : 'Failed to deny authorization.');
+    } finally {
+      busy = false;
+    }
+  }
+
   async function recoverLocalhostCallback() {
     let recovery = await fetch(`/api/v1/auth/challenges/${challengeId}/recover`, {
       method: 'POST',
@@ -184,7 +206,9 @@
   }
 
   let pageHeading = $derived.by(() => {
-    if (done) {
+    if (denied) {
+      return 'Authorization denied';
+    } else if (done) {
       return callbackDeliveryFailed ? 'Cargo was not reached' : 'Passkey verified';
     }
     if (loadError) {
@@ -212,6 +236,8 @@
     <LoadingSpinner />
   {:else if loadError}
     <p role="alert" data-test-verify-error>{loadError}</p>
+  {:else if denied}
+    <p role="status" data-test-verify-denied>This operation will not be authorized. You may close this window.</p>
   {:else if done}
     {#if meta}
       <p class="summary" data-test-operation-summary>
@@ -257,6 +283,9 @@
           <LoadingSpinner theme="light" class="spinner" label={null} />
         {/if}
       </button>
+      <button type="button" class="button button--red" disabled={busy} onclick={deny} data-test-deny-authorization>
+        Deny
+      </button>
     </div>
   {/if}
 </div>
@@ -289,6 +318,7 @@
 
   .actions {
     display: flex;
+    gap: var(--space-s);
     justify-content: center;
     margin-top: var(--space-m);
   }

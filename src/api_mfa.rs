@@ -307,9 +307,10 @@ enum EnsureOutcome {
 /// through this helper.
 ///
 /// Acceptance when MFA is enabled:
-/// 1. A non-expired [`ApiMfaGrant`] covering this operation/crate, or
-/// 2. A valid unused proof for this operation/crate in `Cargo-Step-Up-Proof` (token clients), or
-/// 3. For API tokens only: create/reuse a short-lived operation challenge (`403` handshake).
+/// 1. An exact ready mutation record supplied through `Cargo-Mutation-Id`,
+/// 2. A non-expired [`ApiMfaGrant`] covering this operation/crate,
+/// 3. A valid unused proof for this operation/crate in `Cargo-Step-Up-Proof` (token clients), or
+/// 4. For API tokens only: create/reuse a short-lived operation challenge (`403` handshake).
 ///
 /// Cookie sessions without a grant are told to use Settings → API MFA → Authorize for 15 minutes.
 pub async fn ensure_api_mfa(
@@ -321,10 +322,14 @@ pub async fn ensure_api_mfa(
 ) -> AppResult<()> {
     let user = auth.user();
     let mutation_context = validate_idempotent_mutation(auth, parts, conn, &mut operation).await?;
+    if let Some(context) = mutation_context {
+        // The ready mutation record is the exact credential-and-request-bound
+        // grant. Its receive lease is independent of legacy general-purpose
+        // API MFA grants.
+        context.authorize_execution(conn).await?;
+        return Ok(());
+    }
     if !deps.enforcement_enabled {
-        if let Some(context) = mutation_context {
-            context.authorize_execution();
-        }
         return Ok(());
     }
 
@@ -341,9 +346,6 @@ pub async fn ensure_api_mfa(
                  Sign in on the website, enable API MFA under Settings → API MFA, \
                  register a passkey, then retry.",
             ));
-        }
-        if let Some(context) = mutation_context {
-            context.authorize_execution();
         }
         return Ok(());
     }
@@ -385,11 +387,6 @@ pub async fn ensure_api_mfa(
         .with_label_values(&[label])
         .observe(started.elapsed().as_secs_f64());
 
-    if result.is_ok()
-        && let Some(context) = mutation_context
-    {
-        context.authorize_execution();
-    }
     result
 }
 
@@ -424,7 +421,7 @@ async fn validate_idempotent_mutation(
             "Cargo-Mutation-Id requires API token authentication",
         ));
     };
-    let challenge = ApiMfaChallenge::find_active(&context.id, conn)
+    let challenge = ApiMfaChallenge::find(&context.id, conn)
         .await?
         .ok_or_else(|| bad_request("Cargo-Mutation-Id is unknown or expired"))?;
     if challenge.api_token_id != Some(token_id) {
@@ -468,6 +465,15 @@ async fn validate_idempotent_mutation(
     }
     if !challenge.is_acknowledged() {
         return Err(bad_request("mutation challenge has not been acknowledged"));
+    }
+    if challenge.mutation_state.as_deref() != Some("receiving")
+        || challenge
+            .receive_expires_at
+            .is_none_or(|deadline| deadline <= chrono::Utc::now())
+    {
+        return Err(bad_request(
+            "Cargo-Mutation-Id is outside its receive lease",
+        ));
     }
 
     // Proofs and grants were issued against the descriptor fingerprint, not

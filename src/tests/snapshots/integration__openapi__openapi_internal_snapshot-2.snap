@@ -2068,7 +2068,7 @@ expression: document
                       ]
                     },
                     "status": {
-                      "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
+                      "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
                     },
                     "verification_url": {
@@ -2163,7 +2163,7 @@ expression: document
                       "type": "integer"
                     },
                     "status": {
-                      "description": "`pending` until passkey succeeds, then `acknowledged`.",
+                      "description": "`pending`, `acknowledged`, or `denied`.",
                       "type": "string"
                     },
                     "verified": {
@@ -2189,6 +2189,143 @@ expression: document
           }
         },
         "summary": "Poll an API MFA challenge until the browser acknowledges it.",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/challenges/{id}/deny": {
+      "post": {
+        "operationId": "deny_api_mfa_challenge",
+        "parameters": [
+          {
+            "description": "Challenge ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Instructions and timing information for a newly created API MFA challenge.",
+                  "properties": {
+                    "challenge_expires_in": {
+                      "description": "Conservative remaining pending lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "challenge_id": {
+                      "description": "Opaque step-up challenge identifier.",
+                      "type": "string"
+                    },
+                    "crate": {
+                      "description": "Crate associated with the operation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "detail": {
+                      "description": "Complete human-readable instructions for satisfying the challenge.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "grant_expires_in": {
+                      "description": "Conservative remaining ready-grant lifetime in seconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "mutation_id": {
+                      "description": "Mutation record identifier sent on the final request.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "description": "Server-generated operation label.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_summary": {
+                      "description": "Server-generated summary of the exact mutation.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "poll_url": {
+                      "description": "URL the CLI should poll until `acknowledged` is true.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "protocol_version": {
+                      "description": "Selected mutation-authorization protocol version.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "recommended_poll_interval_secs": {
+                      "description": "Suggested seconds between CLI polls of `poll_url`.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "description": "Mutation protocol state, or the legacy manual challenge state.",
+                      "type": "string"
+                    },
+                    "verification_url": {
+                      "description": "Structured same-origin verification URL.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "challenge_id",
+                    "expires_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Mutation authorization denied"
+          }
+        },
+        "summary": "Deny a pending mutation authorization from its verification page.",
         "tags": [
           "users"
         ]
@@ -2599,7 +2736,7 @@ expression: document
                       ]
                     },
                     "status": {
-                      "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
+                      "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
                     },
                     "verification_url": {
@@ -2714,7 +2851,7 @@ expression: document
                       ]
                     },
                     "status": {
-                      "description": "`pending` for a manual challenge or `acknowledged` when mutation may start.",
+                      "description": "Mutation protocol state, or the legacy manual challenge state.",
                       "type": "string"
                     },
                     "verification_url": {
@@ -2780,6 +2917,12 @@ expression: document
                         "null"
                       ]
                     },
+                    "detail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "grant_expires_in": {
                       "format": "int64",
                       "minimum": 0,
@@ -2797,7 +2940,7 @@ expression: document
                       ]
                     },
                     "status": {
-                      "description": "One of `pending`, `ready`, or `expired`.",
+                      "description": "One of `pending`, `ready`, `denied`, or `expired`.",
                       "type": "string"
                     }
                   },

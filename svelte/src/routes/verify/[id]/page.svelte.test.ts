@@ -53,6 +53,12 @@ function installApiHandlers(worker: SetupWorker) {
         grant_expires_at: '2099-01-01T00:00:00Z',
       }),
     ),
+    http.post('/api/v1/auth/challenges/stp_test/deny', () =>
+      HttpResponse.json({
+        challenge_id: 'stp_test',
+        status: 'denied',
+      }),
+    ),
   );
 }
 
@@ -107,5 +113,17 @@ describe('/verify/[id]', () => {
 
     await expect.element(page.getByCSS('[data-test-verify-success]')).toBeInTheDocument();
     expect(callback).toHaveBeenCalledTimes(2);
+  });
+
+  test('denies a pending mutation without starting passkey verification', async ({ worker }) => {
+    installApiHandlers(worker);
+    let passkey = mockPasskey();
+
+    await render(PageTestWrapper);
+    await page.getByCSS('[data-test-deny-authorization]').click();
+
+    await expect.element(page.getByCSS('[data-test-verify-denied]')).toBeInTheDocument();
+    expect(passkey).not.toHaveBeenCalled();
+    expect(callback).not.toHaveBeenCalled();
   });
 });

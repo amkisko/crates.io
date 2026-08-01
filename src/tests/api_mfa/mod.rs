@@ -43,6 +43,7 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .unwrap()
         .unwrap();
     assert_eq!(challenge.request_size, Some(body.len() as i64));
+    assert_eq!(challenge.mutation_state.as_deref(), Some("pending"));
     assert_eq!(
         challenge.request_sha256,
         Some(Sha256::digest(&body).to_vec())
@@ -52,18 +53,24 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .mark_verified(ApiMfaChallenge::hash_otp("preflight-proof"), None, &conn)
         .await
         .unwrap();
-    NewApiMfaGrant::for_operation(
-        user.as_model().id,
-        token.as_model().id,
-        challenge.operation.clone(),
-        challenge.crate_name.clone(),
-        challenge.mutation_fingerprint.clone(),
-    )
-    .insert(&conn)
-    .await
-    .unwrap();
-
+    let ready = ApiMfaChallenge::find(&challenge_id, &conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ready.mutation_state.as_deref(), Some("ready"));
     let body_len = body.len().to_string();
+    let mut direct_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    direct_request.header("Content-Type", "application/octet-stream");
+    direct_request.header("Content-Length", &body_len);
+    let direct = token
+        .run::<Value>(direct_request.with_body(body.clone()))
+        .await;
+    assert_ne!(
+        direct.status(),
+        200,
+        "mutation record authorized a direct request"
+    );
+
     let mut first_request = token.request_builder(Method::PUT, "/api/v1/crates/new");
     first_request.header("Cargo-Mutation-Id", &challenge_id);
     first_request.header("Content-Type", "application/octet-stream");
@@ -94,6 +101,55 @@ async fn publish_preflight_binds_and_replays_one_mutation() {
         .unwrap();
     assert_eq!(stored.response_status, Some(200));
     assert!(stored.completed_at.is_some());
+    assert_eq!(stored.mutation_state.as_deref(), Some("terminal"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn browser_can_deny_a_pending_mutation_authorization() {
+    let (app, _, user, token) = TestApp::full().with_token().await;
+    let mut conn = app.db_conn().await;
+    diesel::update(users::table.find(user.as_model().id))
+        .set(users::api_mfa_enabled.eq(true))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    insert_dummy_passkey(user.as_model().id, &mut conn).await;
+
+    let body = PublishBuilder::new("preflight_denied", "1.0.0").body();
+    let descriptor = publish_preflight_descriptor("preflight_denied", "1.0.0", &body);
+    let initial = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(initial.status(), 202, "{}", initial.text());
+    let mutation_id = initial.json()["mutation_id"].as_str().unwrap().to_owned();
+
+    let denied = token
+        .post::<Value>(&format!("/api/v1/auth/challenges/{mutation_id}/deny"), "")
+        .await;
+    assert_eq!(denied.status(), 200, "{}", denied.text());
+    assert_eq!(denied.json()["status"], "denied");
+
+    let retry = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(descriptor.to_string().into()),
+        )
+        .await;
+    assert_eq!(retry.status(), 200, "{}", retry.text());
+    assert_eq!(retry.json()["status"], "denied");
+
+    let mut mutation = token.request_builder(Method::PUT, "/api/v1/crates/new");
+    mutation.header("Cargo-Mutation-Id", &mutation_id);
+    mutation.header("Content-Type", "application/octet-stream");
+    mutation.header("Content-Length", &body.len().to_string());
+    let mutation = token.run::<Value>(mutation.with_body(body)).await;
+    assert_eq!(mutation.status(), 400, "{}", mutation.text());
+    assert!(mutation.text().contains("was denied"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -164,6 +220,27 @@ fn publish_preflight_descriptor(name: &str, version: &str, body: &[u8]) -> Value
         "archive_sha256": hex::encode(Sha256::digest(archive)),
         "archive_size": archive.len(),
     })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn core_preflight_derives_final_endpoint_facts() {
+    let (_app, _, _user, token) = TestApp::full().with_token().await;
+    let body = PublishBuilder::new("preflight_derived", "1.0.0").body();
+    let mut descriptor = publish_preflight_descriptor("preflight_derived", "1.0.0", &body);
+    let descriptor = descriptor.as_object_mut().unwrap();
+    descriptor.remove("method");
+    descriptor.remove("request_target");
+    descriptor.remove("content_type");
+
+    let ready = token
+        .run::<Value>(
+            token
+                .request_builder(Method::POST, "/api/v1/auth/mutation-challenges")
+                .with_body(serde_json::to_vec(descriptor).unwrap().into()),
+        )
+        .await;
+    assert_eq!(ready.status(), 200, "{}", ready.text());
+    assert_eq!(ready.json()["status"], "ready");
 }
 
 #[tokio::test(flavor = "multi_thread")]

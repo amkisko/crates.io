@@ -91,6 +91,7 @@ fn build_openapi_router() -> utoipa_axum::router::OpenApiRouter<AppState> {
         .routes(routes!(api_mfa::challenges::create_mutation_authorization))
         .routes(routes!(api_mfa::challenges::poll_mutation_authorization))
         .routes(routes!(api_mfa::challenges::get_api_mfa_challenge))
+        .routes(routes!(api_mfa::challenges::deny_api_mfa_challenge))
         .routes(routes!(api_mfa::challenges::start_api_mfa_challenge))
         .routes(routes!(api_mfa::challenges::finish_api_mfa_challenge))
         .routes(routes!(
